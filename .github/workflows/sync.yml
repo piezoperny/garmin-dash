@@ -1,0 +1,128 @@
+name: Garmin Sync & Deploy
+
+on:
+  schedule:
+    # Trigger daily at 03:00 UTC (off-peak hours for Garmin and Hetzner SFTP)
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      mock_mode:
+        description: 'Run in synthetic mock/demo mode (ignores live credentials)'
+        required: false
+        type: boolean
+        default: false
+      force_refresh:
+        description: 'Force re-sync across full lookback window (bypasses high-water mark)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: 'garmin-sync'
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  sync-and-deploy:
+    name: Sync, Encrypt, Build & Deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Step 1: Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Setup Python (3.11)
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # Step 3: Setup Node.js (20)
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Step 4: Install Python dependencies
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Step 5: Install frontend dependencies
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm install
+
+      # Step 6: Ingest Garmin activities & archive to Hetzner SFTP
+      - name: Ingest Garmin activities & archive to Hetzner SFTP
+        env:
+          GARMIN_API_KEY: ${{ secrets.GARMIN_API_KEY }}
+          GARMIN_CLIENT_SECRET: ${{ secrets.GARMIN_CLIENT_SECRET }}
+          HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
+          HETZNER_USER: ${{ secrets.HETZNER_USER }}
+          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          FORCE_MOCK: ${{ inputs.mock_mode || false }}
+          FORCE_REFRESH: ${{ inputs.force_refresh || false }}
+        run: |
+          python -m src.ingestion.sync
+
+      # Step 7: Encrypt rollup to data.enc
+      - name: Encrypt rollup to data.enc
+        env:
+          DASHBOARD_PASSPHRASE: ${{ secrets.DASHBOARD_PASSPHRASE }}
+        run: |
+          if [ -z "$DASHBOARD_PASSPHRASE" ]; then
+            echo "::warning::DASHBOARD_PASSPHRASE secret not set; falling back to demo passphrase in mock mode."
+            python -m src.encryption.encrypt --verify --mock
+          else
+            python -m src.encryption.encrypt --verify
+          fi
+
+      # Step 8: Workspace cleanup (guaranteed execution even on failure)
+      - name: Purge raw staging & verify clean workspace
+        if: always()
+        run: |
+          python -m src.ingestion.cleanup
+
+      # Step 9: Static build
+      - name: Build static frontend
+        run: |
+          cd frontend
+          npm run build
+          cd ..
+          # Ensure encrypted payload is present in dist/ for static hosting
+          if [ -f public/data.enc ] && [ ! -f dist/data.enc ]; then
+            cp public/data.enc dist/data.enc
+          fi
+
+      # Step 10: Secret hygiene audit & zero-plaintext static verification
+      - name: Secret hygiene & zero-plaintext static audit
+        run: |
+          python -m unittest tests/test_secret_hygiene.py
+          python -m src.ingestion.cleanup --verify-only
+          python -c "from tests.test_secret_hygiene import ref_scan_directory; v = ref_scan_directory('dist'); print(f'Forensic audit: {len(v)} violations'); exit(1 if v else 0)"
+
+      # Step 11: Configure GitHub Pages
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      # Step 12: Upload Pages artifact
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'dist'
+
+      # Step 13: Deploy to GitHub Pages
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

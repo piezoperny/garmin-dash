@@ -1,0 +1,29 @@
+# Zero-Plaintext & Staging Hygiene (Never commit raw workouts or staging files)
+.staging/
+.raw_staging/
+*.fit
+*.FIT
+dashboard_rollup.json
+
+# Environment & Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+
+# Agent / IDE Artifacts
+.agents/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Garmin Vault — Client-Side Encrypted Fitness Dashboard</title>
+  <link rel="stylesheet" href="./src/styles/style.css" />
+  <!-- Standalone Tailwind CSS CDN Fallback for Zero-Build Preview -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            slate: {
+              850: '#172033',
+              950: '#020617',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-cyan-500 selection:text-white">
+
+  <!-- ========================================================================= -->
+  <!-- PASSPHRASE AUTHENTICATION MODAL (Initial Locked State)                     -->
+  <!-- ========================================================================= -->
+  <div id="passphrase-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md transition-opacity duration-300">
+    <div class="modal-card bg-slate-900 border border-slate-800 rounded-2xl p-8 max-w-md w-full shadow-2xl relative overflow-hidden">
+      <!-- Glow effect -->
+      <div class="absolute -top-12 -left-12 w-32 h-32 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none"></div>
+      <div class="absolute -bottom-12 -right-12 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none"></div>
+
+      <div class="text-center mb-6">
+        <div class="w-14 h-14 bg-slate-800 border border-slate-700 rounded-2xl mx-auto flex items-center justify-center mb-4 shadow-inner">
+          <svg class="w-7 h-7 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+          </svg>
+        </div>
+        <h1 class="text-xl font-bold tracking-tight text-white">Garmin Encrypted Vault</h1>
+        <p class="text-xs text-slate-400 mt-1">Client-side zero-knowledge encrypted fitness metrics</p>
+      </div>
+
+      <!-- Authentication Error Banner -->
+      <div id="auth-error-message" class="hidden mb-4 p-3 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs text-center font-medium">
+        Authentication failed. Invalid passphrase or corrupted data.
+      </div>
+
+      <form id="passphrase-form" class="space-y-4">
+        <div>
+          <label for="passphrase-input" class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Master Passphrase</label>
+          <div class="relative">
+            <input
+              id="passphrase-input"
+              type="password"
+              placeholder="Enter master passphrase..."
+              autocomplete="current-password"
+              class="w-full bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent transition"
+              required
+            />
+          </div>
+        </div>
+
+        <button
+          id="passphrase-submit"
+          type="submit"
+          class="w-full bg-gradient-to-r from-cyan-600 to-emerald-600 hover:from-cyan-500 hover:to-emerald-500 text-white font-semibold py-3 px-4 rounded-xl text-sm shadow-lg shadow-cyan-950 transition duration-150 flex items-center justify-center space-x-2"
+        >
+          <span>Unlock Vault</span>
+        </button>
+      </form>
+
+      <div class="mt-6 pt-4 border-t border-slate-800 text-center text-[11px] text-slate-500">
+        Payload decrypted in RAM via <span class="font-mono text-slate-400">window.crypto.subtle</span> • AES-256-GCM
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- MAIN DASHBOARD CONTENT (Locked by default, unhidden after decryption)      -->
+  <!-- ========================================================================= -->
+  <div id="dashboard-content" class="hidden flex-1 flex flex-col" aria-hidden="true">
+    
+    <!-- Navigation Header -->
+    <header class="bg-slate-900/90 border-b border-slate-800 sticky top-0 z-30 backdrop-blur-md">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+        
+        <div class="flex items-center space-x-3">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 to-emerald-500 flex items-center justify-center shadow">
+            <svg class="w-5 h-5 text-slate-950 font-bold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+          </div>
+          <div>
+            <div class="text-sm font-bold text-white flex items-center space-x-2">
+              <span>Garmin Vault</span>
+              <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">ENCRYPTED</span>
+            </div>
+            <div class="text-[11px] text-slate-400">Zero-Knowledge Performance Dashboard</div>
+          </div>
+        </div>
+
+        <!-- Controls: Unit Toggle & Lock Button -->
+        <div class="flex items-center space-x-3">
+          <!-- Distance Unit Toggle -->
+          <div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg p-0.5">
+            <button id="unit-toggle-btn" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-slate-700 text-white shadow-sm">
+              KM
+            </button>
+          </div>
+
+          <!-- Lock Dashboard Button -->
+          <button
+            id="btn-lock-dashboard"
+            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold transition"
+          >
+            <svg class="w-3.5 h-3.5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+            </svg>
+            <span>Lock Vault</span>
+          </button>
+        </div>
+
+      </div>
+    </header>
+
+    <!-- Main Body Container -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 flex-1 w-full">
+      
+      <!-- KPI Cards Row -->
+      <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <!-- KPI 1: Distance -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Distance</div>
+          <div id="kpi-total-distance" class="text-2xl font-bold font-mono text-white mt-1">-</div>
+          <div class="text-[11px] text-slate-500 mt-0.5">Cumulative mileage</div>
+        </div>
+
+        <!-- KPI 2: Moving Time -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Moving Time</div>
+          <div id="kpi-total-time" class="text-2xl font-bold font-mono text-cyan-400 mt-1">-</div>
+          <div class="text-[11px] text-slate-500 mt-0.5">Active endurance hours</div>
+        </div>
+
+        <!-- KPI 3: Weekly Training Load -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Weekly Load</div>
+          <div id="kpi-weekly-load" class="text-2xl font-bold font-mono text-emerald-400 mt-1">-</div>
+          <div class="text-[11px] text-slate-500 mt-0.5">Average weekly TSS</div>
+        </div>
+
+        <!-- KPI 4: Status -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col justify-between">
+          <div>
+            <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Training Status</div>
+            <div class="mt-2">
+              <span id="kpi-status" class="px-3 py-1 rounded-full text-xs font-semibold border text-emerald-400 border-emerald-500/30 bg-emerald-500/10">
+                Optimal
+              </span>
+            </div>
+          </div>
+          <div class="text-[11px] text-slate-500 mt-2">Workload ratio (ACWR)</div>
+        </div>
+      </section>
+
+      <!-- ===================================================================== -->
+      <!-- SECTION 1: ENDURANCE & TRAINING LOAD                                  -->
+      <!-- ===================================================================== -->
+      <section class="space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-bold text-white tracking-tight flex items-center space-x-2">
+              <span>Section 1: Endurance & Training Load</span>
+            </h2>
+            <p class="text-xs text-slate-400">Weekly volume breakdown & continuous fitness/fatigue/form curves</p>
+          </div>
+
+          <!-- Sport Filter Pills -->
+          <div class="flex items-center space-x-1 bg-slate-900 border border-slate-800 rounded-xl p-1">
+            <button id="filter-btn-all" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-white shadow-sm">All</button>
+            <button id="filter-btn-running" class="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white transition">Running</button>
+            <button id="filter-btn-cycling" class="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white transition">Cycling</button>
+            <button id="filter-btn-strength" class="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white transition">Strength</button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <!-- Weekly Volume Chart Card -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-semibold text-slate-200">Stacked Weekly Volume</h3>
+              <span class="text-[11px] font-mono text-slate-400">Running / Cycling / Strength</span>
+            </div>
+            <div class="flex-1 min-h-[280px] relative">
+              <canvas id="weekly-volume-chart" class="w-full h-full"></canvas>
+            </div>
+          </div>
+
+          <!-- Continuous Training Load Curves Card -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-semibold text-slate-200">Continuous Training Load Curves</h3>
+              <span class="text-[11px] font-mono text-slate-400">CTL (Fitness) • ATL (Fatigue) • TSB (Form)</span>
+            </div>
+            <div class="flex-1 min-h-[280px] relative">
+              <canvas id="training-load-chart" class="w-full h-full"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================== -->
+      <!-- SECTION 2: PHYSIOLOGICAL DISTRIBUTION                                -->
+      <!-- ===================================================================== -->
+      <section class="space-y-4">
+        <div>
+          <h2 class="text-lg font-bold text-white tracking-tight">Section 2: Physiological Distribution</h2>
+          <p class="text-xs text-slate-400">Heart rate, cycling power, running pace zones, and threshold trends</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <!-- 5-Zone HR Distribution -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col">
+            <div class="mb-3">
+              <h3 class="text-sm font-semibold text-slate-200">Heart Rate Zones</h3>
+              <p class="text-[11px] text-slate-400">5-Zone Garmin Model (Z1 - Z5)</p>
+            </div>
+            <div class="flex-1 min-h-[260px] relative">
+              <canvas id="hr-zone-chart" class="w-full h-full"></canvas>
+            </div>
+          </div>
+
+          <!-- Coggan 7-Zone Power Distribution -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col">
+            <div class="mb-3">
+              <h3 class="text-sm font-semibold text-slate-200">Cycling Power Zones</h3>
+              <p class="text-[11px] text-slate-400">Coggan 7-Zone Power Distribution</p>
+            </div>
+            <div class="flex-1 min-h-[260px] relative">
+              <canvas id="power-zone-chart" class="w-full h-full"></canvas>
+            </div>
+          </div>
+
+          <!-- Pace Zones -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col">
+            <div class="mb-3">
+              <h3 class="text-sm font-semibold text-slate-200">Pace Zones</h3>
+              <p class="text-[11px] text-slate-400">Running Pace Distribution</p>
+            </div>
+            <div class="flex-1 min-h-[260px] relative">
+              <canvas id="pace-zone-chart" class="w-full h-full"></canvas>
+            </div>
+          </div>
+
+          <!-- Threshold Progression Trends -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col">
+            <div class="mb-3">
+              <h3 class="text-sm font-semibold text-slate-200">Threshold Performance Trends</h3>
+              <p class="text-[11px] text-slate-400">VO2max • FTP • LTHR Progression</p>
+            </div>
+            <div class="flex-1 min-h-[260px] relative">
+              <canvas id="threshold-trends-chart" class="w-full h-full"></canvas>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================== -->
+      <!-- SECTION 3: ACTIVITY DRILL-DOWN                                        -->
+      <!-- ===================================================================== -->
+      <section class="space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h2 class="text-lg font-bold text-white tracking-tight">Section 3: Activity Drill-Down</h2>
+            <p class="text-xs text-slate-400">Detailed workout table with per-km/mile splits and cadence profiles</p>
+          </div>
+
+          <!-- Search & Sort Controls -->
+          <div class="flex items-center space-x-3">
+            <div class="relative">
+              <input
+                id="activity-search"
+                type="text"
+                placeholder="Search activities..."
+                class="bg-slate-900 border border-slate-800 rounded-lg px-3.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 w-48 sm:w-64"
+              />
+            </div>
+            <select
+              id="activity-sort"
+              class="bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+            >
+              <option value="date-desc">Newest First</option>
+              <option value="date-asc">Oldest First</option>
+              <option value="dist-desc">Longest Distance</option>
+              <option value="time-desc">Longest Duration</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Activity Table Card -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+          <div class="overflow-x-auto">
+            <table id="activity-table" class="w-full text-left text-xs">
+              <thead class="bg-slate-800/80 text-slate-400 uppercase font-semibold tracking-wider border-b border-slate-800">
+                <tr>
+                  <th class="py-3 px-4">Date</th>
+                  <th class="py-3 px-4">Sport</th>
+                  <th class="py-3 px-4">Title</th>
+                  <th class="py-3 px-4 text-right">Distance</th>
+                  <th class="py-3 px-4 text-right">Duration</th>
+                  <th class="py-3 px-4 text-right">Avg HR</th>
+                  <th class="py-3 px-4 text-right">Ascent</th>
+                  <th class="py-3 px-4 text-right">Load</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/60 font-sans">
+                <!-- Dynamically populated rows -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-slate-900 border-t border-slate-800 py-4 mt-auto">
+      <div class="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500">
+        Garmin Encrypted Vault • Zero-Knowledge Static Single Page Application • In-Memory PBKDF2/AES-GCM
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- ACTIVITY DRILL-DOWN MODAL / DRAWER                                        -->
+  <!-- ========================================================================= -->
+  <div id="activity-drawer" class="fixed inset-0 z-50 flex items-center justify-end hidden">
+    <!-- Backdrop -->
+    <div id="drawer-backdrop" class="fixed inset-0 drawer-backdrop transition-opacity"></div>
+
+    <!-- Drawer Panel -->
+    <div class="relative w-full max-w-2xl bg-slate-900 border-l border-slate-800 h-full p-6 shadow-2xl flex flex-col overflow-y-auto z-10">
+      
+      <!-- Drawer Header -->
+      <div class="flex items-start justify-between pb-4 border-b border-slate-800">
+        <div>
+          <h3 id="drawer-activity-title" class="text-lg font-bold text-white">Workout Details</h3>
+          <p id="drawer-activity-date" class="text-xs text-slate-400 mt-0.5">Date & Sport</p>
+        </div>
+        <button
+          id="btn-close-drawer"
+          class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Telemetry KPI Summary -->
+      <div class="grid grid-cols-3 gap-3 my-4">
+        <div class="bg-slate-800/60 border border-slate-750 p-3 rounded-lg">
+          <div class="text-[10px] text-slate-400 uppercase font-semibold">Distance</div>
+          <div id="drawer-kpi-dist" class="text-base font-bold font-mono text-white mt-0.5">-</div>
+        </div>
+        <div class="bg-slate-800/60 border border-slate-750 p-3 rounded-lg">
+          <div class="text-[10px] text-slate-400 uppercase font-semibold">Moving Time</div>
+          <div id="drawer-kpi-duration" class="text-base font-bold font-mono text-cyan-400 mt-0.5">-</div>
+        </div>
+        <div class="bg-slate-800/60 border border-slate-750 p-3 rounded-lg">
+          <div class="text-[10px] text-slate-400 uppercase font-semibold">Heart Rate</div>
+          <div id="drawer-kpi-hr" class="text-base font-bold font-mono text-rose-400 mt-0.5">-</div>
+        </div>
+        <div class="bg-slate-800/60 border border-slate-750 p-3 rounded-lg">
+          <div class="text-[10px] text-slate-400 uppercase font-semibold">Avg Cadence</div>
+          <div id="drawer-kpi-cadence" class="text-base font-bold font-mono text-indigo-400 mt-0.5">-</div>
+        </div>
+        <div class="bg-slate-800/60 border border-slate-750 p-3 rounded-lg">
+          <div class="text-[10px] text-slate-400 uppercase font-semibold">Elevation Gain</div>
+          <div id="drawer-kpi-elevation" class="text-base font-bold font-mono text-slate-200 mt-0.5">-</div>
+        </div>
+        <div class="bg-slate-800/60 border border-slate-750 p-3 rounded-lg">
+          <div class="text-[10px] text-slate-400 uppercase font-semibold">Calories</div>
+          <div id="drawer-kpi-calories" class="text-base font-bold font-mono text-amber-400 mt-0.5">-</div>
+        </div>
+      </div>
+
+      <!-- Profile Chart -->
+      <div class="bg-slate-800/40 border border-slate-800 rounded-xl p-4 mb-5">
+        <h4 class="text-xs font-semibold text-slate-300 mb-2">Split Telemetry Profile (HR & Cadence)</h4>
+        <div class="h-44 relative">
+          <canvas id="activity-profile-chart" class="w-full h-full"></canvas>
+        </div>
+      </div>
+
+      <!-- Per-KM / Per-Mile Splits Breakdown Table -->
+      <div class="flex-1">
+        <h4 class="text-xs font-semibold text-slate-300 mb-2">Per-Split Breakdown</h4>
+        <div class="border border-slate-800 rounded-lg overflow-hidden">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-800 text-slate-400 uppercase font-semibold">
+              <tr>
+                <th class="py-2 px-3">Split</th>
+                <th class="py-2 px-3">Time</th>
+                <th class="py-2 px-3">Pace</th>
+                <th class="py-2 px-3">Avg HR</th>
+                <th class="py-2 px-3">Elev</th>
+              </tr>
+            </thead>
+            <tbody id="drawer-splits-tbody" class="divide-y divide-slate-800">
+              <!-- Dynamically populated splits -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Entry Script (ES Modules) -->
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

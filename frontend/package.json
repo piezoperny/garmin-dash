@@ -1,0 +1,21 @@
+{
+  "name": "garmin-dash-frontend",
+  "version": "1.0.0",
+  "description": "Client-Side Encrypted Garmin Fitness Dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node build.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.4"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "vite": "^5.4.8"
+  }
+}

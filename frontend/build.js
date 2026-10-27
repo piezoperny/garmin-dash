@@ -14,9 +14,11 @@ const chartsOutDir = path.join(assetsDir, 'charts');
 
 fs.mkdirSync(chartsOutDir, { recursive: true });
 
-// 1. Transform index.html entry script from ./src/main.js -> ./assets/main.js
+// 1. Transform index.html entry script and stylesheet links to assets/
 const indexSrc = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
-const indexDist = indexSrc.replace('./src/main.js', './assets/main.js');
+const indexDist = indexSrc
+  .replace('./src/main.js', './assets/main.js')
+  .replace('./src/styles/style.css', './assets/style.css');
 fs.writeFileSync(path.join(distDir, 'index.html'), indexDist, 'utf8');
 
 // 2. Copy core ES modules

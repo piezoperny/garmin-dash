@@ -1,9 +1,10 @@
 /**
  * frontend/src/charts/physiological.js
  * 
- * Section 2: Physiological Distribution Visualizations
+ * Physiological Distribution Visualizations
  * - 5-zone Heart Rate breakdown (#hr-zone-chart)
  * - Coggan 7-zone Cycling Power distribution (#power-zone-chart)
+ * - Hiking Pace & Grade Zones (#pace-zone-chart)
  * - Threshold Trends over time (#threshold-trends-chart: VO2max, FTP, LTHR)
  */
 
@@ -46,7 +47,7 @@ export function renderHeartRateZoneChart(rollup) {
 
   const labels = zones.map(z => `${z.zone} (${secToHours(z.seconds)}h)`);
   const data = zones.map(z => secToHours(z.seconds));
-  const colors = ['#38bdf8', '#10b981', '#f59e0b', '#f97316', '#f43f5e'];
+  const colors = ['#38bdf8', '#34d399', '#fbbf24', '#f97316', '#f43f5e'];
 
   hrChartInstance = new Chart(canvas, {
     type: 'doughnut',
@@ -97,7 +98,7 @@ export function renderPowerZoneChart(rollup) {
         {
           label: 'Power Time (Hours)',
           data,
-          backgroundColor: '#8b5cf6'
+          backgroundColor: '#a78bfa'
         }
       ]
     },
@@ -143,7 +144,7 @@ export function renderThresholdTrendsChart(rollup) {
         {
           label: 'FTP (Watts)',
           data: ftpData,
-          borderColor: '#8b5cf6',
+          borderColor: '#a78bfa',
           borderWidth: 2
         },
         {
@@ -155,7 +156,7 @@ export function renderThresholdTrendsChart(rollup) {
         {
           label: 'VO2max (ml/kg)',
           data: vo2Data,
-          borderColor: '#10b981',
+          borderColor: '#34d399',
           borderWidth: 2
         }
       ]
@@ -170,7 +171,7 @@ export function renderThresholdTrendsChart(rollup) {
 }
 
 /**
- * Renders Pace Zones Distribution Chart.
+ * Renders Pace / Grade Zones Distribution Chart with concise, non-overlapping labels.
  * @param {object} rollup
  */
 export function renderPaceZoneChart(rollup) {
@@ -185,7 +186,8 @@ export function renderPaceZoneChart(rollup) {
   const zones = rollup?.physiological?.pace_zones || [];
   if (zones.length === 0) return;
 
-  const labels = zones.map(z => z.zone);
+  // Use concise labels to prevent any adjacent label collision
+  const labels = zones.map(z => z.short_label || z.zone);
   const data = zones.map(z => secToHours(z.seconds));
 
   paceChartInstance = new Chart(canvas, {

@@ -69,21 +69,22 @@ function renderDashboard(rollup) {
   if (!rollup) return;
   activeRollup = rollup;
 
-  // 1. KPI Cards
-  renderKPICards(rollup, activeUnit);
+  // 1. KPI Cards (reacts to active unit and sport filter)
+  renderKPICards(rollup, activeUnit, activeSportFilter);
 
-  // 2. Section 1: Endurance & Training Load
+  // 2. Endurance & Training Load
   renderWeeklyVolumeChart(rollup, activeUnit, activeSportFilter);
   renderTrainingLoadChart(rollup);
 
-  // 3. Section 2: Physiological Distribution
+  // 3. Physiological Distribution
   renderHeartRateZoneChart(rollup);
   renderPowerZoneChart(rollup);
   renderThresholdTrendsChart(rollup);
   renderPaceZoneChart(rollup);
 
-  // 4. Section 3: Activity Drill-Down
+  // 4. Activity Drill-Down
   renderActivityTable(rollup.activities || [], activeUnit);
+  setActivitySportFilter(activeSportFilter);
 }
 
 /**
@@ -229,23 +230,34 @@ function handleLockVault() {
 function updateSportFilter(sport) {
   activeSportFilter = sport;
 
-  const buttons = {
-    all: document.getElementById('filter-btn-all'),
-    running: document.getElementById('filter-btn-running'),
-    cycling: document.getElementById('filter-btn-cycling'),
-    strength: document.getElementById('filter-btn-strength')
-  };
+  const buttonMap = [
+    { id: 'filter-btn-all', match: ['all'] },
+    { id: 'filter-btn-cycling', match: ['cycling', 'cycle'] },
+    { id: 'filter-btn-hiking', match: ['hiking', 'running'] },
+    { id: 'filter-btn-strength', match: ['strength', 'weights'] },
+    { id: 'filter-btn-running', match: ['hiking', 'running'] },
+    { id: 'filter-btn-weights', match: ['strength', 'weights'] }
+  ];
 
-  Object.entries(buttons).forEach(([key, btn]) => {
+  const normalized = (sport || 'all').toLowerCase();
+
+  buttonMap.forEach(({ id, match }) => {
+    const btn = document.getElementById(id);
     if (!btn) return;
-    if (key === sport) {
-      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-white shadow-sm';
+    const isAlias = id === 'filter-btn-running' || id === 'filter-btn-weights';
+    if (isAlias) {
+      btn.className = 'hidden';
+      return;
+    }
+    if (match.includes(normalized)) {
+      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white shadow-sm';
     } else {
-      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition-colors';
+      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition-colors';
     }
   });
 
   if (activeRollup) {
+    renderKPICards(activeRollup, activeUnit, activeSportFilter);
     renderWeeklyVolumeChart(activeRollup, activeUnit, activeSportFilter);
     setActivitySportFilter(activeSportFilter);
   }
@@ -298,9 +310,11 @@ export async function initApp() {
   // Attach Sport filter buttons
   const sportButtons = [
     { id: 'filter-btn-all', sport: 'all' },
-    { id: 'filter-btn-running', sport: 'running' },
     { id: 'filter-btn-cycling', sport: 'cycling' },
-    { id: 'filter-btn-strength', sport: 'strength' }
+    { id: 'filter-btn-hiking', sport: 'hiking' },
+    { id: 'filter-btn-strength', sport: 'strength' },
+    { id: 'filter-btn-running', sport: 'hiking' },
+    { id: 'filter-btn-weights', sport: 'strength' }
   ];
 
   sportButtons.forEach(({ id, sport }) => {

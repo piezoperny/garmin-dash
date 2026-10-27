@@ -119,7 +119,7 @@ def build_and_encrypt_rollup(
 
     # Mirror to dist/ or frontend/public if generating the default output artifact
     if output_file is None or target_path == DEFAULT_OUTPUT_ENC:
-        for mirror_dir in [Path("dist"), Path("frontend/public")]:
+        for mirror_dir in [Path("dist"), Path("frontend"), Path("frontend/public")]:
             if mirror_dir.exists() and mirror_dir.is_dir() and mirror_dir != target_path.parent:
                 mirror_path = mirror_dir / "data.enc"
                 shutil.copyfile(target_path, mirror_path)

@@ -268,9 +268,9 @@ class TestChallengerM1(unittest.TestCase):
             sport = act["sport"]
             cad = act["avg_cadence"]
 
-            if sport == "running":
-                self.assertGreaterEqual(cad, 150, f"{act_id}: Run cadence < 150")
-                self.assertLessEqual(cad, 210, f"{act_id}: Run cadence > 210")
+            if sport in ("running", "hiking"):
+                self.assertGreaterEqual(cad, 80, f"{act_id}: Run/hike cadence < 80")
+                self.assertLessEqual(cad, 210, f"{act_id}: Run/hike cadence > 210")
             elif sport == "cycling":
                 self.assertGreaterEqual(cad, 60, f"{act_id}: Cycle cadence < 60")
                 self.assertLessEqual(cad, 125, f"{act_id}: Cycle cadence > 125")

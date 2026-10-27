@@ -206,9 +206,15 @@ Your master passphrase protects your entire fitness dataset against unauthorized
 - **Save Securely**: Store this passphrase in your password manager. Because encryption is zero-knowledge, **there is no password reset mechanism**. If you lose your passphrase, existing `data.enc` payloads cannot be recovered.
 - Configure `DASHBOARD_PASSPHRASE` locally or in GitHub Secrets.
 
-### 3.4 GitHub Repository Secrets Configuration
+### 3.4 GitHub Repository Secrets & Automated 6-Hour Sync
 
-Navigate to your GitHub repository: **Settings** $\rightarrow$ **Secrets and variables** $\rightarrow$ **Actions** $\rightarrow$ **New repository secret**. Configure the following required secrets:
+The automated sync pipeline (`.github/workflows/sync.yml`) runs on a **6-hour recurring schedule** (`cron: '0 */6 * * *'` at 00:00, 06:00, 12:00, and 18:00 UTC) as well as on-demand via `workflow_dispatch`.
+
+To enable automated synchronization, configure the following repository secrets under **Settings** $\rightarrow$ **Secrets and variables** $\rightarrow$ **Actions** $\rightarrow$ **New repository secret**:
+
+- **`GARMIN_API_KEY`** & **`GARMIN_CLIENT_SECRET`**: Client ID and secret provisioned through the Garmin Developer Portal (Personal Tier). Used by `src.ingestion.sync` to authenticate and ingest recent workout summaries and `.FIT` binaries.
+- **`DASHBOARD_PASSPHRASE`**: Master passphrase used by `src.encryption.encrypt` to derive the AES-256-GCM encryption key (PBKDF2-HMAC-SHA256, 600,000 iterations). Must match the passphrase you enter in the browser vault modal.
+- **`HETZNER_HOST`**, **`HETZNER_USER`**, & **`HETZNER_SSH_KEY`**: Off-site SFTP archival credentials for Hetzner Storage Box storage of raw `.FIT` binaries, manifests, and durable OAuth session tokens.
 
 | Secret Name | Required | Description | Example / Format |
 | :--- | :---: | :--- | :--- |
@@ -252,7 +258,7 @@ cd ..
 
 ### 4.1 Synthetic Mock Demo Mode (Offline)
 
-Test the entire pipeline locally without Garmin API credentials or external network access. The synthetic data generator produces 8 weeks of deterministic running, cycling, and strength workouts:
+Test the entire pipeline locally without Garmin API credentials or external network access. The synthetic data generator produces 8 weeks of deterministic workouts focused on **Weights** (`strength` — duration and heart rate load only, no kg/weight load or distance), **Cycling** (`cycling`), and **Hiking** (`hiking` — with elevation ascent and cadence):
 
 ```bash
 # 1. Run incremental ingestion in synthetic mock mode
@@ -347,25 +353,26 @@ npx playwright test tests/e2e/dashboard.spec.js
 ---
 
 ## 5. Interactive Visualizations & Metrics
-
-Once unlocked with your master passphrase, the dashboard renders three interactive sections built with Chart.js:
+ 
+Once unlocked with your master passphrase, the dashboard renders three interactive sections built with Chart.js, styled in a minimalist dark aesthetic with hairline borders and tabular numerals:
 
 ### 1. Endurance & Training Load
-- **Volume Metrics**: Dual-axis visualizations tracking weekly and monthly running distance (km), cycling distance (km), and strength training volume (hours).
+- **Stacked Weekly Volume**: Multi-sport duration chart plotting Weekly Duration (Hours) across Cycling, Hiking, and Weights, allowing cross-discipline volume analysis.
+- **Dynamic Sport Filter Pills**: Instant filtering across **All · Cycling · Hiking · Weights** that dynamically updates KPI cards, volume charts, and activity records. Weights displays workout duration and heart rate metrics while displaying `—` for distance.
 - **Physiological Training Load Curves**:
   - **ATL (Acute Training Load)**: 7-day exponentially weighted moving average representing fatigue.
   - **CTL (Chronic Training Load)**: 42-day exponentially weighted moving average representing fitness.
   - **TSB (Training Stress Balance)**: Form curve ($TSB = CTL - ATL$) indicating freshness vs. overtraining risk.
 
 ### 2. Physiological Distribution
-- **Heart Rate Zones (Z1 - Z5)**: Time in zone breakdowns calculated from resting and maximum heart rates.
+- **Heart Rate Zones (Z1 - Z5)**: Wrapped donut chart displaying time in zone breakdowns calculated from resting and maximum heart rates.
 - **Coggan Power Zones (Z1 - Z7)**: Cycling power output distribution relative to Functional Threshold Power (FTP).
-- **Pace Zones**: Running speed distributions partitioned into Recovery, Aerobic, Tempo, Threshold, and Interval paces.
+- **Pace Zones**: Concise, non-colliding pace distribution for endurance activities (Hiking / Running) partitioned into Recovery, Aerobic, Tempo, Threshold, and Interval paces.
 - **Historical Threshold Trends**: Longitudinal progression curves for VO2Max, FTP (watts), and Lactate Threshold Heart Rate (LTHR).
 
 ### 3. Activity Drill-Down
-- **Filterable & Searchable Table**: Instant search across activity titles, sports (running, cycling, strength), dates, and metrics.
-- **Granular Lap & Split Modal**: Per-kilometer/mile split breakdowns with synchronized cadence, elevation profiles, and average heart rate.
+- **Filterable & Searchable Table**: Instant search across activity titles, sports (Weights, Cycling, Hiking), dates, and metrics with high-contrast sport badges.
+- **Activity Detail Drawer**: Per-kilometer/mile split breakdowns with synchronized elevation ascent and cadence (spm for hiking, rpm for cycling), and HR curves for weight training workouts.
 
 ---
 

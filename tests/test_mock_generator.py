@@ -211,9 +211,9 @@ class TestMockGenerator(unittest.TestCase):
             self.assertEqual(a1["avg_hr"], a2["avg_hr"])
 
     def test_t1_mock_02_all_three_sports_covered_over_8_weeks(self):
-        """T1-MOCK-02: Generates running, cycling, and strength training over the 8-week block."""
+        """T1-MOCK-02: Generates hiking/running, cycling, and strength training over the 8-week block."""
         sports_found = set(a["sport"] for a in self.activities)
-        self.assertIn("running", sports_found)
+        self.assertTrue("hiking" in sports_found or "running" in sports_found)
         self.assertIn("cycling", sports_found)
         self.assertIn("strength", sports_found)
         # Should be between 30 and 45 workouts over 56 days (4-5 workouts/wk)
@@ -271,11 +271,11 @@ class TestMockGenerator(unittest.TestCase):
             self.assertLessEqual(c["avg_power"], 1500)
 
     def test_t2_mock_07_cadence_boundaries_by_sport(self):
-        """T2-MOCK-07: Running cadence (150-210 spm), Cycling cadence (60-125 rpm), Strength cadence 0."""
+        """T2-MOCK-07: Running/Hiking cadence (80-210 spm), Cycling cadence (60-125 rpm), Strength cadence 0."""
         for a in self.activities:
             cadence = a.get("avg_cadence")
-            if a["sport"] == "running":
-                self.assertGreaterEqual(cadence, 150)
+            if a["sport"] in ("running", "hiking"):
+                self.assertGreaterEqual(cadence, 80)
                 self.assertLessEqual(cadence, 210)
             elif a["sport"] == "cycling":
                 self.assertGreaterEqual(cadence, 60)
@@ -284,11 +284,11 @@ class TestMockGenerator(unittest.TestCase):
                 self.assertEqual(cadence, 0)
 
     def test_t2_mock_08_pace_and_speed_non_negative(self):
-        """T2-MOCK-08: Running pace and distances are non-negative; duration > 0."""
+        """T2-MOCK-08: Running/Hiking pace and distances are non-negative; duration > 0."""
         for a in self.activities:
             self.assertGreater(a["duration_seconds"], 0)
             self.assertGreaterEqual(a["distance_meters"], 0)
-            if a["sport"] == "running":
+            if a["sport"] in ("running", "hiking"):
                 self.assertIsNotNone(a["avg_pace_sec_km"])
                 self.assertGreater(a["avg_pace_sec_km"], 0)
 
@@ -300,8 +300,8 @@ class TestMockGenerator(unittest.TestCase):
             self.assertEqual(total_zone_sec, a["duration_seconds"])
 
     def test_t2_mock_10_splits_and_laps_integrity(self):
-        """T2-MOCK-10: Running splits have ascending split numbers and positive split metrics."""
-        running_acts = [a for a in self.activities if a["sport"] == "running"]
+        """T2-MOCK-10: Running/Hiking splits have ascending split numbers and positive split metrics."""
+        running_acts = [a for a in self.activities if a["sport"] in ("running", "hiking")]
         for r in running_acts:
             splits = r.get("splits", [])
             for idx, s in enumerate(splits, 1):

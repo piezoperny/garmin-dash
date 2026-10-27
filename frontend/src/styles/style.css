@@ -4,16 +4,32 @@
 
 :root {
   color-scheme: dark;
+  --bg-obsidian: #09090b;
+  --bg-surface: #111114;
+  --border-hairline: #1f1f24;
+  --border-subtle: #27272a;
+  --text-main: #f4f4f5;
+  --text-muted: #a1a1aa;
+  --text-dim: #71717a;
 }
 
 body {
   margin: 0;
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  background-color: #020617;
-  color: #f1f5f9;
+  background-color: #09090b;
+  color: #f4f4f5;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Tabular numerals for precise alignment across KPIs, tables, and charts */
+.tabular-nums,
+table,
+.font-mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
 }
 
 /* Shake Animation for Authentication Failure */
@@ -22,60 +38,66 @@ body {
     transform: translateX(0);
   }
   20%, 60% {
-    transform: translateX(-10px);
+    transform: translateX(-8px);
   }
   40%, 80% {
-    transform: translateX(10px);
+    transform: translateX(8px);
   }
 }
 
 .shake {
-  animation: shake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  animation: shake 0.38s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
 }
 
-/* Scrollbar Styling */
+/* Hairline scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #0f172a;
+  background: #09090b;
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
-  border-radius: 4px;
+  background: #1f1f24;
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #27272a;
 }
 
-/* Smooth Transitions */
+/* Smooth minimal card hover */
 .transition-card {
-  transition: all 0.2s ease-in-out;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 .transition-card:hover {
-  border-color: #475569;
+  border-color: #27272a;
 }
 
-/* Metric Pill Badges */
-.badge-running {
-  background-color: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
-}
+/* Minimalist Sport Badges */
 .badge-cycling {
-  background-color: rgba(6, 182, 212, 0.15);
+  background-color: rgba(56, 189, 248, 0.08);
   color: #38bdf8;
-  border: 1px solid rgba(6, 182, 212, 0.3);
+  border: 1px solid rgba(56, 189, 248, 0.2);
 }
-.badge-strength {
-  background-color: rgba(245, 158, 11, 0.15);
+.badge-hiking {
+  background-color: rgba(52, 211, 153, 0.08);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.2);
+}
+.badge-running {
+  background-color: rgba(52, 211, 153, 0.08);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.2);
+}
+.badge-strength,
+.badge-weights {
+  background-color: rgba(251, 191, 36, 0.08);
   color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  border: 1px solid rgba(251, 191, 36, 0.2);
 }
 
 /* Drawer Backdrop */
 .drawer-backdrop {
-  background: rgba(2, 6, 23, 0.75);
-  backdrop-filter: blur(8px);
+  background: rgba(9, 9, 11, 0.82);
+  backdrop-filter: blur(10px);
 }

@@ -137,6 +137,13 @@ async function runFrontendModuleTests() {
     // Verify initial locked attributes
     assert.ok(html.includes('id="dashboard-content" class="hidden'), 'dashboard-content must have class="hidden" initially');
     assert.ok(html.includes('aria-hidden="true"'), 'dashboard-content must have aria-hidden="true" initially');
+
+    // Verify all relative stylesheet and script asset links resolve to existing files
+    assert.ok(!html.includes('./src/'), 'dist/index.html must not contain un-transformed ./src/ links');
+    assert.ok(html.includes('href="./assets/style.css"'), 'dist/index.html must link to ./assets/style.css');
+    assert.ok(fs.existsSync(path.resolve(__dirname, '../dist/assets/style.css')), 'dist/assets/style.css must exist on disk');
+    assert.ok(html.includes('src="./assets/main.js"'), 'dist/index.html must link to ./assets/main.js');
+    assert.ok(fs.existsSync(path.resolve(__dirname, '../dist/assets/main.js')), 'dist/assets/main.js must exist on disk');
   });
 
   const passed = results.filter(r => r.status === 'PASS').length;

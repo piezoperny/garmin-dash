@@ -143,24 +143,23 @@ class SyntheticDatasetGenerator:
                 volume_mult = 1.00  # Base
 
             # Weekly schedule:
-            # Mon (0): Easy Recovery Run (or rest on deload)
+            # Mon (0): Easy Recovery Trail Hike (or rest on deload)
             # Tue (1): Cycling Intervals / Sweetspot
-            # Wed (2): Strength Training
-            # Thu (3): Running Threshold / Tempo
+            # Wed (2): Weights (Strength & Core)
+            # Thu (3): Hiking Mountain Ascent / Ridge Trail
             # Fri (4): Rest (or easy spin on peak weeks)
             # Sat (5): Cycling Long Endurance Ride
-            # Sun (6): Running Long Progression Run
-
+            # Sun (6): Alpine Summit Hike
             day_plan: Optional[Tuple[str, str]] = None
             if day_of_week == 0:
                 if week_idx != 3 or day % 2 == 0:
-                    day_plan = ("running", "Recovery Run")
+                    day_plan = ("hiking", "Recovery Trail Hike")
             elif day_of_week == 1:
                 day_plan = ("cycling", "Sweetspot Intervals" if week_idx in (1, 2, 5, 6) else "Aerobic Base Ride")
             elif day_of_week == 2:
-                day_plan = ("strength", "Hypertrophy & Core")
+                day_plan = ("strength", "Weights & Core Strength")
             elif day_of_week == 3:
-                day_plan = ("running", "Threshold Intervals" if week_idx in (2, 5, 6) else "Tempo Run")
+                day_plan = ("hiking", "Mountain Ascent Hike" if week_idx in (2, 5, 6) else "Ridge Trail Hike")
             elif day_of_week == 4:
                 if week_idx in (4, 5):  # Peak weeks include active recovery spin
                     day_plan = ("cycling", "Recovery Spin")
@@ -169,7 +168,7 @@ class SyntheticDatasetGenerator:
             elif day_of_week == 5:
                 day_plan = ("cycling", "Weekend Endurance Ride")
             elif day_of_week == 6:
-                day_plan = ("running", "Long Progression Run")
+                day_plan = ("hiking", "Alpine Summit Hike")
 
             if day_plan is None:
                 # Rest day updates daily EWMA with TSS = 0
@@ -181,37 +180,37 @@ class SyntheticDatasetGenerator:
             act_id = f"act_{act_id_counter:03d}"
 
             # Calculate activity metrics based on sport and periodization
-            if sport == "running":
+            if sport in ("hiking", "running"):
                 if "Recovery" in title:
-                    base_dist = self.rng.uniform(5000, 7000) * volume_mult
-                    duration_sec = int(base_dist * self.rng.uniform(0.33, 0.36))  # 5:30 - 6:00 min/km
-                    avg_hr = self.rng.randint(128, 138)
-                    elevation_gain = self.rng.randint(20, 50)
-                elif "Threshold" in title:
-                    base_dist = self.rng.uniform(10000, 12000) * volume_mult
-                    duration_sec = int(base_dist * self.rng.uniform(0.26, 0.28))  # 4:20 - 4:40 min/km
-                    avg_hr = self.rng.randint(162, 172)
-                    elevation_gain = self.rng.randint(45, 95)
-                elif "Tempo" in title:
-                    base_dist = self.rng.uniform(9000, 11000) * volume_mult
-                    duration_sec = int(base_dist * self.rng.uniform(0.28, 0.30))  # 4:40 - 5:00 min/km
-                    avg_hr = self.rng.randint(155, 165)
-                    elevation_gain = self.rng.randint(40, 80)
-                else:  # Long Progression Run
-                    base_dist = self.rng.uniform(16000, 22000) * volume_mult
-                    duration_sec = int(base_dist * self.rng.uniform(0.29, 0.32))  # 4:50 - 5:20 min/km
-                    avg_hr = self.rng.randint(146, 158)
-                    elevation_gain = self.rng.randint(90, 210)
+                    base_dist = self.rng.uniform(5500, 7500) * volume_mult
+                    duration_sec = int(base_dist / self.rng.uniform(1.15, 1.28))  # ~13-14.5 min/km
+                    avg_hr = self.rng.randint(118, 130)
+                    elevation_gain = self.rng.randint(150, 320)
+                elif "Mountain" in title or "Ascent" in title:
+                    base_dist = self.rng.uniform(9500, 13500) * volume_mult
+                    duration_sec = int(base_dist / self.rng.uniform(0.95, 1.15))  # ~14.5-17.5 min/km
+                    avg_hr = self.rng.randint(142, 156)
+                    elevation_gain = self.rng.randint(480, 850)
+                elif "Ridge" in title or "Trail" in title:
+                    base_dist = self.rng.uniform(8500, 11500) * volume_mult
+                    duration_sec = int(base_dist / self.rng.uniform(1.05, 1.20))  # ~14-16 min/km
+                    avg_hr = self.rng.randint(132, 146)
+                    elevation_gain = self.rng.randint(300, 580)
+                else:  # Alpine Summit Hike
+                    base_dist = self.rng.uniform(14000, 20000) * volume_mult
+                    duration_sec = int(base_dist / self.rng.uniform(0.85, 1.05))  # ~16-19.5 min/km
+                    avg_hr = self.rng.randint(138, 152)
+                    elevation_gain = self.rng.randint(750, 1350)
 
                 distance_m = round(base_dist, 1)
-                moving_sec = duration_sec - self.rng.randint(10, 45)
-                max_hr = min(205, avg_hr + self.rng.randint(14, 24))
-                avg_cadence = self.rng.randint(168, 182)
+                moving_sec = duration_sec - self.rng.randint(60, 240)
+                max_hr = min(202, avg_hr + self.rng.randint(16, 28))
+                avg_cadence = self.rng.randint(92, 114)  # hiking step rate (spm)
                 avg_power = None
                 speed_mps = distance_m / moving_sec
                 avg_pace_sec_km = round(1000.0 / speed_mps, 1)
-                calories = int((distance_m / 1000.0) * self.rng.uniform(62, 70))
-                tss = round((duration_sec / 3600.0) * ((avg_hr / 168.0) ** 2) * 65.0, 1)
+                calories = int((distance_m / 1000.0) * self.rng.uniform(68, 82) + elevation_gain * 0.45)
+                tss = round((duration_sec / 3600.0) * ((avg_hr / 168.0) ** 2) * 55.0 + (elevation_gain / 100.0) * 4.0, 1)
 
             elif sport == "cycling":
                 if "Recovery" in title:
@@ -242,23 +241,23 @@ class SyntheticDatasetGenerator:
                 distance_m = round(base_dist, 1)
                 moving_sec = duration_sec - self.rng.randint(30, 120)
                 max_hr = min(202, avg_hr + self.rng.randint(16, 28))
-                avg_cadence = self.rng.randint(82, 94)
+                avg_cadence = self.rng.randint(82, 94)  # cycling cadence in rpm
                 avg_pace_sec_km = None
                 calories = int((duration_sec / 3600.0) * avg_power * 3.6 * 1.05)
                 tss = round((duration_sec / 3600.0) * ((avg_power / 280.0) ** 2) * 100.0, 1)
 
-            else:  # Strength training
+            else:  # Weights (strength) - Duration & HR only, no kg/weight load, no distance
                 distance_m = 0.0
-                duration_sec = int(self.rng.uniform(45, 60) * 60)
+                duration_sec = int(self.rng.uniform(45, 62) * 60)
                 moving_sec = duration_sec
-                avg_hr = self.rng.randint(115, 132)
-                max_hr = avg_hr + self.rng.randint(22, 35)
+                avg_hr = self.rng.randint(116, 134)
+                max_hr = avg_hr + self.rng.randint(22, 36)
                 avg_cadence = 0
                 avg_power = None
                 avg_pace_sec_km = None
                 elevation_gain = 0
                 calories = int((duration_sec / 3600.0) * 420)
-                tss = round(self.rng.uniform(35.0, 55.0), 1)
+                tss = round((duration_sec / 3600.0) * ((avg_hr / 168.0) ** 2) * 55.0, 1)
 
             # Heart rate zone breakdown summing strictly to duration_seconds
             z1 = int(duration_sec * 0.15)
@@ -268,7 +267,7 @@ class SyntheticDatasetGenerator:
             z5 = duration_sec - (z1 + z2 + z3 + z4)
             hr_zones = {"z1": z1, "z2": z2, "z3": z3, "z4": z4, "z5": z5}
 
-            # Kilometer splits
+            # Activity splits
             splits: List[Dict[str, Any]] = []
             if distance_m > 0:
                 num_full_km = max(1, int(distance_m // 1000))
@@ -282,7 +281,7 @@ class SyntheticDatasetGenerator:
                     split_sec = round(avg_split_time * (1.0 + pace_jitter), 1)
                     split_hr = min(max_hr, max(avg_hr - 8, int(avg_hr + self.rng.randint(-4, 6))))
                     split_cadence = avg_cadence + self.rng.randint(-2, 2)
-                    elev_diff = self.rng.randint(-4, 8)
+                    elev_diff = self.rng.randint(25, 85) if sport in ("hiking", "running") else self.rng.randint(-4, 8)
                     splits.append({
                         "km": k,
                         "split_number": k,
@@ -298,6 +297,7 @@ class SyntheticDatasetGenerator:
                     split_k = num_full_km + 1
                     fraction = remaining_m / 1000.0
                     split_sec = round(avg_split_time * fraction, 1)
+                    elev_diff = self.rng.randint(8, 30) if sport in ("hiking", "running") else self.rng.randint(-2, 4)
                     splits.append({
                         "km": split_k,
                         "split_number": split_k,
@@ -306,7 +306,23 @@ class SyntheticDatasetGenerator:
                         "split_sec": split_sec,
                         "avg_hr": avg_hr,
                         "avg_cadence": avg_cadence,
-                        "elevation_diff": self.rng.randint(-2, 4),
+                        "elevation_diff": elev_diff,
+                    })
+            else:
+                # Weights: elapsed time splits (intervals of ~8-10 min each)
+                num_time_splits = max(4, min(8, duration_sec // 480))
+                split_duration = round(duration_sec / num_time_splits, 1)
+                for s_idx in range(1, num_time_splits + 1):
+                    split_hr = min(max_hr, max(avg_hr - 6, int(avg_hr + self.rng.randint(-3, 6))))
+                    splits.append({
+                        "km": s_idx,
+                        "split_number": s_idx,
+                        "distance_meters": 0.0,
+                        "duration_seconds": split_duration,
+                        "split_sec": split_duration,
+                        "avg_hr": split_hr,
+                        "avg_cadence": 0,
+                        "elevation_diff": 0,
                     })
 
             # Laps
@@ -333,15 +349,16 @@ class SyntheticDatasetGenerator:
                     })
                     lap_idx += 1
             else:
-                laps.append({
-                    "lap": 1,
-                    "lap_number": 1,
-                    "distance_meters": 0.0,
-                    "duration_seconds": duration_sec,
-                    "avg_hr": avg_hr,
-                    "avg_cadence": 0,
-                    "avg_pace_sec_km": 0,
-                })
+                for s in splits:
+                    laps.append({
+                        "lap": s["split_number"],
+                        "lap_number": s["split_number"],
+                        "distance_meters": 0.0,
+                        "duration_seconds": s["duration_seconds"],
+                        "avg_hr": s["avg_hr"],
+                        "avg_cadence": 0,
+                        "avg_pace_sec_km": 0,
+                    })
 
             # Training load updates
             atl += (tss - atl) / 7.0
@@ -447,18 +464,22 @@ class SyntheticDatasetGenerator:
         max_hr = int(activity_data.get("max_hr", 170))
         sport_str = str(activity_data.get("sport", "running")).lower()
 
-        # Garmin sport enum: 1=running, 2=cycling, 5=fitness equipment / strength
-        if sport_str == "running":
+        # Garmin sport enum: 1=running, 2=cycling, 17=hiking, 5=fitness equipment / strength
+        if sport_str in ("running", "run"):
             sport_id = 1
             sub_sport_id = 0
             avg_speed_mms = int((distance_cm / duration) * 10) if duration > 0 else 0
-        elif sport_str == "cycling":
+        elif sport_str in ("cycling", "cycle"):
             sport_id = 2
+            sub_sport_id = 0
+            avg_speed_mms = int((distance_cm / duration) * 10) if duration > 0 else 0
+        elif sport_str in ("hiking", "hike"):
+            sport_id = 17  # Garmin FIT enum for HIKING
             sub_sport_id = 0
             avg_speed_mms = int((distance_cm / duration) * 10) if duration > 0 else 0
         else:
             sport_id = 5
-            sub_sport_id = 20  # Strength training
+            sub_sport_id = 20  # Strength training (Weights)
             avg_speed_mms = 0
 
         # --- Message 0: File ID Definition & Data ---
@@ -685,7 +706,7 @@ def compile_rollup(
         # Month identifier (YYYY-MM)
         month_key = dt.strftime("%Y-%m")
 
-        sport = act.get("sport", "running")
+        sport = act.get("sport", "hiking")
         dist_km = float(act.get("distance_meters", 0.0)) / 1000.0
         dur_hours = float(act.get("duration_seconds", 0.0)) / 3600.0
         load = float(act.get("tss") or act.get("training_stress_score") or 0.0)
@@ -694,20 +715,26 @@ def compile_rollup(
         if week_key not in weekly_map:
             weekly_map[week_key] = {
                 "week": week_key,
-                "run_km": 0.0,
-                "cycle_km": 0.0,
+                "hiking_hours": 0.0,
+                "cycling_hours": 0.0,
                 "strength_hours": 0.0,
+                "hiking_km": 0.0,
+                "cycle_km": 0.0,
+                "run_km": 0.0,
                 "load": 0.0,
                 "atl": float(act.get("atl", 50.0)),
                 "ctl": float(act.get("ctl", 50.0)),
                 "tsb": float(act.get("tsb", 0.0)),
             }
         entry = weekly_map[week_key]
-        if sport == "running":
-            entry["run_km"] = round(entry["run_km"] + dist_km, 1)
-        elif sport == "cycling":
+        if sport in ("hiking", "running"):
+            entry["hiking_km"] = round(entry["hiking_km"] + dist_km, 1)
+            entry["hiking_hours"] = round(entry["hiking_hours"] + dur_hours, 1)
+            entry["run_km"] = entry["hiking_km"]
+        elif sport in ("cycling", "cycle"):
             entry["cycle_km"] = round(entry["cycle_km"] + dist_km, 1)
-        elif sport == "strength":
+            entry["cycling_hours"] = round(entry["cycling_hours"] + dur_hours, 1)
+        elif sport in ("strength", "weights"):
             entry["strength_hours"] = round(entry["strength_hours"] + dur_hours, 1)
         entry["load"] = round(entry["load"] + load, 1)
         entry["atl"] = float(act.get("atl", entry["atl"]))
@@ -718,17 +745,23 @@ def compile_rollup(
         if month_key not in monthly_map:
             monthly_map[month_key] = {
                 "month": month_key,
-                "run_km": 0.0,
-                "cycle_km": 0.0,
+                "hiking_hours": 0.0,
+                "cycling_hours": 0.0,
                 "strength_hours": 0.0,
+                "hiking_km": 0.0,
+                "cycle_km": 0.0,
+                "run_km": 0.0,
                 "load": 0.0,
             }
         m_entry = monthly_map[month_key]
-        if sport == "running":
-            m_entry["run_km"] = round(m_entry["run_km"] + dist_km, 1)
-        elif sport == "cycling":
+        if sport in ("hiking", "running"):
+            m_entry["hiking_km"] = round(m_entry["hiking_km"] + dist_km, 1)
+            m_entry["hiking_hours"] = round(m_entry["hiking_hours"] + dur_hours, 1)
+            m_entry["run_km"] = m_entry["hiking_km"]
+        elif sport in ("cycling", "cycle"):
             m_entry["cycle_km"] = round(m_entry["cycle_km"] + dist_km, 1)
-        elif sport == "strength":
+            m_entry["cycling_hours"] = round(m_entry["cycling_hours"] + dur_hours, 1)
+        elif sport in ("strength", "weights"):
             m_entry["strength_hours"] = round(m_entry["strength_hours"] + dur_hours, 1)
         m_entry["load"] = round(m_entry["load"] + load, 1)
 
@@ -751,7 +784,7 @@ def compile_rollup(
             hr_zone_seconds["Z5"] += int(dur_sec * 0.03)
 
         # Power zones (for cycling)
-        if sport == "cycling":
+        if sport in ("cycling", "cycle"):
             power_zone_seconds["Z1"] += int(dur_sec * 0.12)
             power_zone_seconds["Z2"] += int(dur_sec * 0.48)
             power_zone_seconds["Z3"] += int(dur_sec * 0.22)
@@ -760,8 +793,8 @@ def compile_rollup(
             power_zone_seconds["Z6"] += int(dur_sec * 0.015)
             power_zone_seconds["Z7"] += int(dur_sec * 0.005)
 
-        # Pace zones (for running)
-        if sport == "running":
+        # Pace zones (for hiking / running)
+        if sport in ("hiking", "running"):
             pace_zone_seconds["Recovery"] += int(dur_sec * 0.15)
             pace_zone_seconds["Aerobic"] += int(dur_sec * 0.50)
             pace_zone_seconds["Tempo"] += int(dur_sec * 0.20)
@@ -788,11 +821,11 @@ def compile_rollup(
     ]
 
     pace_zones_list = [
-        {"zone": "Recovery", "min_sec_km": 360, "max_sec_km": 420, "seconds": pace_zone_seconds["Recovery"]},
-        {"zone": "Aerobic", "min_sec_km": 300, "max_sec_km": 359, "seconds": pace_zone_seconds["Aerobic"]},
-        {"zone": "Tempo", "min_sec_km": 260, "max_sec_km": 299, "seconds": pace_zone_seconds["Tempo"]},
-        {"zone": "Threshold", "min_sec_km": 230, "max_sec_km": 259, "seconds": pace_zone_seconds["Threshold"]},
-        {"zone": "Interval", "min_sec_km": 180, "max_sec_km": 229, "seconds": pace_zone_seconds["Interval"]},
+        {"zone": "Recovery", "short_label": "Rec", "min_sec_km": 600, "max_sec_km": 720, "seconds": pace_zone_seconds["Recovery"]},
+        {"zone": "Aerobic", "short_label": "Aer", "min_sec_km": 500, "max_sec_km": 599, "seconds": pace_zone_seconds["Aerobic"]},
+        {"zone": "Tempo", "short_label": "Tempo", "min_sec_km": 420, "max_sec_km": 499, "seconds": pace_zone_seconds["Tempo"]},
+        {"zone": "Threshold", "short_label": "Thr", "min_sec_km": 360, "max_sec_km": 419, "seconds": pace_zone_seconds["Threshold"]},
+        {"zone": "Interval", "short_label": "Int", "min_sec_km": 280, "max_sec_km": 359, "seconds": pace_zone_seconds["Interval"]},
     ]
 
     threshold_trends = [
@@ -806,23 +839,26 @@ def compile_rollup(
     canonical_activities = []
     for act in sorted_acts:
         date_iso = act.get("date") or act.get("start_time") or ""
+        sport_val = act.get("sport", "hiking")
+        is_strength = sport_val in ("strength", "weights")
+
         clean_act = {
             "id": act.get("id", ""),
             "date": date_iso,
             "start_time": date_iso,
-            "sport": act.get("sport", "running"),
+            "sport": sport_val,
             "title": act.get("title", ""),
-            "distance_meters": float(act.get("distance_meters", 0.0)),
+            "distance_meters": 0.0 if is_strength else float(act.get("distance_meters", 0.0)),
             "duration_seconds": int(act.get("duration_seconds", 0)),
             "moving_time_seconds": int(act.get("moving_time_seconds", 0)),
             "calories": int(act.get("calories", 0)),
             "avg_hr": int(act.get("avg_hr", 0)),
             "max_hr": int(act.get("max_hr", 0)),
-            "avg_pace_sec_km": act.get("avg_pace_sec_km"),
-            "avg_cadence": int(act.get("avg_cadence", 0)),
-            "avg_power": act.get("avg_power"),
-            "avg_power_watts": act.get("avg_power"),
-            "elevation_gain_meters": int(act.get("elevation_gain_meters", 0)),
+            "avg_pace_sec_km": None if is_strength else act.get("avg_pace_sec_km"),
+            "avg_cadence": 0 if is_strength else int(act.get("avg_cadence", 0)),
+            "avg_power": None if is_strength else act.get("avg_power"),
+            "avg_power_watts": None if is_strength else act.get("avg_power"),
+            "elevation_gain_meters": 0 if is_strength else int(act.get("elevation_gain_meters", 0)),
             "tss": float(act.get("tss") or act.get("training_stress_score") or 0.0),
             "training_stress_score": float(act.get("tss") or act.get("training_stress_score") or 0.0),
             "atl": act.get("atl"),
@@ -848,9 +884,10 @@ def compile_rollup(
             "total_distance_km": round(total_km, 1),
             "total_moving_hours": round(total_moving_hours, 1),
             "total_calories": total_calories,
-            "running_count": sum(1 for a in canonical_activities if a["sport"] == "running"),
-            "cycling_count": sum(1 for a in canonical_activities if a["sport"] == "cycling"),
-            "strength_count": sum(1 for a in canonical_activities if a["sport"] == "strength"),
+            "hiking_count": sum(1 for a in canonical_activities if a["sport"] in ("hiking", "running")),
+            "cycling_count": sum(1 for a in canonical_activities if a["sport"] in ("cycling", "cycle")),
+            "strength_count": sum(1 for a in canonical_activities if a["sport"] in ("strength", "weights")),
+            "running_count": sum(1 for a in canonical_activities if a["sport"] in ("hiking", "running")),
         },
         "training_load": {
             "weekly": [weekly_map[k] for k in sorted(weekly_map.keys())],

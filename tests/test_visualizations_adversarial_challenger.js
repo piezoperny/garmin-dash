@@ -97,6 +97,7 @@ class MockCanvasContext2D {
   moveTo(x, y) { this.calls.push({ op: 'moveTo', args: [x, y] }); }
   lineTo(x, y) { this.calls.push({ op: 'lineTo', args: [x, y] }); }
   arc(x, y, r, s, e, cc) { this.calls.push({ op: 'arc', args: [x, y, r, s, e, cc] }); }
+  bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y) { this.calls.push({ op: 'bezierCurveTo', args: [cp1x, cp1y, cp2x, cp2y, x, y] }); }
   rect(x, y, w, h) { this.calls.push({ op: 'rect', args: [x, y, w, h] }); }
   roundRect(x, y, w, h, r) { this.calls.push({ op: 'roundRect', args: [x, y, w, h, r] }); }
   fill() { this.calls.push({ op: 'fill', fillStyle: this.fillStyle }); }
@@ -355,11 +356,14 @@ class MockDocument {
     // Ensure specific container hierarchies
     const table = this.elements.get('activity-table');
     if (table) {
-      let tbody = table.querySelector('tbody');
+      let tbody = this.elements.get('activities-table-body') || table.querySelector('tbody');
       if (!tbody) {
-        tbody = new MockElement('tbody');
+        tbody = new MockElement('tbody', 'activities-table-body');
+        table.appendChild(tbody);
+      } else if (!table.children.includes(tbody)) {
         table.appendChild(tbody);
       }
+      this.elements.set('activities-table-body', tbody);
     }
   }
 }
@@ -537,9 +541,9 @@ async function runAdversarialVisualizationsSuite() {
     const ctx = canvas.getContext('2d');
     assert.ok(ctx.calls.length > 0, 'Canvas rendering calls must be issued for training load');
 
-    // Line chart must perform lineTo and stroke calls
-    const lineCalls = ctx.calls.filter(c => c.op === 'lineTo');
-    assert.ok(lineCalls.length >= 24, 'Must draw line segments across 8 weeks for 3 series');
+    // Line chart must perform lineTo / bezierCurveTo and stroke calls
+    const lineCalls = ctx.calls.filter(c => c.op === 'lineTo' || c.op === 'bezierCurveTo');
+    assert.ok(lineCalls.length >= 24, 'Must draw line/curve segments across 8 weeks for 3 series');
   });
 
   await test('T1-07: Section 1 Adversarial Stress Tests (0 CTL, negative TSB, empty rollup)', async () => {
@@ -606,8 +610,8 @@ async function runAdversarialVisualizationsSuite() {
     const ctx = canvas.getContext('2d');
     assert.ok(ctx.calls.length > 0);
 
-    const lineCalls = ctx.calls.filter(c => c.op === 'lineTo');
-    assert.ok(lineCalls.length >= 9, 'Must render multi-point lines for 3 threshold series');
+    const lineCalls = ctx.calls.filter(c => c.op === 'lineTo' || c.op === 'bezierCurveTo');
+    assert.ok(lineCalls.length >= 9, 'Must render multi-point curves for 3 threshold series');
   });
 
   await test('T2-04: Pace Zones Distribution Chart renders pace zones', async () => {
@@ -649,16 +653,18 @@ async function runAdversarialVisualizationsSuite() {
     const tbody = table.querySelector('tbody');
 
     // Count expected sports from decrypted data
-    const expectedRunning = decryptedRollup.activities.filter(a => a.sport === 'running').length;
+    const expectedRunning = decryptedRollup.activities.filter(a => a.sport === 'hiking' || a.sport === 'running').length;
     const expectedCycling = decryptedRollup.activities.filter(a => a.sport === 'cycling').length;
-    const expectedStrength = decryptedRollup.activities.filter(a => a.sport === 'strength').length;
+    const expectedStrength = decryptedRollup.activities.filter(a => a.sport === 'strength' || a.sport === 'weights').length;
 
-    assert.ok(expectedRunning > 0, 'Decrypted data must contain running');
+    assert.ok(expectedRunning > 0, 'Decrypted data must contain hiking/running');
     assert.ok(expectedCycling > 0, 'Decrypted data must contain cycling');
     assert.ok(expectedStrength > 0, 'Decrypted data must contain strength');
     assert.strictEqual(expectedRunning + expectedCycling + expectedStrength, 49);
 
-    // Filter Running
+    // Filter Running / Hiking
+    activitiesModule.setActivitySportFilter('hiking');
+    assert.strictEqual(tbody.children.length, expectedRunning, 'Hiking filter must show exact hiking count');
     activitiesModule.setActivitySportFilter('running');
     assert.strictEqual(tbody.children.length, expectedRunning, 'Running filter must show exact running count');
 
@@ -732,9 +738,9 @@ async function runAdversarialVisualizationsSuite() {
     const tbody = table.querySelector('tbody');
     const drawer = mockDoc.getElementById('activity-drawer');
 
-    // Pick running activity with splits
-    const runningAct = decryptedRollup.activities.find(a => a.sport === 'running' && a.splits && a.splits.length > 0);
-    assert.ok(runningAct, 'Must have running activity with splits');
+    // Pick running/hiking activity with splits
+    const runningAct = decryptedRollup.activities.find(a => (a.sport === 'running' || a.sport === 'hiking') && a.splits && a.splits.length > 0);
+    assert.ok(runningAct, 'Must have running or hiking activity with splits');
 
     // Initially drawer must have hidden class
     drawer.classList.add('hidden');
@@ -798,9 +804,9 @@ async function runAdversarialVisualizationsSuite() {
   });
 
   await test('T3-08: Unit conversion reactivity across Table & Drawer (KM vs Miles)', async () => {
-    // Running activity has avg_pace_sec_km
-    const runningAct = decryptedRollup.activities.find(a => a.sport === 'running' && a.avg_pace_sec_km);
-    assert.ok(runningAct, 'Must find running activity with pace data');
+    // Running/hiking activity has avg_pace_sec_km
+    const runningAct = decryptedRollup.activities.find(a => (a.sport === 'running' || a.sport === 'hiking') && a.avg_pace_sec_km);
+    assert.ok(runningAct, 'Must find running or hiking activity with pace data');
 
     // In KM:
     const distKm = activitiesModule.formatDistance(runningAct.distance_meters, 'km');
@@ -815,6 +821,12 @@ async function runAdversarialVisualizationsSuite() {
     const paceMi = activitiesModule.formatPace(runningAct.avg_pace_sec_km, 'mi');
     assert.ok(paceKm.includes('/km'), `paceKm must include /km, got: ${paceKm}`);
     assert.ok(paceMi.includes('/mi'), `paceMi must include /mi, got: ${paceMi}`);
+
+    // Elevation gain in KM vs MI (m vs ft)
+    const elevKm = activitiesModule.formatElevation(runningAct.elevation_gain_meters || 350, 'km');
+    const elevMi = activitiesModule.formatElevation(runningAct.elevation_gain_meters || 350, 'mi');
+    assert.ok(elevKm.includes('m'), `elevKm must include m, got: ${elevKm}`);
+    assert.ok(elevMi.includes('ft'), `elevMi must include ft, got: ${elevMi}`);
 
     // Verify cycling activity returns '-' for pace
     const cyclingAct = decryptedRollup.activities.find(a => a.sport === 'cycling');

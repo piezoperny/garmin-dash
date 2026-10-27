@@ -142,19 +142,19 @@ class TestMilestone3VisualizationsChallenger(unittest.TestCase):
         activities = self.rollup.get("activities", [])
         self.assertEqual(len(activities), 49)
 
-        running_acts = [a for a in activities if a["sport"] == "running"]
+        running_acts = [a for a in activities if a["sport"] in ("running", "hiking")]
         cycling_acts = [a for a in activities if a["sport"] == "cycling"]
-        strength_acts = [a for a in activities if a["sport"] == "strength"]
+        strength_acts = [a for a in activities if a["sport"] in ("strength", "weights")]
 
         self.assertEqual(len(running_acts) + len(cycling_acts) + len(strength_acts), 49)
         self.assertGreater(len(running_acts), 10)
         self.assertGreater(len(cycling_acts), 10)
         self.assertGreater(len(strength_acts), 5)
 
-        # Running cadence telemetry in spm (150-200)
+        # Running / hiking cadence telemetry in spm (80-200)
         for a in running_acts:
             self.assertIn("avg_cadence", a)
-            self.assertGreaterEqual(a["avg_cadence"], 150)
+            self.assertGreaterEqual(a["avg_cadence"], 80)
             self.assertLessEqual(a["avg_cadence"], 200)
 
         # Cycling cadence telemetry in rpm (70-110)

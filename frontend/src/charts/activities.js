@@ -1,11 +1,12 @@
 /**
  * frontend/src/charts/activities.js
  * 
- * Section 3: Activity Drill-Down & Inspection
- * - Filterable & Searchable Activity Table (#activity-table)
- * - Sport toggles & sorting
+ * Activity Drill-Down & Inspection
+ * - Filterable & Searchable Activity Table (#activity-table, #activities-table-body)
+ * - Sport toggles: All · Cycling · Hiking · Weights
  * - Interactive Split & Lap Breakdown Drawer (#activity-drawer)
- * - Multi-metric Profile Chart (#activity-profile-chart)
+ *   tailored for Weights (duration & HR profile only, no distance/tonnage),
+ *   Cycling (cadence in rpm, distance, elevation), and Hiking (cadence in spm, ascent, splits)
  */
 
 import { Chart } from './chart_engine.js';
@@ -48,6 +49,22 @@ export function formatDistance(meters, unit = 'km') {
 }
 
 /**
+ * Formats elevation gain / ascent with unit (meters for km, feet for mi).
+ * @param {number} meters
+ * @param {string} unit
+ * @returns {string}
+ */
+export function formatElevation(meters, unit = 'km') {
+  if (meters === undefined || meters === null) return '-';
+  const num = Number(meters);
+  if (isNaN(num)) return '-';
+  const isImperial = unit === 'mi';
+  const val = isImperial ? Math.round(num * 3.28084) : Math.round(num);
+  const u = isImperial ? 'ft' : 'm';
+  return `${val > 0 ? '+' : ''}${val} ${u}`;
+}
+
+/**
  * Formats date into readable format.
  * @param {string} isoString
  * @returns {string}
@@ -56,13 +73,16 @@ export function formatDate(isoString) {
   if (!isoString) return '-';
   try {
     const d = new Date(isoString);
+    if (isNaN(d.getTime())) {
+      return String(isoString).split('T')[0] || '-';
+    }
     return d.toLocaleDateString(undefined, {
       month: 'short',
       day: 'numeric',
       year: 'numeric'
     });
   } catch (e) {
-    return isoString.split('T')[0];
+    return String(isoString).split('T')[0] || '-';
   }
 }
 
@@ -84,14 +104,27 @@ export function applyFiltersAndRender() {
   const table = document.getElementById('activity-table');
   if (!table) return;
 
-  const tbody = table.querySelector('tbody');
+  const tbody = (table ? table.querySelector('tbody') : null) || document.getElementById('activities-table-body');
   if (!tbody) return;
 
   let filtered = [...currentActivities];
 
   // Sport Filter
   if (currentFilter && currentFilter !== 'all') {
-    filtered = filtered.filter(a => (a.sport || '').toLowerCase() === currentFilter.toLowerCase());
+    const target = currentFilter.toLowerCase();
+    filtered = filtered.filter(a => {
+      const sp = (a.sport || '').toLowerCase();
+      if (target === 'hiking' || target === 'running') {
+        return sp === 'hiking' || sp === 'running';
+      }
+      if (target === 'weights' || target === 'strength') {
+        return sp === 'strength' || sp === 'weights';
+      }
+      if (target === 'cycling' || target === 'cycle') {
+        return sp === 'cycling' || sp === 'cycle';
+      }
+      return sp === target;
+    });
   }
 
   // Text Search
@@ -127,7 +160,7 @@ export function applyFiltersAndRender() {
   if (filtered.length === 0) {
     const emptyRow = document.createElement('tr');
     emptyRow.innerHTML = `
-      <td colspan="8" class="text-center py-8 text-slate-500">
+      <td colspan="8" class="text-center py-8 text-zinc-500">
         No activities found matching criteria.
       </td>
     `;
@@ -137,31 +170,43 @@ export function applyFiltersAndRender() {
 
   filtered.forEach(act => {
     const row = document.createElement('tr');
-    row.className = 'hover:bg-slate-800/60 cursor-pointer border-b border-slate-800 transition-colors duration-150';
+    row.className = 'hover:bg-[#18181b]/60 cursor-pointer border-b border-[#1f1f24] transition-colors duration-150';
 
-    let sportBadgeClass = 'badge-running';
-    if (act.sport === 'cycling') sportBadgeClass = 'badge-cycling';
-    if (act.sport === 'strength') sportBadgeClass = 'badge-strength';
+    const sport = (act.sport || '').toLowerCase();
+    const isStrength = sport === 'strength' || sport === 'weights';
 
-    const sportLabel = act.sport ? act.sport.toUpperCase() : 'OTHER';
+    let sportBadgeClass = 'badge-hiking';
+    let sportLabel = 'HIKING';
+
+    if (sport === 'cycling' || sport === 'cycle') {
+      sportBadgeClass = 'badge-cycling';
+      sportLabel = 'CYCLING';
+    } else if (isStrength) {
+      sportBadgeClass = 'badge-strength';
+      sportLabel = 'WEIGHTS';
+    } else if (sport === 'running' || sport === 'run') {
+      sportBadgeClass = 'badge-running';
+      sportLabel = 'RUNNING';
+    }
+
     const dateStr = formatDate(act.date || act.start_time);
-    const distStr = formatDistance(act.distance_meters, currentUnit);
+    const distStr = isStrength ? '—' : formatDistance(act.distance_meters, currentUnit);
     const durStr = formatDuration(act.moving_time_seconds || act.duration_seconds || 0);
     const hrStr = act.avg_hr ? `${act.avg_hr} bpm` : '-';
-    const elevStr = act.elevation_gain_meters ? `${Math.round(act.elevation_gain_meters)} m` : '-';
+    const elevStr = isStrength ? '—' : (act.elevation_gain_meters ? formatElevation(act.elevation_gain_meters, currentUnit) : '-');
     const tssStr = act.tss || act.training_stress_score ? Math.round(act.tss || act.training_stress_score) : '-';
 
     row.innerHTML = `
-      <td class="py-3 px-4 font-mono text-xs text-slate-400">${dateStr}</td>
+      <td class="py-3 px-4 font-mono text-xs text-zinc-400 tabular-nums">${dateStr}</td>
       <td class="py-3 px-4">
         <span class="px-2 py-0.5 rounded text-xs font-semibold ${sportBadgeClass}">${sportLabel}</span>
       </td>
-      <td class="py-3 px-4 font-medium text-slate-200">${act.title || 'Workout'}</td>
-      <td class="py-3 px-4 text-right font-mono text-slate-300">${distStr}</td>
-      <td class="py-3 px-4 text-right font-mono text-slate-300">${durStr}</td>
-      <td class="py-3 px-4 text-right font-mono text-rose-400">${hrStr}</td>
-      <td class="py-3 px-4 text-right font-mono text-slate-400">${elevStr}</td>
-      <td class="py-3 px-4 text-right font-mono text-amber-400">${tssStr}</td>
+      <td class="py-3 px-4 font-medium text-zinc-200">${act.title || 'Workout'}</td>
+      <td class="py-3 px-4 text-right font-mono text-zinc-300 tabular-nums">${distStr}</td>
+      <td class="py-3 px-4 text-right font-mono text-zinc-300 tabular-nums">${durStr}</td>
+      <td class="py-3 px-4 text-right font-mono text-rose-400 tabular-nums">${hrStr}</td>
+      <td class="py-3 px-4 text-right font-mono text-zinc-400 tabular-nums">${elevStr}</td>
+      <td class="py-3 px-4 text-right font-mono text-amber-400 tabular-nums">${tssStr}</td>
     `;
 
     row.addEventListener('click', () => {
@@ -174,6 +219,7 @@ export function applyFiltersAndRender() {
 
 /**
  * Opens detailed Activity Inspection Drawer with splits, laps, and profile chart.
+ * Tailored for Weights (duration & HR only), Cycling (rpm), and Hiking (spm & ascent).
  * @param {object} act - Selected Activity
  * @param {string} unit - 'km' or 'mi'
  */
@@ -181,28 +227,53 @@ export function openActivityDrawer(act, unit = 'km') {
   const drawer = document.getElementById('activity-drawer');
   if (!drawer) return;
 
+  const sport = (act.sport || '').toLowerCase();
+  const isStrength = sport === 'strength' || sport === 'weights';
+  const isCycling = sport === 'cycling' || sport === 'cycle';
+  const displaySport = isStrength ? 'WEIGHTS' : (act.sport ? act.sport.toUpperCase() : '');
+
   // Set title & metadata
   const titleEl = document.getElementById('drawer-activity-title');
   if (titleEl) titleEl.textContent = act.title || 'Workout Details';
 
   const dateEl = document.getElementById('drawer-activity-date');
-  if (dateEl) dateEl.textContent = `${formatDate(act.date || act.start_time)} • ${act.sport?.toUpperCase() || ''}`;
+  if (dateEl) dateEl.textContent = `${formatDate(act.date || act.start_time)} • ${displaySport}`;
 
+  // Distance (Weights has no distance)
   const distEl = document.getElementById('drawer-kpi-dist');
-  if (distEl) distEl.textContent = formatDistance(act.distance_meters, unit);
+  if (distEl) distEl.textContent = isStrength ? '—' : formatDistance(act.distance_meters, unit);
 
+  // Duration
   const durEl = document.getElementById('drawer-kpi-duration');
   if (durEl) durEl.textContent = formatDuration(act.moving_time_seconds || act.duration_seconds || 0);
 
+  // Heart Rate
   const hrEl = document.getElementById('drawer-kpi-hr');
   if (hrEl) hrEl.textContent = act.avg_hr ? `${act.avg_hr} bpm (Max: ${act.max_hr || '-'})` : '-';
 
+  // Cadence (Weights: '-', Cycling: 'rpm', Hiking/Running: 'spm')
   const cadEl = document.getElementById('drawer-kpi-cadence');
-  if (cadEl) cadEl.textContent = act.avg_cadence ? `${act.avg_cadence} ${act.sport === 'cycling' ? 'rpm' : 'spm'}` : '-';
+  if (cadEl) {
+    if (isStrength) {
+      cadEl.textContent = '—';
+    } else if (isCycling) {
+      cadEl.textContent = act.avg_cadence ? `${act.avg_cadence} rpm` : '-';
+    } else {
+      cadEl.textContent = act.avg_cadence ? `${act.avg_cadence} spm` : '-';
+    }
+  }
 
+  // Elevation Gain (Weights: '-')
   const elevEl = document.getElementById('drawer-kpi-elevation');
-  if (elevEl) elevEl.textContent = act.elevation_gain_meters ? `${Math.round(act.elevation_gain_meters)} m` : '-';
+  if (elevEl) {
+    if (isStrength) {
+      elevEl.textContent = '—';
+    } else {
+      elevEl.textContent = act.elevation_gain_meters ? formatElevation(act.elevation_gain_meters, unit) : '-';
+    }
+  }
 
+  // Calories
   const calEl = document.getElementById('drawer-kpi-calories');
   if (calEl) calEl.textContent = act.calories ? `${act.calories} kcal` : '-';
 
@@ -212,24 +283,26 @@ export function openActivityDrawer(act, unit = 'km') {
     splitsTbody.innerHTML = '';
     const splits = act.splits || [];
     if (splits.length === 0) {
-      splitsTbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-slate-500">No split breakdown recorded.</td></tr>`;
+      splitsTbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-zinc-500">No split breakdown recorded.</td></tr>`;
     } else {
       splits.forEach((s, idx) => {
         const splitNum = s.split_number || s.km || (idx + 1);
-        const splitSec = s.split_sec || s.moving_time_seconds || s.duration_seconds || 0;
-        const paceStr = formatPace(splitSec, unit);
+        const splitSec = s.split_sec || s.duration_seconds || s.moving_time_seconds || 0;
         const splitDur = formatDuration(splitSec);
+        const paceStr = isStrength ? '—' : (isCycling ? '-' : formatPace(splitSec, unit));
         const splitHR = s.avg_hr ? `${s.avg_hr} bpm` : '-';
-        const elevDiff = s.elevation_diff !== undefined ? `${s.elevation_diff >= 0 ? '+' : ''}${s.elevation_diff} m` : '-';
+        const elevDiff = isStrength
+          ? '—'
+          : (s.elevation_diff !== undefined ? formatElevation(s.elevation_diff, unit) : '-');
 
         const tr = document.createElement('tr');
-        tr.className = 'border-b border-slate-800 text-xs font-mono text-slate-300';
+        tr.className = 'border-b border-[#1f1f24] text-xs font-mono text-zinc-300 tabular-nums';
         tr.innerHTML = `
-          <td class="py-2 px-3 text-slate-400">#${splitNum}</td>
+          <td class="py-2 px-3 text-zinc-400">#${splitNum}</td>
           <td class="py-2 px-3">${splitDur}</td>
           <td class="py-2 px-3 text-teal-400">${paceStr}</td>
           <td class="py-2 px-3 text-rose-400">${splitHR}</td>
-          <td class="py-2 px-3 text-slate-400">${elevDiff}</td>
+          <td class="py-2 px-3 text-zinc-400">${elevDiff}</td>
         `;
         splitsTbody.appendChild(tr);
       });
@@ -258,6 +331,8 @@ export function closeActivityDrawer() {
 
 /**
  * Renders Synchronized Profile Chart for Activity.
+ * For Weights: renders Heart Rate curve only.
+ * For Cycling / Hiking: renders Heart Rate and Cadence profile.
  * @param {object} act
  */
 function renderActivityProfileChart(act) {
@@ -272,28 +347,38 @@ function renderActivityProfileChart(act) {
   const splits = act.splits || act.laps || [];
   if (splits.length === 0) return;
 
+  const sport = (act.sport || '').toLowerCase();
+  const isStrength = sport === 'strength' || sport === 'weights';
+
   const labels = splits.map((s, i) => `S${s.split_number || s.km || s.lap || (i + 1)}`);
   const hrData = splits.map(s => s.avg_hr || 0);
-  const cadData = splits.map(s => s.avg_cadence || 0);
+
+  const datasets = [
+    {
+      label: 'Heart Rate (bpm)',
+      data: hrData,
+      borderColor: '#f43f5e',
+      backgroundColor: 'rgba(244, 63, 94, 0.12)',
+      fill: isStrength,
+      borderWidth: 2
+    }
+  ];
+
+  if (!isStrength) {
+    const cadData = splits.map(s => s.avg_cadence || 0);
+    datasets.push({
+      label: sport === 'cycling' ? 'Cadence (rpm)' : 'Cadence (spm)',
+      data: cadData,
+      borderColor: '#818cf8',
+      borderWidth: 2
+    });
+  }
 
   profileChartInstance = new Chart(canvas, {
     type: 'line',
     data: {
       labels,
-      datasets: [
-        {
-          label: 'Heart Rate (bpm)',
-          data: hrData,
-          borderColor: '#f43f5e',
-          borderWidth: 2
-        },
-        {
-          label: 'Cadence',
-          data: cadData,
-          borderColor: '#818cf8',
-          borderWidth: 2
-        }
-      ]
+      datasets
     },
     options: {
       scales: {
@@ -341,7 +426,7 @@ export function setupActivityEventListeners() {
 
 /**
  * Sets active sport filter.
- * @param {string} sport - 'all' | 'running' | 'cycling' | 'strength'
+ * @param {string} sport - 'all' | 'cycling' | 'hiking' | 'running' | 'strength' | 'weights'
  */
 export function setActivitySportFilter(sport) {
   currentFilter = sport;

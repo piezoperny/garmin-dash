@@ -48,7 +48,70 @@ from src.ingestion.sftp_client import (
 logger = logging.getLogger("src.ingestion.sync")
 
 REMOTE_MANIFEST_PATH = "garmin_archive/metadata/sync_manifest.json"
+REMOTE_CANONICAL_PATH = "garmin_archive/metadata/canonical_activities.json"
 REMOTE_SESSION_PATH = "garmin_archive/.session/garmin_oauth.json"
+
+
+def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a raw Garmin summary+details payload into canonical rollup format."""
+    summary = payload.get("summary") or payload
+    details = payload.get("details") or {}
+
+    raw_type = str(
+        summary.get("activityType", {}).get("typeKey")
+        if isinstance(summary.get("activityType"), dict)
+        else summary.get("activityType") or summary.get("sport") or "hiking"
+    ).lower()
+
+    if any(k in raw_type for k in ("strength", "weight", "fitness_equipment", "gym")):
+        sport = "strength"
+    elif any(k in raw_type for k in ("cycl", "biking", "ride", "virtual_ride", "road_biking", "mountain_biking", "gravel")):
+        sport = "cycling"
+    else:
+        sport = "hiking"
+
+    act_id = str(summary.get("activityId") or summary.get("id") or int(time.time()))
+    start_str = (
+        summary.get("startTimeGMT")
+        or summary.get("startTimeLocal")
+        or summary.get("date")
+        or datetime.now(timezone.utc).isoformat()
+    )
+    if " " in start_str and "T" not in start_str:
+        start_str = start_str.replace(" ", "T") + "Z"
+
+    dur_sec = int(float(summary.get("duration") or summary.get("durationInSeconds") or summary.get("duration_seconds") or 0))
+    moving_sec = int(float(summary.get("movingDuration") or summary.get("moving_time_seconds") or dur_sec))
+    dist_m = 0.0 if sport == "strength" else float(summary.get("distance") or summary.get("distanceInMeters") or summary.get("distance_meters") or 0.0)
+    avg_hr = int(float(summary.get("averageHR") or summary.get("averageHeartRateInBeatsPerMinute") or summary.get("avg_hr") or 130))
+    max_hr = int(float(summary.get("maxHR") or summary.get("maxHeartRateInBeatsPerMinute") or summary.get("max_hr") or max(avg_hr + 15, 145)))
+    elev_m = 0 if sport == "strength" else int(float(summary.get("elevationGain") or summary.get("elevation_gain_meters") or 0))
+    avg_power = None if sport != "cycling" else (summary.get("avgPower") or summary.get("averagePower") or summary.get("avg_power"))
+    avg_cadence = 0 if sport == "strength" else int(float(summary.get("averageBikingCadenceInRevPerMinute") or summary.get("averageRunningCadenceInStepsPerMinute") or summary.get("avg_cadence") or 0))
+    tss = float(summary.get("activityTrainingLoad") or summary.get("trainingStressScore") or summary.get("tss") or round((dur_sec / 3600.0) * (avg_hr / 145.0) * 55.0, 1))
+
+    return {
+        "id": act_id,
+        "date": start_str,
+        "start_time": start_str,
+        "sport": sport,
+        "title": summary.get("activityName") or summary.get("title") or sport.capitalize(),
+        "distance_meters": dist_m,
+        "duration_seconds": dur_sec,
+        "moving_time_seconds": moving_sec,
+        "calories": int(float(summary.get("calories") or round(dur_sec * 0.18))),
+        "avg_hr": avg_hr,
+        "max_hr": max_hr,
+        "avg_pace_sec_km": round(dur_sec / (dist_m / 1000.0)) if (sport == "hiking" and dist_m > 0) else None,
+        "avg_cadence": avg_cadence,
+        "avg_power": int(float(avg_power)) if avg_power is not None else None,
+        "elevation_gain_meters": elev_m,
+        "tss": round(tss, 1),
+        "training_stress_score": round(tss, 1),
+        "splits": details.get("splits") or summary.get("splits") or [],
+        "laps": details.get("laps") or summary.get("laps") or [],
+        "hr_zones": details.get("hr_zones") or summary.get("hr_zones") or {},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +339,27 @@ def run_sync_pipeline(
 
         # Compile Rollup Payload
         logger.info("Compiling dashboard_rollup.json from ingested dataset...")
-        gen = SyntheticDatasetGenerator(seed=42)
-        canonical_acts = gen.generate_activities()
+        if is_mock:
+            gen = SyntheticDatasetGenerator(seed=42)
+            canonical_acts = gen.generate_activities()
+        else:
+            existing_acts_map: Dict[str, Dict[str, Any]] = {}
+            if sftp_client.file_exists(REMOTE_CANONICAL_PATH):
+                try:
+                    raw_existing = sftp_client.read_text(REMOTE_CANONICAL_PATH)
+                    if raw_existing:
+                        for item in json.loads(raw_existing):
+                            existing_acts_map[str(item.get("id"))] = item
+                except Exception as e:
+                    logger.warning(f"Could not read existing canonical activities: {e}")
+
+            for payload in new_activities:
+                norm_act = normalize_garmin_activity(payload)
+                existing_acts_map[str(norm_act["id"])] = norm_act
+
+            canonical_acts = list(existing_acts_map.values())
+            sftp_client.write_text_atomic(REMOTE_CANONICAL_PATH, json.dumps(canonical_acts, indent=2))
+
         rollup_dict = compile_rollup(canonical_acts)
 
         output_rollup_path.parent.mkdir(parents=True, exist_ok=True)

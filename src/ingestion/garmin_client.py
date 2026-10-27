@@ -288,6 +288,8 @@ class LiveGarminClient:
         self.timeout = timeout
         self.refresh_call_count = 0
         self._session_state: Optional[OAuthSessionState] = None
+        self._personal_garmin: Any = None
+        self._is_personal_sso = "@" in self.credentials.api_key
 
         if session_state:
             if isinstance(session_state, OAuthSessionState):
@@ -295,8 +297,42 @@ class LiveGarminClient:
             else:
                 self._session_state = OAuthSessionState(**session_state)
             self.token_store.save_session(self._session_state)
+        elif self._is_personal_sso:
+            self._initialize_personal_sso()
         else:
             self._initialize_session()
+
+    def _initialize_personal_sso(self) -> None:
+        """Authenticate using personal Garmin Connect account (email + password) via garminconnect/garth."""
+        try:
+            from garminconnect import Garmin
+        except ImportError as e:
+            raise GarminAuthError(
+                "Personal Garmin Connect login requires 'garminconnect' package (`pip install garminconnect`)."
+            ) from e
+
+        existing = self.token_store.load_session()
+        client = Garmin(self.credentials.api_key, self.credentials.client_secret)
+        if existing and existing.refresh_token:
+            try:
+                client.garth.loads(existing.refresh_token)
+                self._personal_garmin = client
+                self._session_state = existing
+                logger.info("Restored personal Garmin Connect session from Hetzner SFTP token store.")
+                return
+            except Exception as e:
+                logger.warning(f"Stored personal session expired or invalid ({e}); logging in fresh...")
+
+        client.login()
+        dumped_tokens = client.garth.dumps()
+        self._personal_garmin = client
+        self._session_state = OAuthSessionState(
+            access_token="garth_personal_session",
+            refresh_token=dumped_tokens,
+            expires_at=int(time.time()) + 86400 * 30,
+        )
+        self.token_store.save_session(self._session_state)
+        logger.info("Authenticated personal Garmin Connect account and persisted session to SFTP.")
 
     @property
     def session_state(self) -> Optional[OAuthSessionState]:
@@ -476,6 +512,13 @@ class LiveGarminClient:
         end_timestamp: int,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
+        if self._personal_garmin is not None:
+            start_date = datetime.fromtimestamp(start_timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+            end_date = datetime.fromtimestamp(end_timestamp, tz=timezone.utc).strftime("%Y-%m-%d")
+            acts = self._personal_garmin.get_activities_by_date(start_date, end_date)
+            logger.info(f"Fetched {len(acts)} activities from personal Garmin Connect.")
+            return acts if isinstance(acts, list) else []
+
         activities: List[Dict[str, Any]] = []
         offset = 0
 
@@ -504,6 +547,14 @@ class LiveGarminClient:
         return self.get_activities(start_epoch, end_epoch, limit=limit)
 
     def get_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
+        if self._personal_garmin is not None:
+            try:
+                splits = self._personal_garmin.get_activity_splits(activity_id)
+                return {"activityId": activity_id, "splits": splits.get("lapDTOs", []) if isinstance(splits, dict) else []}
+            except Exception as e:
+                logger.warning(f"Could not fetch personal activity splits for {activity_id}: {e}")
+                return {"activityId": activity_id, "splits": []}
+
         url = self.ACTIVITY_DETAILS_URL.format(activityId=activity_id)
         try:
             resp = self._authenticated_request("GET", url)
@@ -516,13 +567,22 @@ class LiveGarminClient:
         return self.get_activity_details(activity_id)
 
     def download_fit_file(self, activity_id: str) -> Optional[bytes]:
-        url = self.FILE_DOWNLOAD_URL.format(activityId=activity_id)
-        try:
-            resp = self._authenticated_request("GET", url, stream=True)
-            raw_bytes = resp.content
-        except GarminNotFoundError:
-            logger.warning(f"No .FIT file found for activity {activity_id}.")
-            return None
+        if self._personal_garmin is not None:
+            try:
+                raw_bytes = self._personal_garmin.download_activity(
+                    activity_id, dl_fmt=self._personal_garmin.ActivityDownloadFormat.ORIGINAL
+                )
+            except Exception as e:
+                logger.warning(f"Could not download personal .FIT for {activity_id}: {e}")
+                return None
+        else:
+            url = self.FILE_DOWNLOAD_URL.format(activityId=activity_id)
+            try:
+                resp = self._authenticated_request("GET", url, stream=True)
+                raw_bytes = resp.content
+            except GarminNotFoundError:
+                logger.warning(f"No .FIT file found for activity {activity_id}.")
+                return None
 
         # Handle ZIP wrapper if present
         if raw_bytes.startswith(b"PK\x03\x04"):

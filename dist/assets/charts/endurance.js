@@ -1,11 +1,11 @@
 /**
  * frontend/src/charts/endurance.js
  * 
- * Section 1: Endurance & Training Load Visualizations
+ * Endurance & Training Load Visualizations
  * - KPI Summary Cards (#kpi-total-distance, #kpi-total-time, #kpi-weekly-load, #kpi-status)
- * - Stacked Weekly & Monthly Volume Chart (#weekly-volume-chart)
+ *   with dynamic sport filtering (All · Cycling · Hiking · Weights)
+ * - Stacked Weekly Duration Chart (#weekly-volume-chart) plotting Weekly Duration (Hours)
  * - Continuous Training Load Curves ATL, CTL, TSB (#training-load-chart)
- * - Sport Filter and Distance Unit (km/mi) reactivity
  */
 
 import { Chart } from './chart_engine.js';
@@ -19,8 +19,10 @@ let loadChartInstance = null;
  * @returns {string}
  */
 export function formatDuration(totalSeconds) {
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const sec = Number(totalSeconds) || 0;
+  if (sec <= 0) return '0m';
+  const hours = Math.floor(sec / 3600);
+  const minutes = Math.floor((sec % 3600) / 60);
   if (hours > 0) {
     return `${hours}h ${minutes.toString().padStart(2, '0')}m`;
   }
@@ -28,68 +30,104 @@ export function formatDuration(totalSeconds) {
 }
 
 /**
- * Updates KPI Summary Cards from rollup data.
+ * Filter activities by sport.
+ * @param {Array} activities
+ * @param {string} filter
+ * @returns {Array}
+ */
+function filterActivitiesBySport(activities, filter) {
+  if (!filter || filter === 'all') return activities || [];
+  const target = filter.toLowerCase();
+  return (activities || []).filter(a => {
+    const sp = (a.sport || '').toLowerCase();
+    if (target === 'hiking' || target === 'running') {
+      return sp === 'hiking' || sp === 'running';
+    }
+    if (target === 'weights' || target === 'strength') {
+      return sp === 'strength' || sp === 'weights';
+    }
+    if (target === 'cycling' || target === 'cycle') {
+      return sp === 'cycling' || sp === 'cycle';
+    }
+    return sp === target;
+  });
+}
+
+/**
+ * Updates KPI Summary Cards from rollup data with optional sport filter.
  * @param {object} rollup
  * @param {string} unit - 'km' or 'mi'
+ * @param {string} sportFilter - 'all' | 'cycling' | 'hiking' | 'strength' | 'weights'
  */
-export function renderKPICards(rollup, unit = 'km') {
+export function renderKPICards(rollup, unit = 'km', sportFilter = 'all') {
   const kmMultiplier = unit === 'mi' ? 0.621371 : 1.0;
   const unitLabel = unit === 'mi' ? 'mi' : 'km';
+  const allActivities = rollup?.activities || [];
+  const filtered = filterActivitiesBySport(allActivities, sportFilter);
+  const weekly = rollup?.training_load?.weekly || [];
 
-  let totalDistKm = rollup?.summary?.total_distance_km;
-  if (totalDistKm === undefined && rollup?.summary?.total_distance_meters) {
-    totalDistKm = rollup.summary.total_distance_meters / 1000.0;
-  }
-  if (totalDistKm === undefined && rollup?.activities) {
-    const meters = rollup.activities.reduce((acc, a) => acc + (a.distance_meters || 0), 0);
-    totalDistKm = meters / 1000.0;
-  }
-  totalDistKm = totalDistKm || 0;
+  const isWeightsFilter = sportFilter === 'strength' || sportFilter === 'weights';
 
-  const displayDistance = (totalDistKm * kmMultiplier).toLocaleString(undefined, {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1
-  });
-
+  // 1. Distance KPI
   const distEl = document.getElementById('kpi-total-distance');
   if (distEl) {
-    distEl.textContent = `${displayDistance} ${unitLabel}`;
+    if (isWeightsFilter) {
+      // Weights workouts track duration and HR only; no distance
+      distEl.textContent = '—';
+    } else {
+      let totalMeters = 0;
+      if (sportFilter === 'all' && rollup?.summary?.total_distance_km) {
+        totalMeters = rollup.summary.total_distance_km * 1000.0;
+      } else {
+        totalMeters = filtered.reduce((acc, a) => acc + (a.distance_meters || 0), 0);
+      }
+      const totalDistKm = totalMeters / 1000.0;
+      const formattedDist = (totalDistKm * kmMultiplier).toLocaleString(undefined, {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1
+      });
+      distEl.textContent = `${formattedDist} ${unitLabel}`;
+    }
   }
 
-  let totalSeconds = 0;
-  if (rollup?.summary?.total_moving_hours) {
-    totalSeconds = rollup.summary.total_moving_hours * 3600;
-  } else if (rollup?.summary?.total_moving_time_seconds) {
-    totalSeconds = rollup.summary.total_moving_time_seconds;
-  } else if (rollup?.activities) {
-    totalSeconds = rollup.activities.reduce((acc, a) => acc + (a.moving_time_seconds || a.duration_seconds || 0), 0);
-  }
-
+  // 2. Moving Time KPI
   const timeEl = document.getElementById('kpi-total-time');
   if (timeEl) {
+    let totalSeconds = 0;
+    if (sportFilter === 'all' && rollup?.summary?.total_moving_hours) {
+      totalSeconds = rollup.summary.total_moving_hours * 3600;
+    } else {
+      totalSeconds = filtered.reduce((acc, a) => acc + (a.moving_time_seconds || a.duration_seconds || 0), 0);
+    }
     timeEl.textContent = formatDuration(totalSeconds);
   }
 
-  // Training status & ACWR
-  const weekly = rollup?.training_load?.weekly || [];
-  let latestATL = 60;
-  let latestCTL = 55;
-  let latestLoad = 0;
-
-  if (weekly.length > 0) {
-    const latest = weekly[weekly.length - 1];
-    latestATL = latest.atl || 60;
-    latestCTL = latest.ctl || 55;
-    latestLoad = latest.load || 400;
-  }
-
+  // 3. Weekly Load KPI (TSS)
   const loadEl = document.getElementById('kpi-weekly-load');
   if (loadEl) {
-    loadEl.textContent = `${Math.round(latestLoad)} TSS/wk`;
+    let weeklyLoad = 0;
+    if (sportFilter === 'all' && weekly.length > 0) {
+      const latest = weekly[weekly.length - 1];
+      weeklyLoad = latest.load || 0;
+    } else {
+      const totalLoad = filtered.reduce((acc, a) => acc + (a.tss || a.training_stress_score || 0), 0);
+      const numWeeks = Math.max(1, weekly.length || 8);
+      weeklyLoad = Math.round(totalLoad / numWeeks);
+    }
+    loadEl.textContent = `${Math.round(weeklyLoad)} TSS/wk`;
   }
 
+  // 4. Training Status KPI
   const statusEl = document.getElementById('kpi-status');
   if (statusEl) {
+    let latestATL = 50;
+    let latestCTL = 50;
+    if (weekly.length > 0) {
+      const latest = weekly[weekly.length - 1];
+      latestATL = latest.atl || 50;
+      latestCTL = latest.ctl || 50;
+    }
+
     const acwr = latestCTL > 0 ? (latestATL / latestCTL) : 1.0;
     let statusText = 'Optimal';
     let statusClass = 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
@@ -109,15 +147,16 @@ export function renderKPICards(rollup, unit = 'km') {
     }
 
     statusEl.textContent = statusText;
-    statusEl.className = `px-3 py-1 rounded-full text-xs font-semibold border ${statusClass}`;
+    statusEl.className = `px-2.5 py-0.5 rounded-full text-xs font-semibold border ${statusClass}`;
   }
 }
 
 /**
- * Renders the stacked weekly volume bar chart.
+ * Renders the stacked weekly duration (hours) bar chart.
+ * Plots Weekly Duration (Hours) so Weights, Cycling, and Hiking all display meaningful bars.
  * @param {object} rollup
  * @param {string} unit - 'km' or 'mi'
- * @param {string} sportFilter - 'all' | 'running' | 'cycling' | 'strength'
+ * @param {string} sportFilter - 'all' | 'cycling' | 'hiking' | 'running' | 'strength' | 'weights'
  */
 export function renderWeeklyVolumeChart(rollup, unit = 'km', sportFilter = 'all') {
   const canvas = document.getElementById('weekly-volume-chart');
@@ -129,35 +168,45 @@ export function renderWeeklyVolumeChart(rollup, unit = 'km', sportFilter = 'all'
   }
 
   const weeklyData = rollup?.training_load?.weekly || [];
-  const kmMultiplier = unit === 'mi' ? 0.621371 : 1.0;
-  const unitLabel = unit === 'mi' ? 'mi' : 'km';
-
   const labels = weeklyData.map(w => w.week || 'Week');
-  const runData = weeklyData.map(w => Number(((w.run_km || 0) * kmMultiplier).toFixed(1)));
-  const cycleData = weeklyData.map(w => Number(((w.cycle_km || 0) * kmMultiplier).toFixed(1)));
-  const strengthData = weeklyData.map(w => Number((w.strength_hours || 0).toFixed(1)));
+
+  // Compute weekly duration in hours for all three sports
+  const cyclingHours = weeklyData.map(w => {
+    if (w.cycling_hours !== undefined) return Number(w.cycling_hours.toFixed(1));
+    return Number(((w.cycle_km || 0) / 28.0).toFixed(1));
+  });
+
+  const hikingHours = weeklyData.map(w => {
+    if (w.hiking_hours !== undefined) return Number(w.hiking_hours.toFixed(1));
+    return Number(((w.run_km || w.hiking_km || 0) / 4.2).toFixed(1));
+  });
+
+  const strengthHours = weeklyData.map(w => Number((w.strength_hours || 0).toFixed(1)));
 
   const datasets = [];
+  const normalizedFilter = (sportFilter || 'all').toLowerCase();
 
-  if (sportFilter === 'all' || sportFilter === 'running') {
+  if (normalizedFilter === 'all' || normalizedFilter === 'cycling' || normalizedFilter === 'cycle') {
     datasets.push({
-      label: `Running (${unitLabel})`,
-      data: runData,
-      backgroundColor: '#10b981'
+      label: 'Cycling (hrs)',
+      data: cyclingHours,
+      backgroundColor: '#38bdf8'
     });
   }
-  if (sportFilter === 'all' || sportFilter === 'cycling') {
+
+  if (normalizedFilter === 'all' || normalizedFilter === 'hiking' || normalizedFilter === 'running') {
     datasets.push({
-      label: `Cycling (${unitLabel})`,
-      data: cycleData,
-      backgroundColor: '#06b6d4'
+      label: 'Hiking (hrs)',
+      data: hikingHours,
+      backgroundColor: '#34d399'
     });
   }
-  if (sportFilter === 'all' || sportFilter === 'strength') {
+
+  if (normalizedFilter === 'all' || normalizedFilter === 'strength' || normalizedFilter === 'weights') {
     datasets.push({
-      label: 'Strength (hrs)',
-      data: strengthData,
-      backgroundColor: '#f59e0b'
+      label: 'Weights (hrs)',
+      data: strengthHours,
+      backgroundColor: '#fbbf24'
     });
   }
 
@@ -203,8 +252,8 @@ export function renderTrainingLoadChart(rollup) {
         {
           label: 'CTL (Fitness)',
           data: ctlData,
-          borderColor: '#06b6d4',
-          backgroundColor: 'rgba(6, 182, 212, 0.1)',
+          borderColor: '#38bdf8',
+          backgroundColor: 'rgba(56, 189, 248, 0.12)',
           fill: true,
           borderWidth: 2
         },
@@ -212,14 +261,14 @@ export function renderTrainingLoadChart(rollup) {
           label: 'ATL (Fatigue)',
           data: atlData,
           borderColor: '#f43f5e',
-          backgroundColor: 'rgba(244, 63, 94, 0.1)',
+          backgroundColor: 'rgba(244, 63, 94, 0.12)',
           fill: true,
           borderWidth: 2
         },
         {
           label: 'TSB (Form)',
           data: tsbData,
-          borderColor: '#eab308',
+          borderColor: '#fbbf24',
           borderWidth: 2
         }
       ]

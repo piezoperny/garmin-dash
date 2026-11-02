@@ -302,8 +302,34 @@ class LiveGarminClient:
         else:
             self._initialize_session()
 
+    @staticmethod
+    def _export_personal_tokenstore(client: Any, fallback_dir: Optional[str] = None) -> str:
+        """Serialize garminconnect tokenstore (supports both 0.3.x client.client and 0.2.x client.garth)."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target_dir = fallback_dir or tmp_dir
+            inner = getattr(client, "client", None) or getattr(client, "garth", None)
+            if inner is not None and hasattr(inner, "dump"):
+                inner.dump(target_dir)
+            elif hasattr(client, "garth") and hasattr(client.garth, "dumps"):
+                return json.dumps({"garth_dumps": client.garth.dumps()})
+            elif inner is not None and hasattr(inner, "dumps"):
+                return json.dumps({"client_dumps": inner.dumps()})
+
+            files_map: Dict[str, str] = {}
+            for p in Path(target_dir).rglob("*"):
+                if p.is_file():
+                    rel = p.relative_to(target_dir).as_posix()
+                    files_map[rel] = p.read_text(encoding="utf-8")
+            return json.dumps({"files": files_map})
+
     def _initialize_personal_sso(self) -> None:
-        """Authenticate using personal Garmin Connect account (email + password) via garminconnect/garth."""
+        """Authenticate using personal Garmin Connect account via tokenstore on Hetzner SFTP."""
+        import tempfile
+        from pathlib import Path
+
         try:
             from garminconnect import Garmin
         except ImportError as e:
@@ -313,26 +339,52 @@ class LiveGarminClient:
 
         existing = self.token_store.load_session()
         client = Garmin(self.credentials.api_key, self.credentials.client_secret)
-        if existing and existing.refresh_token:
-            try:
-                client.garth.loads(existing.refresh_token)
-                self._personal_garmin = client
-                self._session_state = existing
-                logger.info("Restored personal Garmin Connect session from Hetzner SFTP token store.")
-                return
-            except Exception as e:
-                logger.warning(f"Stored personal session expired or invalid ({e}); logging in fresh...")
 
-        client.login()
-        dumped_tokens = client.garth.dumps()
-        self._personal_garmin = client
-        self._session_state = OAuthSessionState(
-            access_token="garth_personal_session",
-            refresh_token=dumped_tokens,
-            expires_at=int(time.time()) + 86400 * 30,
-        )
-        self.token_store.save_session(self._session_state)
-        logger.info("Authenticated personal Garmin Connect account and persisted session to SFTP.")
+        # Support pasting a base64 token directly into GARMIN_CLIENT_SECRET ("GARMIN_TOKEN:...")
+        candidate_bundles: List[str] = []
+        if existing and existing.refresh_token:
+            candidate_bundles.append(existing.refresh_token)
+        if self.credentials.client_secret.startswith("GARMIN_TOKEN:"):
+            raw_b64 = self.credentials.client_secret.split("GARMIN_TOKEN:", 1)[1].strip()
+            try:
+                candidate_bundles.append(base64.b64decode(raw_b64).decode("utf-8"))
+            except Exception as e:
+                logger.warning(f"Could not decode GARMIN_TOKEN from GARMIN_CLIENT_SECRET: {e}")
+
+        for raw_bundle in candidate_bundles:
+            try:
+                bundle = json.loads(raw_bundle)
+                if isinstance(bundle, dict) and bundle.get("files"):
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        for rel_path, content in bundle["files"].items():
+                            dest = Path(tmp_dir) / rel_path
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            dest.write_text(content, encoding="utf-8")
+                        client.login(tokenstore=tmp_dir)
+                        updated_tokens = self._export_personal_tokenstore(client, fallback_dir=tmp_dir)
+                        self._personal_garmin = client
+                        self._session_state = OAuthSessionState(
+                            access_token="personal_tokenstore_active",
+                            refresh_token=updated_tokens,
+                            expires_at=int(time.time()) + 86400 * 30,
+                        )
+                        self.token_store.save_session(self._session_state)
+                        logger.info("Restored personal Garmin Connect session from tokenstore.")
+                        return
+            except Exception as e:
+                logger.warning(f"Stored personal session expired or invalid ({e}); trying next strategy...")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            client.login()
+            dumped_tokens = self._export_personal_tokenstore(client, fallback_dir=tmp_dir)
+            self._personal_garmin = client
+            self._session_state = OAuthSessionState(
+                access_token="personal_tokenstore_active",
+                refresh_token=dumped_tokens,
+                expires_at=int(time.time()) + 86400 * 30,
+            )
+            self.token_store.save_session(self._session_state)
+            logger.info("Authenticated personal Garmin Connect account and persisted tokenstore to SFTP.")
 
     @property
     def session_state(self) -> Optional[OAuthSessionState]:

@@ -7,6 +7,9 @@
   <link rel="stylesheet" href="./assets/style.css" />
   <!-- Standalone Tailwind CSS CDN Fallback for Zero-Build Preview -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Leaflet CSS & JS for Interactive Route Mapping -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -108,8 +111,20 @@
           </div>
         </div>
 
-        <!-- Controls: Unit Toggle & Lock Button -->
-        <div class="flex items-center space-x-3">
+        <!-- Controls: Customize, Unit Toggle & Lock Button -->
+        <div class="flex items-center space-x-2.5">
+          <!-- Customize Dashboard & Thresholds Button -->
+          <button
+            id="btn-customize-dashboard"
+            type="button"
+            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#111114] hover:bg-[#18181b] text-zinc-300 hover:text-white border border-[#1f1f24] text-xs font-semibold transition"
+          >
+            <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
+            </svg>
+            <span>Customize</span>
+          </button>
+
           <!-- Distance Unit Toggle -->
           <div class="flex items-center bg-[#111114] border border-[#1f1f24] rounded-lg p-0.5">
             <button id="unit-toggle-btn" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-[#1f1f24] text-white">
@@ -182,8 +197,8 @@
             <p class="text-xs text-zinc-400">Weekly duration breakdown & continuous fitness/fatigue/form curves</p>
           </div>
 
-          <!-- Sport Filter Pills (All · Cycling · Hiking · Weights) -->
-          <div class="flex items-center space-x-1 bg-[#111114] border border-[#1f1f24] rounded-xl p-1">
+          <!-- Sport Filter Pills (All · Cycling · Hiking · Weights + Dynamic Sports) -->
+          <div id="sport-filter-bar" class="flex flex-wrap items-center gap-1 bg-[#111114] border border-[#1f1f24] rounded-xl p-1">
             <button id="filter-btn-all" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white">All</button>
             <button id="filter-btn-cycling" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Cycling</button>
             <button id="filter-btn-hiking" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Hiking</button>
@@ -196,7 +211,7 @@
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <!-- Stacked Weekly Volume Chart Card -->
-          <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-weekly-volume" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
             <div class="flex items-center justify-between mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Stacked Weekly Duration</h3>
               <span class="text-[11px] font-mono text-zinc-400">Cycling • Hiking • Weights</span>
@@ -207,7 +222,7 @@
           </div>
 
           <!-- Continuous Training Load Curves Card -->
-          <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-training-load" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
             <div class="flex items-center justify-between mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Continuous Training Load Curves</h3>
               <span class="text-[11px] font-mono text-zinc-400">CTL (Fitness) • ATL (Fatigue) • TSB (Form)</span>
@@ -230,10 +245,10 @@
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <!-- 5-Zone HR Distribution -->
-          <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-hr-zone" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
             <div class="mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Heart Rate Zones</h3>
-              <p class="text-[11px] text-zinc-400">5-Zone Model (Z1 - Z5)</p>
+              <p id="hr-zone-subtitle" class="text-[11px] text-zinc-400">5-Zone Model (Z1 - Z5)</p>
             </div>
             <div class="flex-1 min-h-[260px] relative">
               <canvas id="hr-zone-chart" class="w-full h-full"></canvas>
@@ -241,10 +256,10 @@
           </div>
 
           <!-- Coggan 7-Zone Power Distribution -->
-          <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-power-zone" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
             <div class="mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Cycling Power Zones</h3>
-              <p class="text-[11px] text-zinc-400">Coggan 7-Zone Power Distribution</p>
+              <p id="power-zone-subtitle" class="text-[11px] text-zinc-400">Cycling Power Only • Coggan 7-Zone</p>
             </div>
             <div class="flex-1 min-h-[260px] relative">
               <canvas id="power-zone-chart" class="w-full h-full"></canvas>
@@ -252,7 +267,7 @@
           </div>
 
           <!-- Pace / Grade Zones -->
-          <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-pace-zone" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
             <div class="mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Hiking Pace & Grade Zones</h3>
               <p class="text-[11px] text-zinc-400">Speed & Vertical Distribution</p>
@@ -263,10 +278,10 @@
           </div>
 
           <!-- Threshold Progression Trends -->
-          <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-threshold-trends" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
             <div class="mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Threshold Performance Trends</h3>
-              <p class="text-[11px] text-zinc-400">VO2max • FTP • LTHR Progression</p>
+              <p class="text-[11px] text-zinc-400">VO2max • Cycling FTP • LTHR Progression</p>
             </div>
             <div class="flex-1 min-h-[260px] relative">
               <canvas id="threshold-trends-chart" class="w-full h-full"></canvas>
@@ -278,7 +293,7 @@
       <!-- ===================================================================== -->
       <!-- ACTIVITY DRILL-DOWN                                                   -->
       <!-- ===================================================================== -->
-      <section class="space-y-4">
+      <section id="card-activities" class="space-y-4">
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h2 class="text-base font-semibold text-white tracking-tight">Activity Drill-Down</h2>
@@ -327,6 +342,57 @@
                 <!-- Dynamically populated rows -->
               </tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================================================================== -->
+      <!-- HETZNER MULTI-YEAR BACKUP VAULT EXPLORER                              -->
+      <!-- ===================================================================== -->
+      <section id="card-backup-vault" class="space-y-4">
+        <div id="backup-vault-explorer" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#1f1f24]">
+            <div>
+              <div class="flex items-center space-x-2.5">
+                <h2 class="text-base font-semibold text-white tracking-tight">Hetzner Multi-Year Backup Vault</h2>
+                <span id="vault-status-badge" class="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold border text-emerald-400 border-emerald-500/30 bg-emerald-500/10">
+                  ARCHIVAL HEALTHY
+                </span>
+              </div>
+              <p id="vault-provider-label" class="text-xs text-zinc-400 font-mono mt-0.5">
+                Hetzner Storage Box (SFTP Port 23) • garmin_archive/activities/{YYYY}/{MM}/
+              </p>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-4 text-xs">
+              <div>
+                <div class="text-[10px] uppercase tracking-wider text-zinc-500">Total Archived</div>
+                <div id="vault-total-activities" class="font-mono font-semibold text-white tabular-nums">-</div>
+              </div>
+              <div>
+                <div class="text-[10px] uppercase tracking-wider text-zinc-500">Last Sync</div>
+                <div id="vault-last-sync" class="font-mono text-zinc-300">-</div>
+              </div>
+              <div>
+                <div class="text-[10px] uppercase tracking-wider text-zinc-500">Raw Formats</div>
+                <div id="vault-formats-list" class="flex items-center space-x-1 mt-0.5">
+                  <span class="px-2 py-0.5 rounded bg-[#18181b] border border-[#1f1f24] text-[10px] font-mono text-zinc-300">.fit</span>
+                  <span class="px-2 py-0.5 rounded bg-[#18181b] border border-[#1f1f24] text-[10px] font-mono text-zinc-300">.gpx</span>
+                  <span class="px-2 py-0.5 rounded bg-[#18181b] border border-[#1f1f24] text-[10px] font-mono text-zinc-300">.json</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Year-by-Year Archive Breakdown -->
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-[11px] font-medium uppercase tracking-wider text-zinc-400">Chronological Archive Partitions (Click year to filter workouts)</span>
+              <span class="text-[11px] font-mono text-zinc-500">SHA-256 Manifest Verified</span>
+            </div>
+            <div id="vault-years-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+              <!-- Populated by backup_vault.js -->
+            </div>
           </div>
         </div>
       </section>
@@ -396,9 +462,35 @@
         </div>
       </div>
 
-      <!-- Profile Chart -->
-      <div class="bg-[#18181b]/40 border border-[#1f1f24] rounded-xl p-4 mb-5">
-        <h4 class="text-xs font-semibold text-zinc-300 mb-2">Split Telemetry Profile (HR & Cadence)</h4>
+      <!-- GPS Route Map Card -->
+      <div id="drawer-map-card" class="bg-[#18181b]/40 border border-[#1f1f24] rounded-xl p-4 mb-5">
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="text-xs font-semibold text-zinc-300">GPS Route Map</h4>
+          <span id="drawer-map-meta" class="text-[10px] text-zinc-400 font-mono"></span>
+        </div>
+        <div id="activity-route-map" class="h-60 w-full rounded-lg overflow-hidden bg-[#09090b] relative z-0"></div>
+        <div id="drawer-map-fallback" class="hidden h-24 flex items-center justify-center text-xs text-zinc-500 bg-[#09090b]/50 rounded-lg border border-[#1f1f24]/50">
+          <span>No GPS track recorded for this workout (indoor / strength session).</span>
+        </div>
+      </div>
+
+      <!-- Route Profile (Elevation & Heart Rate) -->
+      <div id="drawer-telemetry-container" class="bg-[#18181b]/40 border border-[#1f1f24] rounded-xl p-4 mb-5">
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="text-xs font-semibold text-zinc-300">Route Profile (Elevation & Heart Rate)</h4>
+          <!-- Live Scrub Telemetry Readout -->
+          <div id="drawer-profile-readout" class="text-[11px] font-mono text-zinc-400 flex items-center space-x-3">
+            <span class="flex items-center space-x-1 text-emerald-400">
+              <span class="inline-block w-2 h-0.5 bg-emerald-400"></span>
+              <span id="readout-elev">Elev: —</span>
+            </span>
+            <span class="flex items-center space-x-1 text-rose-400">
+              <span class="inline-block w-2 h-0.5 bg-rose-400"></span>
+              <span id="readout-hr">HR: —</span>
+            </span>
+            <span id="readout-dist" class="text-zinc-400 hidden sm:inline">Dist: —</span>
+          </div>
+        </div>
         <div class="h-44 relative">
           <canvas id="activity-profile-chart" class="w-full h-full"></canvas>
         </div>
@@ -413,9 +505,10 @@
               <tr>
                 <th class="py-2 px-3">Split</th>
                 <th class="py-2 px-3">Time</th>
-                <th class="py-2 px-3">Pace</th>
+                <th class="py-2 px-3">Pace / Speed</th>
                 <th class="py-2 px-3">Avg HR</th>
                 <th class="py-2 px-3">Elev</th>
+                <th class="py-2 px-3">Cadence</th>
               </tr>
             </thead>
             <tbody id="drawer-splits-tbody" class="divide-y divide-[#1f1f24]">
@@ -425,6 +518,91 @@
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- DASHBOARD CUSTOMIZATION & THRESHOLDS MODAL                                -->
+  <!-- ========================================================================= -->
+  <div id="customize-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#09090b]/80 backdrop-blur-sm hidden">
+    <div class="bg-[#111114] border border-[#1f1f24] rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5">
+      <div class="flex items-start justify-between border-b border-[#1f1f24] pb-3">
+        <div>
+          <h3 class="text-base font-semibold text-white">Customize Dashboard & Thresholds</h3>
+          <p class="text-xs text-zinc-400 mt-0.5">Show/hide sport cards (e.g. off-season cycling) and set personal HR / Power thresholds</p>
+        </div>
+        <button id="btn-close-customize" type="button" class="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Visible Widgets Checkboxes -->
+      <div class="space-y-2.5">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Visible Dashboard Widgets</div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+            <input type="checkbox" data-card-target="card-weekly-volume" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
+            <span class="text-zinc-200">Stacked Weekly Duration</span>
+          </label>
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+            <input type="checkbox" data-card-target="card-training-load" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
+            <span class="text-zinc-200">Training Load (CTL/ATL/TSB)</span>
+          </label>
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+            <input type="checkbox" data-card-target="card-hr-zone" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
+            <span class="text-zinc-200">Heart Rate Zones (5-Zone)</span>
+          </label>
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+            <input type="checkbox" data-card-target="card-power-zone" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
+            <span class="text-zinc-200">Cycling Power Zones (FTP)</span>
+          </label>
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+            <input type="checkbox" data-card-target="card-pace-zone" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
+            <span class="text-zinc-200">Hiking Pace & Grade Zones</span>
+          </label>
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+            <input type="checkbox" data-card-target="card-threshold-trends" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
+            <span class="text-zinc-200">Threshold Trends</span>
+          </label>
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer sm:col-span-2">
+            <input type="checkbox" data-card-target="card-backup-vault" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
+            <span class="text-zinc-200">Hetzner Multi-Year Backup Vault Explorer</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Custom Physiological Thresholds -->
+      <div class="space-y-2.5 pt-2 border-t border-[#1f1f24]">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Personal Physiological Thresholds</div>
+        <p class="text-[11px] text-zinc-500">
+          FTP is strictly a <span class="text-zinc-300 font-medium">Cycling Power (Watts)</span> metric (Coggan 7-Zone). Leave blank to use your synced Garmin profile defaults.
+        </p>
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label for="input-custom-max-hr" class="block text-[10px] uppercase text-zinc-400 mb-1">Max HR (bpm)</label>
+            <input id="input-custom-max-hr" type="number" min="120" max="230" placeholder="190" class="w-full bg-[#09090b] border border-[#1f1f24] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
+          </div>
+          <div>
+            <label for="input-custom-lthr" class="block text-[10px] uppercase text-zinc-400 mb-1">LTHR (bpm)</label>
+            <input id="input-custom-lthr" type="number" min="100" max="210" placeholder="168" class="w-full bg-[#09090b] border border-[#1f1f24] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
+          </div>
+          <div>
+            <label for="input-custom-ftp" class="block text-[10px] uppercase text-zinc-400 mb-1">Cycling FTP (W)</label>
+            <input id="input-custom-ftp" type="number" min="50" max="600" placeholder="280" class="w-full bg-[#09090b] border border-[#1f1f24] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between pt-3 border-t border-[#1f1f24]">
+        <button id="btn-reset-customize" type="button" class="px-3 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white text-xs font-medium transition">
+          Reset Defaults
+        </button>
+        <button id="btn-save-customize" type="button" class="px-4 py-1.5 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold transition">
+          Apply & Save Layout
+        </button>
+      </div>
     </div>
   </div>
 

@@ -30,7 +30,7 @@ for (const file of ['main.js', 'crypto.js', 'session.js']) {
 }
 
 // 3. Copy chart modules
-for (const file of ['chart_engine.js', 'endurance.js', 'physiological.js', 'activities.js']) {
+for (const file of ['chart_engine.js', 'endurance.js', 'physiological.js', 'activities.js', 'route_map.js', 'backup_vault.js']) {
   fs.copyFileSync(
     path.join(__dirname, 'src', 'charts', file),
     path.join(chartsOutDir, file)

@@ -36,11 +36,122 @@ import {
   setupActivityEventListeners,
   setActivitySportFilter
 } from './charts/activities.js';
+import {
+  renderBackupVaultExplorer
+} from './charts/backup_vault.js';
+
+const CUSTOMIZATION_STORAGE_KEY = 'garmin_dash_customization';
 
 // Application State
 let activeRollup = null;
 let activeUnit = 'km'; // 'km' or 'mi'
-let activeSportFilter = 'all'; // 'all', 'running', 'cycling', 'strength'
+let activeSportFilter = 'all'; // 'all', 'running', 'cycling', 'strength', etc.
+let activeCustomization = {
+  hidden_cards: [],
+  thresholds: {
+    max_hr: null,
+    lthr: null,
+    cycling_ftp: null
+  }
+};
+
+/**
+ * Safely loads customization preferences from localStorage/sessionStorage.
+ * @returns {object}
+ */
+export function loadCustomizationPreferences() {
+  try {
+    const store = typeof localStorage !== 'undefined' ? localStorage : (typeof sessionStorage !== 'undefined' ? sessionStorage : null);
+    if (!store) return activeCustomization;
+    const raw = store.getItem(CUSTOMIZATION_STORAGE_KEY);
+    if (!raw) return activeCustomization;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      activeCustomization = {
+        hidden_cards: Array.isArray(parsed.hidden_cards) ? parsed.hidden_cards : [],
+        thresholds: {
+          max_hr: Number(parsed.thresholds?.max_hr) > 0 ? Number(parsed.thresholds.max_hr) : null,
+          lthr: Number(parsed.thresholds?.lthr) > 0 ? Number(parsed.thresholds.lthr) : null,
+          cycling_ftp: Number(parsed.thresholds?.cycling_ftp) > 0 ? Number(parsed.thresholds.cycling_ftp) : null
+        }
+      };
+    }
+  } catch (e) {
+    // Graceful recovery from corrupted localStorage
+  }
+  return activeCustomization;
+}
+
+/**
+ * Saves customization preferences to localStorage/sessionStorage.
+ */
+function saveCustomizationPreferences() {
+  try {
+    const store = typeof localStorage !== 'undefined' ? localStorage : (typeof sessionStorage !== 'undefined' ? sessionStorage : null);
+    if (store) {
+      store.setItem(CUSTOMIZATION_STORAGE_KEY, JSON.stringify(activeCustomization));
+    }
+  } catch (e) {
+    // Ignore storage quota errors
+  }
+}
+
+/**
+ * Applies card visibility preferences to DOM elements without removing required DOM nodes.
+ */
+function applyCardVisibility() {
+  const configurableCards = [
+    'card-weekly-volume',
+    'card-training-load',
+    'card-hr-zone',
+    'card-power-zone',
+    'card-pace-zone',
+    'card-threshold-trends',
+    'card-backup-vault'
+  ];
+  const hiddenSet = new Set(activeCustomization.hidden_cards || []);
+  configurableCards.forEach(cardId => {
+    const el = document.getElementById(cardId);
+    if (!el) return;
+    if (hiddenSet.has(cardId)) {
+      el.classList.add('hidden');
+    } else {
+      el.classList.remove('hidden');
+    }
+  });
+}
+
+/**
+ * Dynamically populates sport filter buttons for any additional sports present in activities.
+ * @param {Array} activities
+ */
+function syncDynamicSportFilterButtons(activities) {
+  const filterBar = document.getElementById('sport-filter-bar');
+  if (!filterBar) return;
+
+  // Remove previously injected dynamic sport buttons
+  const existingDynamic = filterBar.querySelectorAll ? filterBar.querySelectorAll('[data-dynamic-sport]') : [];
+  existingDynamic.forEach(btn => btn.remove());
+
+  const coreSports = new Set(['all', 'cycling', 'cycle', 'hiking', 'strength', 'weights']);
+  const extraSports = new Set();
+  for (const act of activities || []) {
+    const sp = String(act.sport || '').toLowerCase().trim();
+    if (sp && !coreSports.has(sp)) {
+      extraSports.add(sp);
+    }
+  }
+
+  Array.from(extraSports).sort().forEach(sp => {
+    const btn = document.createElement('button');
+    btn.id = `filter-btn-dyn-${sp}`;
+    btn.setAttribute('data-dynamic-sport', sp);
+    btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition';
+    btn.textContent = sp.charAt(0).toUpperCase() + sp.slice(1).replace(/_/g, ' ');
+    btn.addEventListener('click', () => updateSportFilter(sp));
+    filterBar.appendChild(btn);
+  });
+}
 
 /**
  * Fetches the binary data.enc payload from static root.
@@ -69,6 +180,10 @@ function renderDashboard(rollup) {
   if (!rollup) return;
   activeRollup = rollup;
 
+  loadCustomizationPreferences();
+  applyCardVisibility();
+  syncDynamicSportFilterButtons(rollup.activities || []);
+
   // 1. KPI Cards (reacts to active unit and sport filter)
   renderKPICards(rollup, activeUnit, activeSportFilter);
 
@@ -76,15 +191,28 @@ function renderDashboard(rollup) {
   renderWeeklyVolumeChart(rollup, activeUnit, activeSportFilter);
   renderTrainingLoadChart(rollup);
 
-  // 3. Physiological Distribution
-  renderHeartRateZoneChart(rollup);
-  renderPowerZoneChart(rollup);
-  renderThresholdTrendsChart(rollup);
+  // 3. Physiological Distribution (respecting custom HR / Cycling FTP thresholds)
+  renderHeartRateZoneChart(rollup, activeCustomization.thresholds);
+  renderPowerZoneChart(rollup, activeCustomization.thresholds);
+  renderThresholdTrendsChart(rollup, activeCustomization.thresholds);
   renderPaceZoneChart(rollup);
 
   // 4. Activity Drill-Down
   renderActivityTable(rollup.activities || [], activeUnit);
   setActivitySportFilter(activeSportFilter);
+
+  // 5. Multi-Year Hetzner Backup Vault Explorer
+  renderBackupVaultExplorer(rollup, year => {
+    const searchInput = document.getElementById('activity-search');
+    if (searchInput) {
+      searchInput.value = String(year);
+      searchInput.dispatchEvent(new Event('input'));
+      const tableEl = document.getElementById('activity-table');
+      if (tableEl && typeof tableEl.scrollIntoView === 'function') {
+        tableEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  });
 }
 
 /**
@@ -256,10 +384,115 @@ function updateSportFilter(sport) {
     }
   });
 
+  const filterBar = document.getElementById('sport-filter-bar');
+  if (filterBar && filterBar.querySelectorAll) {
+    filterBar.querySelectorAll('[data-dynamic-sport]').forEach(btn => {
+      const sp = btn.getAttribute('data-dynamic-sport');
+      if (sp === normalized) {
+        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white shadow-sm';
+      } else {
+        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition-colors';
+      }
+    });
+  }
+
   if (activeRollup) {
     renderKPICards(activeRollup, activeUnit, activeSportFilter);
     renderWeeklyVolumeChart(activeRollup, activeUnit, activeSportFilter);
     setActivitySportFilter(activeSportFilter);
+  }
+}
+
+/**
+ * Sets up the Customize Dashboard & Thresholds modal interactions.
+ */
+function setupCustomizationModalListeners() {
+  const openBtn = document.getElementById('btn-customize-dashboard');
+  const closeBtn = document.getElementById('btn-close-customize');
+  const saveBtn = document.getElementById('btn-save-customize');
+  const resetBtn = document.getElementById('btn-reset-customize');
+  const modal = document.getElementById('customize-modal');
+
+  if (!modal) return;
+
+  const syncModalFields = () => {
+    loadCustomizationPreferences();
+    const hiddenSet = new Set(activeCustomization.hidden_cards || []);
+    if (modal.querySelectorAll) {
+      modal.querySelectorAll('[data-card-target]').forEach(cb => {
+        const cardId = cb.getAttribute('data-card-target');
+        cb.checked = !hiddenSet.has(cardId);
+      });
+    }
+    const maxHrInput = document.getElementById('input-custom-max-hr');
+    const lthrInput = document.getElementById('input-custom-lthr');
+    const ftpInput = document.getElementById('input-custom-ftp');
+
+    if (maxHrInput) maxHrInput.value = activeCustomization.thresholds?.max_hr || '';
+    if (lthrInput) lthrInput.value = activeCustomization.thresholds?.lthr || '';
+    if (ftpInput) ftpInput.value = activeCustomization.thresholds?.cycling_ftp || '';
+  };
+
+  if (openBtn) {
+    openBtn.addEventListener('click', () => {
+      syncModalFields();
+      modal.classList.remove('hidden');
+    });
+  }
+
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      modal.classList.add('hidden');
+    });
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      const hidden = [];
+      if (modal.querySelectorAll) {
+        modal.querySelectorAll('[data-card-target]').forEach(cb => {
+          const cardId = cb.getAttribute('data-card-target');
+          if (!cb.checked && cardId) {
+            hidden.push(cardId);
+          }
+        });
+      }
+      const maxHrVal = Number(document.getElementById('input-custom-max-hr')?.value || 0);
+      const lthrVal = Number(document.getElementById('input-custom-lthr')?.value || 0);
+      const ftpVal = Number(document.getElementById('input-custom-ftp')?.value || 0);
+
+      activeCustomization = {
+        hidden_cards: hidden,
+        thresholds: {
+          max_hr: maxHrVal >= 120 ? maxHrVal : null,
+          lthr: lthrVal >= 100 ? lthrVal : null,
+          cycling_ftp: ftpVal >= 50 ? ftpVal : null
+        }
+      };
+      saveCustomizationPreferences();
+      modal.classList.add('hidden');
+      if (activeRollup) {
+        renderDashboard(activeRollup);
+      } else {
+        applyCardVisibility();
+      }
+    });
+  }
+
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      activeCustomization = {
+        hidden_cards: [],
+        thresholds: { max_hr: null, lthr: null, cycling_ftp: null }
+      };
+      saveCustomizationPreferences();
+      syncModalFields();
+      if (activeRollup) {
+        renderDashboard(activeRollup);
+      } else {
+        applyCardVisibility();
+      }
+    });
   }
 }
 
@@ -283,6 +516,7 @@ function toggleDistanceUnit() {
  */
 export async function initApp() {
   setupActivityEventListeners();
+  setupCustomizationModalListeners();
 
   // Attach submit listeners
   const form = document.getElementById('passphrase-form');

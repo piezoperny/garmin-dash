@@ -240,9 +240,36 @@ export function renderTrainingLoadChart(rollup) {
 
   const weeklyData = rollup?.training_load?.weekly || [];
   const labels = weeklyData.map(w => w.week || 'Week');
-  const atlData = weeklyData.map(w => w.atl || 0);
-  const ctlData = weeklyData.map(w => w.ctl || 0);
-  const tsbData = weeklyData.map(w => w.tsb || 0);
+  let atlData = weeklyData.map(w => Number(w.atl ?? 0));
+  let ctlData = weeklyData.map(w => Number(w.ctl ?? 0));
+  let tsbData = weeklyData.map(w => Number(w.tsb ?? 0));
+
+  // Client-side Banister EWMA fallback if rollup has flat legacy 50/50/0 placeholders
+  const isFlatPlaceholder =
+    weeklyData.length > 0 &&
+    ctlData.every(v => v === 50 || v === 0) &&
+    atlData.every(v => v === 50 || v === 0);
+
+  if (isFlatPlaceholder) {
+    let ctl = 25.0;
+    let atl = 25.0;
+    ctlData = [];
+    atlData = [];
+    tsbData = [];
+    for (const w of weeklyData) {
+      const dailyAvgLoad = Number(w.load || 0) / 7.0;
+      for (let d = 0; d < 7; d++) {
+        const dayLoad = d === 5 || d === 6 ? dailyAvgLoad * 1.35 : dailyAvgLoad * 0.86;
+        ctl = ctl + (dayLoad - ctl) / 42.0;
+        atl = atl + (dayLoad - atl) / 7.0;
+      }
+      const cRound = Number(ctl.toFixed(1));
+      const aRound = Number(atl.toFixed(1));
+      ctlData.push(cRound);
+      atlData.push(aRound);
+      tsbData.push(Number((cRound - aRound).toFixed(1)));
+    }
+  }
 
   loadChartInstance = new Chart(canvas, {
     type: 'line',

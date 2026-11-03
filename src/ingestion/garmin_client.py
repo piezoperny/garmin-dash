@@ -233,6 +233,14 @@ class GarminClientProtocol(Protocol):
         """Download raw binary .FIT file bytes for an activity (extracting from ZIP if necessary)."""
         ...
 
+    def download_gpx_file(self, activity_id: str) -> Optional[bytes]:
+        """Download raw .GPX file bytes for an activity (if GPS track is present)."""
+        ...
+
+    def fetch_gpx_file(self, activity_id: str) -> Optional[bytes]:
+        """Alias for download_gpx_file."""
+        ...
+
     def refresh_tokens(self) -> OAuthSessionState:
         """Force or trigger token refresh and persist updated state."""
         ...
@@ -600,12 +608,42 @@ class LiveGarminClient:
 
     def get_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
         if self._personal_garmin is not None:
+            result: Dict[str, Any] = {"activityId": activity_id, "splits": []}
             try:
                 splits = self._personal_garmin.get_activity_splits(activity_id)
-                return {"activityId": activity_id, "splits": splits.get("lapDTOs", []) if isinstance(splits, dict) else []}
+                if isinstance(splits, dict):
+                    result["splits"] = splits.get("lapDTOs", [])
             except Exception as e:
                 logger.warning(f"Could not fetch personal activity splits for {activity_id}: {e}")
-                return {"activityId": activity_id, "splits": []}
+
+            try:
+                details = self._personal_garmin.get_activity_details(activity_id, maxchart=200, maxpoly=400)
+                if isinstance(details, dict):
+                    if "geoPolylineDTO" in details:
+                        result["geoPolylineDTO"] = details["geoPolylineDTO"]
+                    if "metricDescriptors" in details:
+                        result["metricDescriptors"] = details["metricDescriptors"]
+                    if "activityDetailMetrics" in details:
+                        result["activityDetailMetrics"] = details["activityDetailMetrics"]
+            except Exception as e:
+                logger.warning(f"Could not fetch personal activity GPS/chart details for {activity_id}: {e}")
+
+            try:
+                if hasattr(self._personal_garmin, "get_activity_hr_in_timezones"):
+                    hr_zones_raw = self._personal_garmin.get_activity_hr_in_timezones(activity_id)
+                    if isinstance(hr_zones_raw, list):
+                        hz_dict: Dict[str, int] = {}
+                        for z in hr_zones_raw:
+                            if isinstance(z, dict) and z.get("zoneNumber") is not None:
+                                z_num = int(z["zoneNumber"])
+                                if 1 <= z_num <= 5:
+                                    hz_dict[f"Z{z_num}"] = int(float(z.get("secsInZone") or 0))
+                        if hz_dict:
+                            result["hr_zones"] = hz_dict
+            except Exception as e:
+                logger.debug(f"Could not fetch personal activity HR zones for {activity_id}: {e}")
+
+            return result
 
         url = self.ACTIVITY_DETAILS_URL.format(activityId=activity_id)
         try:
@@ -650,6 +688,32 @@ class LiveGarminClient:
                 return None
 
         return raw_bytes
+
+    def download_gpx_file(self, activity_id: str) -> Optional[bytes]:
+        if self._personal_garmin is not None:
+            try:
+                raw_bytes = self._personal_garmin.download_activity(
+                    activity_id, dl_fmt=self._personal_garmin.ActivityDownloadFormat.GPX
+                )
+                if raw_bytes and (b"<gpx" in raw_bytes or b"<?xml" in raw_bytes):
+                    return raw_bytes
+            except Exception as e:
+                logger.debug(f"Could not download personal .GPX for {activity_id}: {e}")
+                return None
+
+        url = f"https://connectapi.garmin.com/activity-api/rest/gpx/{activity_id}"
+        try:
+            resp = self._authenticated_request("GET", url, stream=True)
+            if resp.content and (b"<gpx" in resp.content or b"<?xml" in resp.content):
+                return resp.content
+        except GarminNotFoundError:
+            logger.debug(f"No GPX track available for {activity_id}.")
+        except Exception as e:
+            logger.debug(f"Failed to fetch GPX for {activity_id}: {e}")
+        return None
+
+    def fetch_gpx_file(self, activity_id: str) -> Optional[bytes]:
+        return self.download_gpx_file(activity_id)
 
     def get_session_state(self) -> Optional[OAuthSessionState]:
         return self._session_state
@@ -768,6 +832,14 @@ class MockGarminClient:
         from src.ingestion.mock_generator import SyntheticDatasetGenerator
         gen = SyntheticDatasetGenerator(seed=self.seed)
         return gen.generate_binary_fit_file(activity_id)
+
+    def download_gpx_file(self, activity_id: str) -> Optional[bytes]:
+        from src.ingestion.mock_generator import SyntheticDatasetGenerator
+        gen = SyntheticDatasetGenerator(seed=self.seed)
+        return gen.generate_gpx_file(activity_id)
+
+    def fetch_gpx_file(self, activity_id: str) -> Optional[bytes]:
+        return self.download_gpx_file(activity_id)
 
     def get_session_state(self) -> Optional[OAuthSessionState]:
         return self._session_state

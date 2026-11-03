@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from src.analytics.training_load import calculate_continuous_training_load
+
 # ---------------------------------------------------------------------------
 # FIT Protocol 2.0 Constants & CRC Table
 # ---------------------------------------------------------------------------
@@ -69,11 +71,199 @@ def datetime_to_garmin_timestamp(dt: datetime) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Polyline Encoding / Decoding Utilities
+# ---------------------------------------------------------------------------
+
+def encode_polyline(points: List[Tuple[float, float]]) -> str:
+    """
+    Encodes a list of (lat, lon) coordinate tuples into Google Encoded Polyline format
+    with 5-decimal precision (~1 meter resolution).
+    """
+    result = []
+    prev_lat = 0
+    prev_lon = 0
+
+    for lat, lon in points:
+        lat_e5 = int(round(lat * 1e5))
+        lon_e5 = int(round(lon * 1e5))
+
+        d_lat = lat_e5 - prev_lat
+        d_lon = lon_e5 - prev_lon
+        prev_lat = lat_e5
+        prev_lon = lon_e5
+
+        for delta in (d_lat, d_lon):
+            val = ~(delta << 1) if delta < 0 else (delta << 1)
+            while val >= 0x20:
+                result.append(chr((0x20 | (val & 0x1F)) + 63))
+                val >>= 5
+            result.append(chr(val + 63))
+
+    return "".join(result)
+
+
+def decode_polyline(encoded: str) -> List[Tuple[float, float]]:
+    """
+    Decodes a Google Encoded Polyline string back into a list of (lat, lon) float tuples.
+    """
+    coords = []
+    idx = 0
+    lat = 0
+    lon = 0
+    length = len(encoded)
+
+    while idx < length:
+        shift = 0
+        result = 0
+        while True:
+            b = ord(encoded[idx]) - 63
+            idx += 1
+            result |= (b & 0x1F) << shift
+            shift += 5
+            if b < 0x20:
+                break
+        d_lat = ~(result >> 1) if (result & 1) else (result >> 1)
+        lat += d_lat
+
+        shift = 0
+        result = 0
+        while True:
+            b = ord(encoded[idx]) - 63
+            idx += 1
+            result |= (b & 0x1F) << shift
+            shift += 5
+            if b < 0x20:
+                break
+        d_lon = ~(result >> 1) if (result & 1) else (result >> 1)
+        lon += d_lon
+
+        coords.append((lat / 1e5, lon / 1e5))
+
+    return coords
+
+
+def generate_synthetic_gps_track(
+    sport: str,
+    distance_meters: float,
+    duration_seconds: int,
+    elevation_gain_meters: int,
+    avg_hr: int,
+    max_hr: int,
+    act_seed: int = 42,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, List[Any]]]]:
+    """
+    Generates realistic synthetic GPS track, polyline, and synchronized
+    elevation and HR telemetry stream for outdoor activities (hiking, cycling, running, walking).
+    Returns (None, None) for indoor/strength activities.
+    """
+    sport_lower = str(sport).lower()
+    if sport_lower in ("strength", "weights") or distance_meters <= 0 or duration_seconds <= 0:
+        return None, None
+
+    rng = random.Random(act_seed)
+
+    # 5 Scenic Alpine / European routes
+    anchors = [
+        (45.9237, 6.8694, 1035.0),   # Chamonix / Mont Blanc
+        (45.9765, 7.7491, 1620.0),   # Zermatt / Matterhorn
+        (46.5405, 12.1357, 1224.0),  # Cortina d'Ampezzo / Dolomites
+        (46.4950, 6.7450, 420.0),    # Lake Geneva / Lavaux
+        (46.4685, 10.3725, 1225.0),  # Stelvio / Bormio
+    ]
+    anchor_idx = rng.randint(0, len(anchors) - 1)
+    base_lat, base_lon, base_elev = anchors[anchor_idx]
+
+    # Sample density: 50-150 points per activity
+    num_points = min(150, max(50, duration_seconds // 45))
+    step_sec = duration_seconds / max(1, num_points - 1)
+
+    # Parametric Fourier closed loop route
+    a1, a2 = rng.uniform(0.1, 0.3), rng.uniform(-0.15, 0.15)
+    b1, b2 = rng.uniform(-0.25, 0.25), rng.uniform(-0.15, 0.15)
+    phi1, phi2 = rng.uniform(0, math.pi), rng.uniform(0, math.pi)
+    psi1, psi2 = rng.uniform(0, math.pi), rng.uniform(0, math.pi)
+
+    raw_x, raw_y = [], []
+    for i in range(num_points):
+        u = 2.0 * math.pi * (i / max(1, num_points - 1))
+        x = (math.cos(u) - 1.0) + a1 * (math.cos(2*u + phi1) - math.cos(phi1)) + a2 * (math.sin(3*u + phi2) - math.sin(phi2))
+        y = math.sin(u) + b1 * (math.sin(2*u + psi1) - math.sin(psi1)) + b2 * (math.cos(3*u + psi2) - math.cos(psi2))
+        raw_x.append(x)
+        raw_y.append(y)
+
+    # Perimeter scaling to match distance_meters
+    raw_len = sum(
+        math.hypot(raw_x[i] - raw_x[i-1], raw_y[i] - raw_y[i-1])
+        for i in range(1, num_points)
+    )
+    scale = (distance_meters / raw_len) if raw_len > 0 else 1.0
+    cos_lat = math.cos(math.radians(base_lat))
+
+    points = []
+    times = []
+    elevations = []
+    hrs = []
+
+    current_hr = float(avg_hr - rng.randint(5, 12))
+
+    for i in range(num_points):
+        t_sec = int(round(i * step_sec))
+        x_m = raw_x[i] * scale
+        y_m = raw_y[i] * scale
+
+        lat = round(base_lat + (y_m / 111320.0), 5)
+        lon = round(base_lon + (x_m / (111320.0 * cos_lat)), 5)
+
+        # Elevation curve with mountain ascent profile
+        u = math.pi * (i / max(1, num_points - 1))
+        undulation = 0.12 * elevation_gain_meters * math.sin(4 * u)
+        elev_i = base_elev + (elevation_gain_meters * (math.sin(u) ** 1.5)) + undulation
+        elev_i = max(50.0, round(elev_i, 1))
+
+        # Slope-responsive heart rate
+        if i > 0:
+            elev_diff = elev_i - elevations[-1]
+            if elev_diff > 0:
+                target_hr = avg_hr + (max_hr - avg_hr) * min(0.9, (elev_diff / 8.0))
+            else:
+                target_hr = avg_hr - 8.0
+        else:
+            target_hr = avg_hr - 5.0
+
+        current_hr += 0.25 * (target_hr - current_hr) + rng.uniform(-1.0, 1.0)
+        hr_i = int(round(min(max_hr, max(45, current_hr))))
+
+        points.append([lat, lon, elev_i, hr_i])
+        times.append(t_sec)
+        elevations.append(elev_i)
+        hrs.append(hr_i)
+
+    polyline = encode_polyline([(p[0], p[1]) for p in points])
+    min_lat = min(p[0] for p in points)
+    max_lat = max(p[0] for p in points)
+    min_lon = min(p[1] for p in points)
+    max_lon = max(p[1] for p in points)
+
+    gps_track = {
+        "polyline": polyline,
+        "points": points,
+        "bounds": [[min_lat, min_lon], [max_lat, max_lon]],
+    }
+    telemetry_stream = {
+        "time": times,
+        "elevation": elevations,
+        "hr": hrs,
+    }
+    return gps_track, telemetry_stream
+
+
+# ---------------------------------------------------------------------------
 # Athlete Profile & Default Zones
 # ---------------------------------------------------------------------------
 
 DEFAULT_ATHLETE_PROFILE = {
     "vo2max": 54,
+    "cycling_ftp": 280,
     "ftp": 280,
     "lthr": 168,
     "max_hr": 192,
@@ -286,11 +476,12 @@ class SyntheticDatasetGenerator:
                         "km": k,
                         "split_number": k,
                         "distance_meters": 1000.0,
-                        "duration_seconds": split_sec,
-                        "split_sec": split_sec,
+                        "duration_seconds": int(round(split_sec)),
+                        "split_sec": int(round(split_sec)),
                         "avg_hr": split_hr,
                         "avg_cadence": split_cadence,
                         "elevation_diff": elev_diff,
+                        "speed_mps": round(1000.0 / split_sec, 2) if split_sec > 0 else 0.0,
                     })
 
                 if remaining_m > 50:
@@ -302,11 +493,12 @@ class SyntheticDatasetGenerator:
                         "km": split_k,
                         "split_number": split_k,
                         "distance_meters": round(remaining_m, 1),
-                        "duration_seconds": split_sec,
-                        "split_sec": split_sec,
+                        "duration_seconds": int(round(split_sec)),
+                        "split_sec": int(round(split_sec)),
                         "avg_hr": avg_hr,
                         "avg_cadence": avg_cadence,
                         "elevation_diff": elev_diff,
+                        "speed_mps": round(remaining_m / split_sec, 2) if split_sec > 0 else 0.0,
                     })
             else:
                 # Weights: elapsed time splits (intervals of ~8-10 min each)
@@ -318,11 +510,12 @@ class SyntheticDatasetGenerator:
                         "km": s_idx,
                         "split_number": s_idx,
                         "distance_meters": 0.0,
-                        "duration_seconds": split_duration,
-                        "split_sec": split_duration,
+                        "duration_seconds": int(round(split_duration)),
+                        "split_sec": int(round(split_duration)),
                         "avg_hr": split_hr,
                         "avg_cadence": 0,
                         "elevation_diff": 0,
+                        "speed_mps": None,
                     })
 
             # Laps
@@ -367,6 +560,16 @@ class SyntheticDatasetGenerator:
 
             iso_date = current_date.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+            gps_track, telemetry_stream = generate_synthetic_gps_track(
+                sport=sport,
+                distance_meters=distance_m,
+                duration_seconds=duration_sec,
+                elevation_gain_meters=elevation_gain,
+                avg_hr=avg_hr,
+                max_hr=max_hr,
+                act_seed=self.seed * 10000 + act_id_counter,
+            )
+
             act_record = {
                 "id": act_id,
                 "date": iso_date,
@@ -392,6 +595,8 @@ class SyntheticDatasetGenerator:
                 "hr_zones": hr_zones,
                 "laps": laps,
                 "splits": splits,
+                "gps_track": gps_track,
+                "telemetry_stream": telemetry_stream,
             }
 
             activities.append(act_record)
@@ -439,8 +644,109 @@ class SyntheticDatasetGenerator:
                     "splits": act["splits"],
                     "laps": act["laps"],
                     "hr_zones": act["hr_zones"],
+                    "gps_track": act.get("gps_track"),
+                    "telemetry_stream": act.get("telemetry_stream"),
                 }
         return None
+
+    def generate_gpx_file(self, activity_id_or_data: Union[str, Dict[str, Any]]) -> Optional[bytes]:
+        """
+        Builds authentic GPX 1.1 XML track for outdoor activities (hiking, cycling, running, walking).
+        Returns None for non-GPS activities (e.g. strength training).
+        """
+        if isinstance(activity_id_or_data, str):
+            activities = self._cached_activities or self.generate_activities()
+            act = next((a for a in activities if str(a["id"]) == str(activity_id_or_data)), None)
+            if act is None:
+                return None
+        else:
+            act = activity_id_or_data
+
+        sport = str(act.get("sport", "")).lower()
+        dist_m = float(act.get("distance_meters", 0.0))
+        if sport in ("strength", "weights") or dist_m <= 0:
+            return None
+
+        dt_str = act.get("start_time") or act.get("date") or "2026-10-24T08:00:00Z"
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        duration = int(act.get("duration_seconds", 3600))
+        title = act.get("title") or f"{sport.capitalize()} Workout"
+        elev_gain = float(act.get("elevation_gain_meters", 100))
+        avg_hr = int(act.get("avg_hr", 140))
+        avg_cad = int(act.get("avg_cadence", 85))
+
+        gps = act.get("gps_track")
+        points = gps.get("points") if isinstance(gps, dict) else None
+
+        trkpt_elements = []
+        if points and len(points) >= 2:
+            step_sec = duration / max(1, len(points) - 1)
+            for i, pt in enumerate(points):
+                sec = int(round(i * step_sec))
+                p_time = (dt + timedelta(seconds=sec)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                lat, lon, ele, hr = pt[0], pt[1], pt[2], pt[3]
+                pt_xml = (
+                    f'      <trkpt lat="{lat}" lon="{lon}">\n'
+                    f'        <ele>{ele}</ele>\n'
+                    f'        <time>{p_time}</time>\n'
+                    f'        <extensions>\n'
+                    f'          <gpxtpx:TrackPointExtension xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">\n'
+                    f'            <gpxtpx:hr>{hr}</gpxtpx:hr>\n'
+                    f'            <gpxtpx:cad>{avg_cad}</gpxtpx:cad>\n'
+                    f'          </gpxtpx:TrackPointExtension>\n'
+                    f'        </extensions>\n'
+                    f'      </trkpt>'
+                )
+                trkpt_elements.append(pt_xml)
+        else:
+            base_lat = 46.582
+            base_lon = 7.905
+            base_ele = 1050.0
+            step_sec = max(10, duration // 120)
+            num_points = max(2, duration // step_sec)
+            for i in range(num_points):
+                sec = i * step_sec
+                p_time = (dt + timedelta(seconds=sec)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                frac = sec / max(1, duration)
+                lat = round(base_lat + math.sin(frac * math.pi * 2) * 0.018 + (frac * 0.025), 6)
+                lon = round(base_lon + math.cos(frac * math.pi * 2) * 0.022 + (frac * 0.030), 6)
+                ele = round(base_ele + math.sin(frac * math.pi) * elev_gain, 1)
+                hr = min(205, max(45, avg_hr + int(math.sin(sec / 180.0) * 8)))
+                pt_xml = (
+                    f'      <trkpt lat="{lat}" lon="{lon}">\n'
+                    f'        <ele>{ele}</ele>\n'
+                    f'        <time>{p_time}</time>\n'
+                    f'        <extensions>\n'
+                    f'          <gpxtpx:TrackPointExtension xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">\n'
+                    f'            <gpxtpx:hr>{hr}</gpxtpx:hr>\n'
+                    f'            <gpxtpx:cad>{avg_cad}</gpxtpx:cad>\n'
+                    f'          </gpxtpx:TrackPointExtension>\n'
+                    f'        </extensions>\n'
+                    f'      </trkpt>'
+                )
+                trkpt_elements.append(pt_xml)
+
+        trkpts_body = "\n".join(trkpt_elements)
+        gpx_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<gpx version="1.1" creator="garmin-dash"\n'
+            '     xmlns="http://www.topografix.com/GPX/1/1"\n'
+            '     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n'
+            '     xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">\n'
+            '  <metadata>\n'
+            f'    <name>{title}</name>\n'
+            f'    <time>{dt.strftime("%Y-%m-%dT%H:%M:%SZ")}</time>\n'
+            '  </metadata>\n'
+            '  <trk>\n'
+            f'    <name>{title}</name>\n'
+            f'    <type>{sport}</type>\n'
+            '    <trkseg>\n'
+            f'{trkpts_body}\n'
+            '    </trkseg>\n'
+            '  </trk>\n'
+            '</gpx>'
+        )
+        return gpx_xml.encode("utf-8")
 
     def generate_fit_file(self, activity_data: Dict[str, Any]) -> bytes:
         """
@@ -664,16 +970,42 @@ def compile_rollup(
     activities: List[Dict[str, Any]],
     athlete_profile: Optional[Dict[str, Any]] = None,
     generated_at: Optional[str] = None,
+    sync_manifest: Optional[Any] = None,
+    backup_vault: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Compiles list of activities into canonical dashboard_rollup.json matching
-    PROJECT.md § Interface Contracts 1.
+    PROJECT.md § Interface Contracts 1 & 2.
     """
     if athlete_profile is None:
         athlete_profile = dict(DEFAULT_ATHLETE_PROFILE)
+    else:
+        athlete_profile = dict(athlete_profile)
+        if "cycling_ftp" in athlete_profile and "ftp" not in athlete_profile:
+            athlete_profile["ftp"] = athlete_profile["cycling_ftp"]
+        elif "ftp" in athlete_profile and "cycling_ftp" not in athlete_profile:
+            athlete_profile["cycling_ftp"] = athlete_profile["ftp"]
 
     if generated_at is None:
         generated_at = datetime.now(timezone.utc).isoformat()
+
+    # Dynamic physiological threshold derivations from athlete profile
+    ftp = float(athlete_profile.get("cycling_ftp") or athlete_profile.get("ftp") or 280)
+    max_hr = int(athlete_profile.get("max_hr") or 192)
+    rest_hr = int(athlete_profile.get("rest_hr") or 48)
+    lthr = int(athlete_profile.get("lthr") or int(max_hr * 0.875))
+
+    # 5-zone HR boundaries (PROJECT.md § 2 & TEST_INFRA.md § 5.2)
+    z1_min = max(rest_hr, int(max_hr * 0.50))
+    z1_max = int(max_hr * 0.70)
+    z2_min = z1_max + 1
+    z2_max = int(max_hr * 0.80)
+    z3_min = z2_max + 1
+    z3_max = max(z3_min, lthr - 1)
+    z4_min = z3_max + 1
+    z4_max = max(z4_min, int(max_hr * 0.95))
+    z5_min = z4_max + 1
+    z5_max = max(z5_min, max_hr)
 
     # Sort activities chronologically
     sorted_acts = sorted(
@@ -681,16 +1013,19 @@ def compile_rollup(
         key=lambda a: a.get("start_time") or a.get("date") or ""
     )
 
-    # 1. Weekly Aggregations
-    weekly_map: Dict[str, Dict[str, Any]] = {}
+    # Calculate Continuous Training Load EWMA curves
+    load_results = calculate_continuous_training_load(sorted_acts, athlete_profile=athlete_profile)
+    weekly_list = load_results["weekly"]
+    daily_timeline = load_results["daily"]
+    snapshots = load_results["activity_snapshots"]
+
+    # Monthly aggregations & physiological zone accumulations
     monthly_map: Dict[str, Dict[str, Any]] = {}
 
     # Total physiological zone seconds
     hr_zone_seconds = {"Z1": 0, "Z2": 0, "Z3": 0, "Z4": 0, "Z5": 0}
     power_zone_seconds = {"Z1": 0, "Z2": 0, "Z3": 0, "Z4": 0, "Z5": 0, "Z6": 0, "Z7": 0}
     pace_zone_seconds = {"Recovery": 0, "Aerobic": 0, "Tempo": 0, "Threshold": 0, "Interval": 0}
-
-    ftp = float(athlete_profile.get("ftp", 280))
 
     for act in sorted_acts:
         date_str = act.get("start_time") or act.get("date") or "2026-10-24T00:00:00Z"
@@ -699,10 +1034,6 @@ def compile_rollup(
         except Exception:
             dt = datetime.now(timezone.utc)
 
-        # Week identifier (ISO: YYYY-Www)
-        year, week_num, _ = dt.isocalendar()
-        week_key = f"{year}-W{week_num:02d}"
-
         # Month identifier (YYYY-MM)
         month_key = dt.strftime("%Y-%m")
 
@@ -710,36 +1041,6 @@ def compile_rollup(
         dist_km = float(act.get("distance_meters", 0.0)) / 1000.0
         dur_hours = float(act.get("duration_seconds", 0.0)) / 3600.0
         load = float(act.get("tss") or act.get("training_stress_score") or 0.0)
-
-        # Weekly map entry
-        if week_key not in weekly_map:
-            weekly_map[week_key] = {
-                "week": week_key,
-                "hiking_hours": 0.0,
-                "cycling_hours": 0.0,
-                "strength_hours": 0.0,
-                "hiking_km": 0.0,
-                "cycle_km": 0.0,
-                "run_km": 0.0,
-                "load": 0.0,
-                "atl": float(act.get("atl", 50.0)),
-                "ctl": float(act.get("ctl", 50.0)),
-                "tsb": float(act.get("tsb", 0.0)),
-            }
-        entry = weekly_map[week_key]
-        if sport in ("hiking", "running"):
-            entry["hiking_km"] = round(entry["hiking_km"] + dist_km, 1)
-            entry["hiking_hours"] = round(entry["hiking_hours"] + dur_hours, 1)
-            entry["run_km"] = entry["hiking_km"]
-        elif sport in ("cycling", "cycle"):
-            entry["cycle_km"] = round(entry["cycle_km"] + dist_km, 1)
-            entry["cycling_hours"] = round(entry["cycling_hours"] + dur_hours, 1)
-        elif sport in ("strength", "weights"):
-            entry["strength_hours"] = round(entry["strength_hours"] + dur_hours, 1)
-        entry["load"] = round(entry["load"] + load, 1)
-        entry["atl"] = float(act.get("atl", entry["atl"]))
-        entry["ctl"] = float(act.get("ctl", entry["ctl"]))
-        entry["tsb"] = float(act.get("tsb", entry["tsb"]))
 
         # Monthly map entry
         if month_key not in monthly_map:
@@ -767,21 +1068,62 @@ def compile_rollup(
 
         # Physiological accumulations
         dur_sec = int(act.get("duration_seconds", 0))
-        # HR zones
+
+        # HR zones accumulation
         hz = act.get("hr_zones")
-        if isinstance(hz, dict):
-            hr_zone_seconds["Z1"] += int(hz.get("z1") or hz.get("Z1") or 0)
-            hr_zone_seconds["Z2"] += int(hz.get("z2") or hz.get("Z2") or 0)
-            hr_zone_seconds["Z3"] += int(hz.get("z3") or hz.get("Z3") or 0)
-            hr_zone_seconds["Z4"] += int(hz.get("z4") or hz.get("Z4") or 0)
-            hr_zone_seconds["Z5"] += int(hz.get("z5") or hz.get("Z5") or 0)
+        if isinstance(hz, dict) and any(int(hz.get(k) or 0) > 0 for k in ("z1", "Z1", "z2", "Z2", "z3", "Z3", "z4", "Z4", "z5", "Z5")):
+            act_z1 = int(hz.get("z1") or hz.get("Z1") or 0)
+            act_z2 = int(hz.get("z2") or hz.get("Z2") or 0)
+            act_z3 = int(hz.get("z3") or hz.get("Z3") or 0)
+            act_z4 = int(hz.get("z4") or hz.get("Z4") or 0)
+            act_z5 = int(hz.get("z5") or hz.get("Z5") or 0)
+            tot_z = act_z1 + act_z2 + act_z3 + act_z4 + act_z5
+            if tot_z != dur_sec and dur_sec > 0:
+                act_z5 += (dur_sec - tot_z)
+            hr_zone_seconds["Z1"] += act_z1
+            hr_zone_seconds["Z2"] += act_z2
+            hr_zone_seconds["Z3"] += act_z3
+            hr_zone_seconds["Z4"] += act_z4
+            hr_zone_seconds["Z5"] += act_z5
+        elif act.get("telemetry_stream") and isinstance(act["telemetry_stream"].get("hr"), list) and len(act["telemetry_stream"]["hr"]) > 0:
+            hr_stream = act["telemetry_stream"]["hr"]
+            stream_len = len(hr_stream)
+            ratio = dur_sec / max(1, stream_len)
+            stream_zones = {"Z1": 0.0, "Z2": 0.0, "Z3": 0.0, "Z4": 0.0, "Z5": 0.0}
+            for reading in hr_stream:
+                val = int(reading or 0)
+                if val >= z5_min:
+                    stream_zones["Z5"] += ratio
+                elif val >= z4_min:
+                    stream_zones["Z4"] += ratio
+                elif val >= z3_min:
+                    stream_zones["Z3"] += ratio
+                elif val >= z2_min:
+                    stream_zones["Z2"] += ratio
+                else:
+                    stream_zones["Z1"] += ratio
+            z1_acc = int(round(stream_zones["Z1"]))
+            z2_acc = int(round(stream_zones["Z2"]))
+            z3_acc = int(round(stream_zones["Z3"]))
+            z4_acc = int(round(stream_zones["Z4"]))
+            z5_acc = dur_sec - (z1_acc + z2_acc + z3_acc + z4_acc)
+            hr_zone_seconds["Z1"] += z1_acc
+            hr_zone_seconds["Z2"] += z2_acc
+            hr_zone_seconds["Z3"] += z3_acc
+            hr_zone_seconds["Z4"] += z4_acc
+            hr_zone_seconds["Z5"] += z5_acc
         else:
-            # Fallback estimation
-            hr_zone_seconds["Z1"] += int(dur_sec * 0.15)
-            hr_zone_seconds["Z2"] += int(dur_sec * 0.45)
-            hr_zone_seconds["Z3"] += int(dur_sec * 0.25)
-            hr_zone_seconds["Z4"] += int(dur_sec * 0.12)
-            hr_zone_seconds["Z5"] += int(dur_sec * 0.03)
+            # Fallback estimation strictly summing to dur_sec
+            fb_z1 = int(dur_sec * 0.15)
+            fb_z2 = int(dur_sec * 0.45)
+            fb_z3 = int(dur_sec * 0.25)
+            fb_z4 = int(dur_sec * 0.12)
+            fb_z5 = dur_sec - (fb_z1 + fb_z2 + fb_z3 + fb_z4)
+            hr_zone_seconds["Z1"] += fb_z1
+            hr_zone_seconds["Z2"] += fb_z2
+            hr_zone_seconds["Z3"] += fb_z3
+            hr_zone_seconds["Z4"] += fb_z4
+            hr_zone_seconds["Z5"] += fb_z5
 
         # Power zones (for cycling)
         if sport in ("cycling", "cycle"):
@@ -801,14 +1143,25 @@ def compile_rollup(
             pace_zone_seconds["Threshold"] += int(dur_sec * 0.12)
             pace_zone_seconds["Interval"] += int(dur_sec * 0.03)
 
-    # Format canonical physiological blocks
-    heart_rate_zones_list = [
-        {"zone": "Z1", "min": 96, "max": 134, "seconds": hr_zone_seconds["Z1"]},
-        {"zone": "Z2", "min": 135, "max": 153, "seconds": hr_zone_seconds["Z2"]},
-        {"zone": "Z3", "min": 154, "max": 167, "seconds": hr_zone_seconds["Z3"]},
-        {"zone": "Z4", "min": 168, "max": 182, "seconds": hr_zone_seconds["Z4"]},
-        {"zone": "Z5", "min": 183, "max": 192, "seconds": hr_zone_seconds["Z5"]},
+    # Format canonical physiological blocks with percentage and dynamic boundaries
+    total_hr_sec = sum(hr_zone_seconds.values())
+    hr_specs = [
+        ("Z1", z1_min, z1_max, hr_zone_seconds["Z1"]),
+        ("Z2", z2_min, z2_max, hr_zone_seconds["Z2"]),
+        ("Z3", z3_min, z3_max, hr_zone_seconds["Z3"]),
+        ("Z4", z4_min, z4_max, hr_zone_seconds["Z4"]),
+        ("Z5", z5_min, z5_max, hr_zone_seconds["Z5"]),
     ]
+    heart_rate_zones_list = []
+    for zone_name, b_min, b_max, z_sec in hr_specs:
+        pct = round((z_sec / total_hr_sec) * 100.0, 1) if total_hr_sec > 0 else 0.0
+        heart_rate_zones_list.append({
+            "zone": zone_name,
+            "min": b_min,
+            "max": b_max,
+            "seconds": z_sec,
+            "percentage": pct,
+        })
 
     power_zones_list = [
         {"zone": "Z1", "min": 0, "max": int(ftp * 0.55), "seconds": power_zone_seconds["Z1"]},
@@ -829,10 +1182,10 @@ def compile_rollup(
     ]
 
     threshold_trends = [
-        {"date": "2026-09-01", "vo2max": 51, "ftp": 268, "lthr": 165},
-        {"date": "2026-09-15", "vo2max": 52, "ftp": 272, "lthr": 166},
-        {"date": "2026-10-01", "vo2max": 53, "ftp": 276, "lthr": 167},
-        {"date": "2026-10-15", "vo2max": 54, "ftp": 280, "lthr": 168},
+        {"date": "2026-09-01", "vo2max": 51, "cycling_ftp": 268, "ftp": 268, "lthr": 165},
+        {"date": "2026-09-15", "vo2max": 52, "cycling_ftp": 272, "ftp": 272, "lthr": 166},
+        {"date": "2026-10-01", "vo2max": 53, "cycling_ftp": 276, "ftp": 276, "lthr": 167},
+        {"date": "2026-10-15", "vo2max": 54, "cycling_ftp": 280, "ftp": 280, "lthr": 168},
     ]
 
     # Clean activity representation conforming to PROJECT.md § Interface Contracts 1
@@ -841,6 +1194,12 @@ def compile_rollup(
         date_iso = act.get("date") or act.get("start_time") or ""
         sport_val = act.get("sport", "hiking")
         is_strength = sport_val in ("strength", "weights")
+
+        act_id = str(act.get("id", ""))
+        snap = snapshots.get(act_id)
+        atl_val = snap["atl"] if snap else act.get("atl")
+        ctl_val = snap["ctl"] if snap else act.get("ctl")
+        tsb_val = snap["tsb"] if snap else act.get("tsb")
 
         clean_act = {
             "id": act.get("id", ""),
@@ -861,12 +1220,14 @@ def compile_rollup(
             "elevation_gain_meters": 0 if is_strength else int(act.get("elevation_gain_meters", 0)),
             "tss": float(act.get("tss") or act.get("training_stress_score") or 0.0),
             "training_stress_score": float(act.get("tss") or act.get("training_stress_score") or 0.0),
-            "atl": act.get("atl"),
-            "ctl": act.get("ctl"),
-            "tsb": act.get("tsb"),
+            "atl": atl_val,
+            "ctl": ctl_val,
+            "tsb": tsb_val,
             "laps": act.get("laps", []),
             "splits": act.get("splits", []),
             "hr_zones": act.get("hr_zones", {}),
+            "gps_track": None if is_strength else act.get("gps_track"),
+            "telemetry_stream": None if is_strength else act.get("telemetry_stream"),
         }
         canonical_activities.append(clean_act)
 
@@ -875,10 +1236,84 @@ def compile_rollup(
     total_moving_hours = sum(a["moving_time_seconds"] for a in canonical_activities) / 3600.0
     total_calories = sum(a["calories"] for a in canonical_activities)
 
+    # -----------------------------------------------------------------------
+    # Backup Vault Rollup Metadata (F20)
+    # -----------------------------------------------------------------------
+    if backup_vault is not None and isinstance(backup_vault, dict):
+        vault_entry = dict(backup_vault)
+    elif sync_manifest is not None:
+        if hasattr(sync_manifest, "archival_health"):
+            health = sync_manifest.archival_health
+            total_acts = sync_manifest.total_synced_activities or len(canonical_activities)
+            by_year = dict(sync_manifest.activities_by_year) if sync_manifest.activities_by_year else {}
+            last_sync = sync_manifest.last_sync_datetime
+            verified = sync_manifest.integrity_verified
+        elif isinstance(sync_manifest, dict):
+            health = sync_manifest.get("archival_health", "healthy")
+            total_acts = sync_manifest.get("total_synced_activities", len(canonical_activities))
+            by_year = dict(sync_manifest.get("activities_by_year", {}))
+            last_sync = sync_manifest.get("last_sync_datetime")
+            verified = sync_manifest.get("integrity_verified", True)
+        else:
+            health = "healthy"
+            total_acts = len(canonical_activities)
+            by_year = {}
+            last_sync = None
+            verified = True
+
+        if not by_year:
+            for act in canonical_activities:
+                d_str = act.get("start_time") or act.get("date") or ""
+                if len(d_str) >= 4 and d_str[:4].isdigit():
+                    yr = d_str[:4]
+                    by_year[yr] = by_year.get(yr, 0) + 1
+
+        if not last_sync or str(last_sync).startswith("1970"):
+            last_sync = generated_at
+
+        sorted_by_year = {k: by_year[k] for k in sorted(by_year.keys())} if by_year else {datetime.now(timezone.utc).strftime("%Y"): len(canonical_activities)}
+
+        vault_entry = {
+            "status": health,
+            "storage_provider": "Hetzner Storage Box",
+            "total_activities": total_acts if total_acts > 0 else len(canonical_activities),
+            "activities_by_year": sorted_by_year,
+            "last_backup_datetime": last_sync,
+            "formats": ["FIT", "GPX", "JSON"],
+            "verified_integrity": bool(verified),
+        }
+    else:
+        # Mock mode / synthetic generation: synthesize directly from dataset
+        by_year: Dict[str, int] = {}
+        for act in canonical_activities:
+            d_str = act.get("start_time") or act.get("date") or ""
+            if len(d_str) >= 4 and d_str[:4].isdigit():
+                yr = d_str[:4]
+                by_year[yr] = by_year.get(yr, 0) + 1
+
+        sorted_by_year = {k: by_year[k] for k in sorted(by_year.keys())} if by_year else {datetime.now(timezone.utc).strftime("%Y"): len(canonical_activities)}
+
+        vault_entry = {
+            "status": "healthy",
+            "storage_provider": "Hetzner Storage Box",
+            "total_activities": len(canonical_activities),
+            "activities_by_year": sorted_by_year,
+            "last_backup_datetime": generated_at,
+            "formats": ["FIT", "GPX", "JSON"],
+            "verified_integrity": True,
+        }
+
     return {
         "version": "1.0.0",
         "generated_at": generated_at,
-        "athlete": athlete_profile,
+        "athlete": {
+            "vo2max": athlete_profile.get("vo2max", 54),
+            "cycling_ftp": int(ftp),
+            "ftp": int(ftp),
+            "lthr": lthr,
+            "max_hr": max_hr,
+            "rest_hr": rest_hr,
+        },
         "summary": {
             "total_activities": len(canonical_activities),
             "total_distance_km": round(total_km, 1),
@@ -890,8 +1325,9 @@ def compile_rollup(
             "running_count": sum(1 for a in canonical_activities if a["sport"] in ("hiking", "running")),
         },
         "training_load": {
-            "weekly": [weekly_map[k] for k in sorted(weekly_map.keys())],
+            "weekly": weekly_list,
             "monthly": [monthly_map[k] for k in sorted(monthly_map.keys())],
+            "daily": daily_timeline,
         },
         "physiological": {
             "heart_rate_zones": heart_rate_zones_list,
@@ -900,6 +1336,7 @@ def compile_rollup(
             "threshold_trends": threshold_trends,
         },
         "activities": canonical_activities,
+        "backup_vault": vault_entry,
     }
 
 
@@ -908,12 +1345,18 @@ def compile_dashboard_rollup(
     sftp_client: Any = None,
     staging_dir: Optional[Path] = None,
     is_mock: bool = True,
+    sync_manifest: Optional[Any] = None,
+    backup_vault: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compiles dashboard rollup JSON dictionary."""
     if activities is None or len(activities) == 0:
         gen = SyntheticDatasetGenerator(seed=42)
         activities = gen.generate_activities()
-    return compile_rollup(activities)
+    return compile_rollup(
+        activities,
+        sync_manifest=sync_manifest,
+        backup_vault=backup_vault,
+    )
 
 
 def generate_8_week_dataset(seed: int = 42) -> List[Dict[str, Any]]:

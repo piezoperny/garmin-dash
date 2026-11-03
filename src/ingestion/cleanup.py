@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Patterns that MUST NEVER exist in deployment or public directories
 PROHIBITED_PATTERNS = [
     "*.fit",
+    "*.gpx",
     "*_summary.json",
     "dashboard_rollup.json",
     "*.tmp",
@@ -146,7 +147,7 @@ def purge_all_transient_data(workspace_root: Union[Path, str] = ".", secure: boo
     staging_count = purge_directory(root / ".staging", secure=secure, remove_dir=True)
 
     orphaned_count = 0
-    for pattern in ["*.fit", "*_summary.json"]:
+    for pattern in ["*.fit", "*.gpx", "*_summary.json"]:
         for match in root.rglob(pattern):
             # Do not touch files in ignored directories
             parts = set(match.parts)

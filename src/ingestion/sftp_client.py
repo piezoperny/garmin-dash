@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Tuple, Union, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple, Union, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -237,9 +237,14 @@ class SFTPClientProtocol(Protocol):
         start_time_iso: str,
         summary_json_bytes: Optional[bytes] = None,
         fit_bytes: Optional[bytes] = None,
+        gpx_bytes: Optional[bytes] = None,
         base_dir: str = "garmin_archive",
     ) -> Dict[str, str]:
-        """Archives raw activity summary and FIT file into partitioned YYYY/MM directory."""
+        """Archives raw activity summary, FIT, and GPX file into partitioned YYYY/MM directory."""
+        ...
+
+    def scan_archive_inventory(self, base_dir: str = "garmin_archive") -> Dict[str, Any]:
+        """Scans remote archive inventory by year and format."""
         ...
 
 
@@ -571,10 +576,12 @@ class HetznerSFTPClient:
         start_time_iso: str,
         summary_json_bytes: Optional[bytes] = None,
         fit_bytes: Optional[bytes] = None,
+        gpx_bytes: Optional[bytes] = None,
         base_dir: str = "garmin_archive",
     ) -> Dict[str, str]:
         try:
-            dt = datetime.fromisoformat(start_time_iso.replace("Z", "+00:00"))
+            cleaned = str(start_time_iso).replace("Z", "+00:00").replace(" ", "T")
+            dt = datetime.fromisoformat(cleaned)
             year_str = f"{dt.year:04d}"
             month_str = f"{dt.month:02d}"
         except Exception:
@@ -595,7 +602,76 @@ class HetznerSFTPClient:
             self.upload_bytes(fit_bytes, fit_path, atomic=True)
             results["fit"] = fit_path
 
+        if gpx_bytes is not None:
+            gpx_path = f"{remote_dir}/{activity_id}.gpx"
+            self.upload_bytes(gpx_bytes, gpx_path, atomic=True)
+            results["gpx"] = gpx_path
+
         return results
+
+    def scan_archive_inventory(self, base_dir: str = "garmin_archive") -> Dict[str, Any]:
+        """
+        Scans remote {base_dir}/activities/{year}/{month}/ hierarchy and summarizes
+        total activities, activities_by_year, formats_backed_up, and file list.
+        """
+        activities_root = f"{base_dir.rstrip('/')}/activities"
+        activities_by_year: Dict[str, int] = {}
+        formats_backed_up: Dict[str, int] = {"fit": 0, "gpx": 0, "json": 0}
+        activity_ids_by_year: Dict[str, Set[str]] = {}
+        all_activity_ids: Set[str] = set()
+        file_count = 0
+
+        try:
+            year_dirs = self.listdir(activities_root)
+        except Exception:
+            year_dirs = []
+
+        for y in year_dirs:
+            if not (len(y) == 4 and y.isdigit()):
+                continue
+            y_path = f"{activities_root}/{y}"
+            try:
+                month_dirs = self.listdir(y_path)
+            except Exception:
+                month_dirs = []
+
+            for m in month_dirs:
+                m_path = f"{y_path}/{m}"
+                try:
+                    entries = self.listdir(m_path)
+                except Exception:
+                    entries = []
+
+                for entry in entries:
+                    file_count += 1
+                    lower_entry = entry.lower()
+                    if lower_entry.endswith("_summary.json"):
+                        act_id = entry[:-13]
+                        formats_backed_up["json"] += 1
+                    elif lower_entry.endswith(".fit"):
+                        act_id = entry[:-4]
+                        formats_backed_up["fit"] += 1
+                    elif lower_entry.endswith(".gpx"):
+                        act_id = entry[:-4]
+                        formats_backed_up["gpx"] += 1
+                    else:
+                        continue
+
+                    if y not in activity_ids_by_year:
+                        activity_ids_by_year[y] = set()
+                    activity_ids_by_year[y].add(act_id)
+                    all_activity_ids.add(act_id)
+
+        for y, ids in activity_ids_by_year.items():
+            activities_by_year[y] = len(ids)
+
+        return {
+            "total_activities": len(all_activity_ids),
+            "activities_by_year": activities_by_year,
+            "formats_backed_up": formats_backed_up,
+            "years": sorted(list(activities_by_year.keys())),
+            "file_count": file_count,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -823,11 +899,13 @@ class MockSFTPClient:
         start_time_iso: str,
         summary_json_bytes: Optional[bytes] = None,
         fit_bytes: Optional[bytes] = None,
+        gpx_bytes: Optional[bytes] = None,
         base_dir: str = "garmin_archive",
     ) -> Dict[str, str]:
         from datetime import datetime
         try:
-            dt = datetime.fromisoformat(start_time_iso.replace("Z", "+00:00"))
+            cleaned = str(start_time_iso).replace("Z", "+00:00").replace(" ", "T")
+            dt = datetime.fromisoformat(cleaned)
             year_str = f"{dt.year:04d}"
             month_str = f"{dt.month:02d}"
         except Exception:
@@ -848,7 +926,76 @@ class MockSFTPClient:
             self.upload_bytes(fit_bytes, fit_path, atomic=True)
             results["fit"] = fit_path
 
+        if gpx_bytes is not None:
+            gpx_path = f"{remote_dir}/{activity_id}.gpx"
+            self.upload_bytes(gpx_bytes, gpx_path, atomic=True)
+            results["gpx"] = gpx_path
+
         return results
+
+    def scan_archive_inventory(self, base_dir: str = "garmin_archive") -> Dict[str, Any]:
+        """
+        Scans in-memory {base_dir}/activities/{year}/{month}/ hierarchy and summarizes
+        total activities, activities_by_year, formats_backed_up, and file list.
+        """
+        activities_root = f"{base_dir.rstrip('/')}/activities"
+        activities_by_year: Dict[str, int] = {}
+        formats_backed_up: Dict[str, int] = {"fit": 0, "gpx": 0, "json": 0}
+        activity_ids_by_year: Dict[str, Set[str]] = {}
+        all_activity_ids: Set[str] = set()
+        file_count = 0
+
+        try:
+            year_dirs = self.listdir(activities_root)
+        except Exception:
+            year_dirs = []
+
+        for y in year_dirs:
+            if not (len(y) == 4 and y.isdigit()):
+                continue
+            y_path = f"{activities_root}/{y}"
+            try:
+                month_dirs = self.listdir(y_path)
+            except Exception:
+                month_dirs = []
+
+            for m in month_dirs:
+                m_path = f"{y_path}/{m}"
+                try:
+                    entries = self.listdir(m_path)
+                except Exception:
+                    entries = []
+
+                for entry in entries:
+                    file_count += 1
+                    lower_entry = entry.lower()
+                    if lower_entry.endswith("_summary.json"):
+                        act_id = entry[:-13]
+                        formats_backed_up["json"] += 1
+                    elif lower_entry.endswith(".fit"):
+                        act_id = entry[:-4]
+                        formats_backed_up["fit"] += 1
+                    elif lower_entry.endswith(".gpx"):
+                        act_id = entry[:-4]
+                        formats_backed_up["gpx"] += 1
+                    else:
+                        continue
+
+                    if y not in activity_ids_by_year:
+                        activity_ids_by_year[y] = set()
+                    activity_ids_by_year[y].add(act_id)
+                    all_activity_ids.add(act_id)
+
+        for y, ids in activity_ids_by_year.items():
+            activities_by_year[y] = len(ids)
+
+        return {
+            "total_activities": len(all_activity_ids),
+            "activities_by_year": activities_by_year,
+            "formats_backed_up": formats_backed_up,
+            "years": sorted(list(activities_by_year.keys())),
+            "file_count": file_count,
+        }
 
 
 # ---------------------------------------------------------------------------

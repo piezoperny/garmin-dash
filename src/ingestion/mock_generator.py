@@ -961,6 +961,275 @@ class SyntheticDatasetGenerator:
         """Alias for generate_fit_file."""
         return self.generate_fit_file(activity)
 
+    def generate_wellness(self, activities: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Generates deterministic 8-week Garmin wellness metrics aligned with activities."""
+        acts = activities if activities is not None else (self._cached_activities or self.generate_activities())
+        return generate_wellness_dataset(
+            activities=acts,
+            athlete_profile=self.athlete,
+            seed=self.seed,
+            anchor_date=self.anchor_date,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Garmin Daily Wellness Telemetry Generator
+# ---------------------------------------------------------------------------
+
+def generate_wellness_dataset(
+    activities: Optional[List[Dict[str, Any]]] = None,
+    athlete_profile: Optional[Dict[str, Any]] = None,
+    seed: int = 42,
+    anchor_date: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Generates deterministic Garmin daily wellness metrics and current snapshot.
+    Compiles all 8 Garmin wellness metrics conforming to PROJECT.md § Interface Contracts:
+    - Daily steps (steps, steps_goal)
+    - Resting heart rate (resting_hr, resting_hr_7d_avg)
+    - Sleep (sleep_seconds, sleep_score, sleep_quality, stages)
+    - Stress (stress_level, stress_qualifier, stress_status)
+    - Body battery (body_battery, charged, drained, body_battery_high, body_battery_low)
+    - HRV status (hrv_status, hrv_weekly_avg, hrv_last_night_avg, hrv_baseline)
+    - Active intensity minutes (active_intensity_minutes, intensity_minutes_goal, intensity_minutes_weekly)
+    - Daily calories (daily_calories, active_calories, bmr_calories)
+    """
+    if athlete_profile is None:
+        athlete_profile = dict(DEFAULT_ATHLETE_PROFILE)
+
+    # Determine timeline boundaries
+    if activities and len(activities) > 0:
+        parsed_dates = []
+        for a in activities:
+            d_str = a.get("start_time") or a.get("date") or ""
+            if d_str:
+                try:
+                    dt = datetime.fromisoformat(d_str.replace("Z", "+00:00"))
+                    parsed_dates.append(dt)
+                except Exception:
+                    pass
+        if parsed_dates:
+            min_dt = min(parsed_dates).replace(hour=0, minute=0, second=0, microsecond=0)
+            max_dt = max(parsed_dates).replace(hour=0, minute=0, second=0, microsecond=0)
+            span_days = max(56, (max_dt - min_dt).days + 1)
+            start_dt = max_dt - timedelta(days=span_days - 1)
+            end_dt = max_dt
+            num_days = span_days
+        else:
+            end_dt = (anchor_date or datetime(2026, 10, 26, 12, 0, 0, tzinfo=timezone.utc)).replace(hour=0, minute=0, second=0, microsecond=0)
+            start_dt = end_dt - timedelta(days=55)
+            num_days = 56
+    else:
+        end_dt = (anchor_date or datetime(2026, 10, 26, 12, 0, 0, tzinfo=timezone.utc)).replace(hour=0, minute=0, second=0, microsecond=0)
+        start_dt = end_dt - timedelta(days=55)
+        num_days = 56
+
+    acts_by_date: Dict[str, List[Dict[str, Any]]] = {}
+    if activities:
+        for a in activities:
+            d_str = str(a.get("start_time") or a.get("date") or "")
+            if len(d_str) >= 10:
+                d_key = d_str[:10]
+                acts_by_date.setdefault(d_key, []).append(a)
+
+    w_rng = random.Random(seed + 88888)
+    rest_hr_base = int(athlete_profile.get("rest_hr") or 48)
+    bmr_base = int(athlete_profile.get("bmr") or 1730)
+
+    daily_records: List[Dict[str, Any]] = []
+    rhr_history: List[int] = []
+    hrv_history: List[int] = []
+    intensity_history: List[int] = []
+
+    for day_offset in range(num_days):
+        day_date = start_dt + timedelta(days=day_offset)
+        date_str = day_date.strftime("%Y-%m-%d")
+        day_acts = acts_by_date.get(date_str, [])
+
+        day_tss = sum(float(a.get("tss") or a.get("training_stress_score") or 0.0) for a in day_acts)
+        day_dur_sec = sum(int(a.get("duration_seconds") or 0) for a in day_acts)
+        day_cal = sum(int(a.get("calories") or 0) for a in day_acts)
+        day_dist_m = sum(float(a.get("distance_meters") or 0.0) for a in day_acts)
+
+        # 1. Steps
+        steps_goal = 10000
+        base_steps = w_rng.randint(6400, 8900)
+        act_steps = 0
+        for a in day_acts:
+            sp = str(a.get("sport") or "").lower()
+            dist = float(a.get("distance_meters") or 0.0)
+            if sp in ("running", "run"):
+                act_steps += int((dist / 1000.0) * 1250)
+            elif sp in ("hiking", "hike", "walking", "walk"):
+                act_steps += int((dist / 1000.0) * 1350)
+            else:
+                act_steps += w_rng.randint(600, 1400)
+        total_steps = base_steps + act_steps
+
+        # 2. Resting Heart Rate
+        stress_bump = 2 if day_tss > 100 else (1 if day_tss > 50 else w_rng.choice([0, 0, 1, -1]))
+        rhr = max(42, min(65, rest_hr_base + stress_bump))
+        rhr_history.append(rhr)
+        rhr_7d_avg = round(sum(rhr_history[-7:]) / len(rhr_history[-7:]), 1)
+
+        # 3. Sleep
+        sleep_sec = w_rng.randint(24600, 31200)
+        base_score = w_rng.randint(78, 93)
+        if day_tss > 120:
+            base_score = max(70, base_score - 4)
+        sleep_score = base_score
+        if sleep_score >= 88:
+            sleep_quality = "Excellent"
+        elif sleep_score >= 78:
+            sleep_quality = "Good"
+        elif sleep_score >= 68:
+            sleep_quality = "Fair"
+        else:
+            sleep_quality = "Poor"
+
+        sleep_deep = int(sleep_sec * w_rng.uniform(0.18, 0.23))
+        sleep_rem = int(sleep_sec * w_rng.uniform(0.20, 0.25))
+        sleep_awake = int(sleep_sec * w_rng.uniform(0.04, 0.07))
+        sleep_light = sleep_sec - (sleep_deep + sleep_rem + sleep_awake)
+
+        # 4. Stress
+        if day_tss > 100:
+            stress_level = w_rng.randint(28, 38)
+        elif day_tss > 50:
+            stress_level = w_rng.randint(22, 29)
+        else:
+            stress_level = w_rng.randint(16, 24)
+        stress_qualifier = "Low" if stress_level < 26 else ("Rest" if stress_level < 18 else "Medium")
+
+        # 5. Body Battery
+        charged = min(92, max(48, int(sleep_score * w_rng.uniform(0.78, 0.92))))
+        drain_load = int(day_tss * 0.35 + (total_steps / 1000.0) * 1.8 + w_rng.randint(12, 22))
+        drained = min(90, max(28, drain_load))
+        bb_high = min(100, max(75, 20 + charged))
+        bb_low = max(5, bb_high - drained)
+        current_bb = max(10, min(100, bb_high - int(drained * 0.65)))
+
+        # 6. HRV Status
+        hrv_night = max(42, min(75, int(54 + (sleep_score - 82) * 0.35 - (day_tss / 45.0) + w_rng.randint(-3, 3))))
+        hrv_history.append(hrv_night)
+        hrv_weekly = round(sum(hrv_history[-7:]) / len(hrv_history[-7:]), 1)
+        hrv_status = "Balanced" if 48 <= hrv_night <= 62 else ("Unbalanced" if hrv_night < 48 else "High")
+
+        # 7. Active Intensity Minutes
+        intensity_goal = 150
+        if day_dur_sec > 0:
+            mod_min = int((day_dur_sec / 60) * 0.65)
+            vig_min = int((day_dur_sec / 60) * 0.35)
+            active_intensity_min = mod_min + (vig_min * 2) + w_rng.randint(2, 8)
+        else:
+            active_intensity_min = w_rng.randint(5, 18)
+            mod_min = int(active_intensity_min * 0.8)
+            vig_min = active_intensity_min - mod_min
+        intensity_history.append(active_intensity_min)
+        weekly_intensity = sum(intensity_history[-7:])
+
+        # 8. Daily Calories
+        step_cal = int(total_steps * 0.04)
+        act_cal = day_cal + step_cal
+        daily_cal = bmr_base + act_cal
+
+        rec = {
+            "date": date_str,
+            "steps": total_steps,
+            "steps_goal": steps_goal,
+            "resting_hr": rhr,
+            "resting_heart_rate": rhr,
+            "resting_hr_7d_avg": rhr_7d_avg,
+            "sleep_seconds": sleep_sec,
+            "sleep_score": sleep_score,
+            "sleep_quality": sleep_quality,
+            "sleep_deep_seconds": sleep_deep,
+            "sleep_light_seconds": sleep_light,
+            "sleep_rem_seconds": sleep_rem,
+            "sleep_awake_seconds": sleep_awake,
+            "sleep_stages": {
+                "deep_seconds": sleep_deep,
+                "light_seconds": sleep_light,
+                "rem_seconds": sleep_rem,
+                "awake_seconds": sleep_awake,
+            },
+            "stress_level": stress_level,
+            "stress_qualifier": stress_qualifier,
+            "stress_status": stress_qualifier,
+            "body_battery": current_bb,
+            "body_battery_charged": charged,
+            "body_battery_drained": drained,
+            "charged": charged,
+            "drained": drained,
+            "body_battery_high": bb_high,
+            "body_battery_low": bb_low,
+            "hrv_status": hrv_status,
+            "hrv_weekly_avg": int(round(hrv_weekly)),
+            "hrv_last_night_avg": hrv_night,
+            "hrv_7d_avg": int(round(hrv_weekly)),
+            "hrv_baseline": {"low": 48, "high": 62},
+            "active_intensity_minutes": active_intensity_min,
+            "intensity_minutes_goal": intensity_goal,
+            "intensity_minutes_weekly": weekly_intensity,
+            "intensity_minutes_moderate": mod_min,
+            "intensity_minutes_vigorous": vig_min,
+            "daily_calories": daily_cal,
+            "active_calories": act_cal,
+            "bmr_calories": bmr_base,
+            "calories_total": daily_cal,
+            "calories_active": act_cal,
+            "calories_bmr": bmr_base,
+        }
+        daily_records.append(rec)
+
+    latest = daily_records[-1] if daily_records else {}
+    current_snapshot = {
+        "steps": latest.get("steps", 10000),
+        "steps_goal": latest.get("steps_goal", 10000),
+        "resting_hr": latest.get("resting_hr", 48),
+        "resting_heart_rate": latest.get("resting_heart_rate", 48),
+        "resting_hr_7d_avg": latest.get("resting_hr_7d_avg", 48.0),
+        "sleep_seconds": latest.get("sleep_seconds", 27900),
+        "sleep_score": latest.get("sleep_score", 88),
+        "sleep_quality": latest.get("sleep_quality", "Good"),
+        "sleep_deep_seconds": latest.get("sleep_deep_seconds", 6300),
+        "sleep_light_seconds": latest.get("sleep_light_seconds", 16200),
+        "sleep_rem_seconds": latest.get("sleep_rem_seconds", 5400),
+        "sleep_awake_seconds": latest.get("sleep_awake_seconds", 1800),
+        "sleep_stages": latest.get("sleep_stages", {}),
+        "stress_level": latest.get("stress_level", 24),
+        "stress_qualifier": latest.get("stress_qualifier", "Low"),
+        "stress_status": latest.get("stress_status", "Low"),
+        "body_battery": latest.get("body_battery", 82),
+        "body_battery_charged": latest.get("body_battery_charged", 65),
+        "body_battery_drained": latest.get("body_battery_drained", 43),
+        "charged": latest.get("charged", 65),
+        "drained": latest.get("drained", 43),
+        "body_battery_high": latest.get("body_battery_high", 90),
+        "body_battery_low": latest.get("body_battery_low", 25),
+        "hrv_status": latest.get("hrv_status", "Balanced"),
+        "hrv_weekly_avg": latest.get("hrv_weekly_avg", 58),
+        "hrv_last_night_avg": latest.get("hrv_last_night_avg", 62),
+        "hrv_7d_avg": latest.get("hrv_7d_avg", 58),
+        "hrv_baseline": latest.get("hrv_baseline", {"low": 48, "high": 62}),
+        "active_intensity_minutes": latest.get("active_intensity_minutes", 52),
+        "intensity_minutes_goal": latest.get("intensity_minutes_goal", 150),
+        "intensity_minutes_weekly": latest.get("intensity_minutes_weekly", 285),
+        "intensity_minutes_moderate": latest.get("intensity_minutes_moderate", 34),
+        "intensity_minutes_vigorous": latest.get("intensity_minutes_vigorous", 18),
+        "daily_calories": latest.get("daily_calories", 2410),
+        "active_calories": latest.get("active_calories", 680),
+        "bmr_calories": latest.get("bmr_calories", 1730),
+        "calories_total": latest.get("calories_total", 2410),
+        "calories_active": latest.get("calories_active", 680),
+        "calories_bmr": latest.get("calories_bmr", 1730),
+    }
+
+    return {
+        "current": current_snapshot,
+        "daily": daily_records,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Canonical Rollup Compiler
@@ -972,6 +1241,7 @@ def compile_rollup(
     generated_at: Optional[str] = None,
     sync_manifest: Optional[Any] = None,
     backup_vault: Optional[Dict[str, Any]] = None,
+    wellness: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Compiles list of activities into canonical dashboard_rollup.json matching
@@ -1019,12 +1289,22 @@ def compile_rollup(
     daily_timeline = load_results["daily"]
     snapshots = load_results["activity_snapshots"]
 
+    # Check if genuine cycling power data exists
+    has_cycling_power = any(
+        a.get("sport") in ("cycling", "cycle") and (
+            (a.get("avg_power") is not None and float(a.get("avg_power")) > 0) or
+            (a.get("avg_power_watts") is not None and float(a.get("avg_power_watts")) > 0) or
+            (isinstance(a.get("telemetry_stream"), dict) and any(float(p or 0) > 0 for p in a["telemetry_stream"].get("power", [])))
+        )
+        for a in sorted_acts
+    )
+
     # Monthly aggregations & physiological zone accumulations
     monthly_map: Dict[str, Dict[str, Any]] = {}
 
     # Total physiological zone seconds
     hr_zone_seconds = {"Z1": 0, "Z2": 0, "Z3": 0, "Z4": 0, "Z5": 0}
-    power_zone_seconds = {"Z1": 0, "Z2": 0, "Z3": 0, "Z4": 0, "Z5": 0, "Z6": 0, "Z7": 0}
+    power_zone_seconds = {"Z1": 0.0, "Z2": 0.0, "Z3": 0.0, "Z4": 0.0, "Z5": 0.0, "Z6": 0.0, "Z7": 0.0}
     pace_zone_seconds = {"Recovery": 0, "Aerobic": 0, "Tempo": 0, "Threshold": 0, "Interval": 0}
 
     for act in sorted_acts:
@@ -1037,7 +1317,7 @@ def compile_rollup(
         # Month identifier (YYYY-MM)
         month_key = dt.strftime("%Y-%m")
 
-        sport = act.get("sport", "hiking")
+        sport = act.get("sport", "other")
         dist_km = float(act.get("distance_meters", 0.0)) / 1000.0
         dur_hours = float(act.get("duration_seconds", 0.0)) / 3600.0
         load = float(act.get("tss") or act.get("training_stress_score") or 0.0)
@@ -1046,19 +1326,27 @@ def compile_rollup(
         if month_key not in monthly_map:
             monthly_map[month_key] = {
                 "month": month_key,
+                "running_hours": 0.0,
+                "walking_hours": 0.0,
                 "hiking_hours": 0.0,
                 "cycling_hours": 0.0,
                 "strength_hours": 0.0,
+                "run_km": 0.0,
+                "walk_km": 0.0,
                 "hiking_km": 0.0,
                 "cycle_km": 0.0,
-                "run_km": 0.0,
                 "load": 0.0,
             }
         m_entry = monthly_map[month_key]
-        if sport in ("hiking", "running"):
+        if sport in ("running", "run"):
+            m_entry["run_km"] = round(m_entry["run_km"] + dist_km, 1)
+            m_entry["running_hours"] = round(m_entry["running_hours"] + dur_hours, 1)
+        elif sport in ("walking", "walk"):
+            m_entry["walk_km"] = round(m_entry["walk_km"] + dist_km, 1)
+            m_entry["walking_hours"] = round(m_entry["walking_hours"] + dur_hours, 1)
+        elif sport in ("hiking", "hike"):
             m_entry["hiking_km"] = round(m_entry["hiking_km"] + dist_km, 1)
             m_entry["hiking_hours"] = round(m_entry["hiking_hours"] + dur_hours, 1)
-            m_entry["run_km"] = m_entry["hiking_km"]
         elif sport in ("cycling", "cycle"):
             m_entry["cycle_km"] = round(m_entry["cycle_km"] + dist_km, 1)
             m_entry["cycling_hours"] = round(m_entry["cycling_hours"] + dur_hours, 1)
@@ -1126,14 +1414,36 @@ def compile_rollup(
             hr_zone_seconds["Z5"] += fb_z5
 
         # Power zones (for cycling)
-        if sport in ("cycling", "cycle"):
-            power_zone_seconds["Z1"] += int(dur_sec * 0.12)
-            power_zone_seconds["Z2"] += int(dur_sec * 0.48)
-            power_zone_seconds["Z3"] += int(dur_sec * 0.22)
-            power_zone_seconds["Z4"] += int(dur_sec * 0.12)
-            power_zone_seconds["Z5"] += int(dur_sec * 0.04)
-            power_zone_seconds["Z6"] += int(dur_sec * 0.015)
-            power_zone_seconds["Z7"] += int(dur_sec * 0.005)
+        if sport in ("cycling", "cycle") and has_cycling_power:
+            # Check if telemetry stream has power readings
+            p_stream = act.get("telemetry_stream", {}).get("power") if isinstance(act.get("telemetry_stream"), dict) else None
+            if isinstance(p_stream, list) and len(p_stream) > 0 and any(float(p or 0) > 0 for p in p_stream):
+                stream_len = len(p_stream)
+                ratio = dur_sec / max(1, stream_len)
+                for reading in p_stream:
+                    val = float(reading or 0)
+                    if val > ftp * 1.50:
+                        power_zone_seconds["Z7"] += ratio
+                    elif val > ftp * 1.20:
+                        power_zone_seconds["Z6"] += ratio
+                    elif val > ftp * 1.05:
+                        power_zone_seconds["Z5"] += ratio
+                    elif val > ftp * 0.90:
+                        power_zone_seconds["Z4"] += ratio
+                    elif val > ftp * 0.75:
+                        power_zone_seconds["Z3"] += ratio
+                    elif val > ftp * 0.55:
+                        power_zone_seconds["Z2"] += ratio
+                    else:
+                        power_zone_seconds["Z1"] += ratio
+            else:
+                power_zone_seconds["Z1"] += int(dur_sec * 0.12)
+                power_zone_seconds["Z2"] += int(dur_sec * 0.48)
+                power_zone_seconds["Z3"] += int(dur_sec * 0.22)
+                power_zone_seconds["Z4"] += int(dur_sec * 0.12)
+                power_zone_seconds["Z5"] += int(dur_sec * 0.04)
+                power_zone_seconds["Z6"] += int(dur_sec * 0.015)
+                power_zone_seconds["Z7"] += int(dur_sec * 0.005)
 
         # Pace zones (for hiking / running)
         if sport in ("hiking", "running"):
@@ -1163,15 +1473,45 @@ def compile_rollup(
             "percentage": pct,
         })
 
-    power_zones_list = [
-        {"zone": "Z1", "min": 0, "max": int(ftp * 0.55), "seconds": power_zone_seconds["Z1"]},
-        {"zone": "Z2", "min": int(ftp * 0.55) + 1, "max": int(ftp * 0.75), "seconds": power_zone_seconds["Z2"]},
-        {"zone": "Z3", "min": int(ftp * 0.75) + 1, "max": int(ftp * 0.90), "seconds": power_zone_seconds["Z3"]},
-        {"zone": "Z4", "min": int(ftp * 0.90) + 1, "max": int(ftp * 1.05), "seconds": power_zone_seconds["Z4"]},
-        {"zone": "Z5", "min": int(ftp * 1.05) + 1, "max": int(ftp * 1.20), "seconds": power_zone_seconds["Z5"]},
-        {"zone": "Z6", "min": int(ftp * 1.20) + 1, "max": int(ftp * 1.50), "seconds": power_zone_seconds["Z6"]},
-        {"zone": "Z7", "min": int(ftp * 1.50) + 1, "max": 999, "seconds": power_zone_seconds["Z7"]},
+    total_power_sec = sum(int(round(s)) for s in power_zone_seconds.values()) if has_cycling_power else 0
+
+    z1_max = int(round(ftp * 0.55))
+    z2_min = z1_max + 1
+    z2_max = int(round(ftp * 0.75))
+    z3_min = z2_max + 1
+    z3_max = int(round(ftp * 0.90))
+    z4_min = z3_max + 1
+    z4_max = int(round(ftp * 1.05))
+    z5_min = z4_max + 1
+    z5_max = int(round(ftp * 1.20))
+    z6_min = z5_max + 1
+    z6_max = int(round(ftp * 1.50))
+    z7_min = z6_max + 1
+
+    power_specs = [
+        ("Z1 Active Recovery", "Active Recovery", 0, z1_max, f"< {z1_max} W", int(round(power_zone_seconds["Z1"]))),
+        ("Z2 Endurance", "Endurance", z2_min, z2_max, f"{z2_min}–{z2_max} W", int(round(power_zone_seconds["Z2"]))),
+        ("Z3 Tempo", "Tempo", z3_min, z3_max, f"{z3_min}–{z3_max} W", int(round(power_zone_seconds["Z3"]))),
+        ("Z4 Threshold", "Threshold", z4_min, z4_max, f"{z4_min}–{z4_max} W", int(round(power_zone_seconds["Z4"]))),
+        ("Z5 VO2 Max", "VO2 Max", z5_min, z5_max, f"{z5_min}–{z5_max} W", int(round(power_zone_seconds["Z5"]))),
+        ("Z6 Anaerobic", "Anaerobic", z6_min, z6_max, f"{z6_min}–{z6_max} W", int(round(power_zone_seconds["Z6"]))),
+        ("Z7 Neuromuscular", "Neuromuscular", z7_min, 999, f"> {z6_max} W", int(round(power_zone_seconds["Z7"]))),
     ]
+
+    power_zones_list = []
+    for z_label, z_name, b_min, b_max, range_label, z_sec in power_specs:
+        actual_sec = z_sec if has_cycling_power else 0
+        pct = round((actual_sec / total_power_sec) * 100.0, 1) if total_power_sec > 0 else 0.0
+        power_zones_list.append({
+            "zone": z_label,
+            "name": z_name,
+            "min": b_min,
+            "max": b_max,
+            "range_label": range_label,
+            "seconds": actual_sec,
+            "percent": pct,
+            "percentage": pct,
+        })
 
     pace_zones_list = [
         {"zone": "Recovery", "short_label": "Rec", "min_sec_km": 600, "max_sec_km": 720, "seconds": pace_zone_seconds["Recovery"]},
@@ -1192,7 +1532,7 @@ def compile_rollup(
     canonical_activities = []
     for act in sorted_acts:
         date_iso = act.get("date") or act.get("start_time") or ""
-        sport_val = act.get("sport", "hiking")
+        sport_val = act.get("sport", "other")
         is_strength = sport_val in ("strength", "weights")
 
         act_id = str(act.get("id", ""))
@@ -1319,10 +1659,11 @@ def compile_rollup(
             "total_distance_km": round(total_km, 1),
             "total_moving_hours": round(total_moving_hours, 1),
             "total_calories": total_calories,
-            "hiking_count": sum(1 for a in canonical_activities if a["sport"] in ("hiking", "running")),
-            "cycling_count": sum(1 for a in canonical_activities if a["sport"] in ("cycling", "cycle")),
-            "strength_count": sum(1 for a in canonical_activities if a["sport"] in ("strength", "weights")),
-            "running_count": sum(1 for a in canonical_activities if a["sport"] in ("hiking", "running")),
+            "hiking_count": sum(1 for a in canonical_activities if a.get("sport") in ("hiking", "hike")),
+            "cycling_count": sum(1 for a in canonical_activities if a.get("sport") in ("cycling", "cycle")),
+            "strength_count": sum(1 for a in canonical_activities if a.get("sport") in ("strength", "weights")),
+            "running_count": sum(1 for a in canonical_activities if a.get("sport") in ("running", "run")),
+            "walking_count": sum(1 for a in canonical_activities if a.get("sport") in ("walking", "walk")),
         },
         "training_load": {
             "weekly": weekly_list,
@@ -1330,6 +1671,8 @@ def compile_rollup(
             "daily": daily_timeline,
         },
         "physiological": {
+            "has_power_data": bool(has_cycling_power),
+            "ftp": int(ftp),
             "heart_rate_zones": heart_rate_zones_list,
             "power_zones": power_zones_list,
             "pace_zones": pace_zones_list,
@@ -1337,6 +1680,7 @@ def compile_rollup(
         },
         "activities": canonical_activities,
         "backup_vault": vault_entry,
+        "wellness": wellness if (wellness is not None and isinstance(wellness, dict)) else generate_wellness_dataset(activities=canonical_activities, athlete_profile=athlete_profile, seed=42),
     }
 
 
@@ -1347,6 +1691,7 @@ def compile_dashboard_rollup(
     is_mock: bool = True,
     sync_manifest: Optional[Any] = None,
     backup_vault: Optional[Dict[str, Any]] = None,
+    wellness: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compiles dashboard rollup JSON dictionary."""
     if activities is None or len(activities) == 0:
@@ -1356,6 +1701,7 @@ def compile_dashboard_rollup(
         activities,
         sync_manifest=sync_manifest,
         backup_vault=backup_vault,
+        wellness=wellness,
     )
 
 

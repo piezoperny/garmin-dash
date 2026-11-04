@@ -219,11 +219,18 @@ export function renderRouteMap(activity) {
     });
 
     // Dark Matter CartoDB tile layer matching obsidian aesthetic
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
+    const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>',
       subdomains: 'abcd',
-      maxZoom: 19
-    }).addTo(currentMapInstance);
+      maxZoom: 19,
+      crossOrigin: true
+    });
+    if (typeof tileLayer.on === 'function') {
+      tileLayer.on('tileerror', (error) => {
+        console.warn('Map tile load warning:', error);
+      });
+    }
+    tileLayer.addTo(currentMapInstance);
   } else {
     // Clear previous layers
     if (currentPolyline) currentMapInstance.removeLayer(currentPolyline);
@@ -334,6 +341,17 @@ export function destroyRouteMap() {
   }
 }
 
+/**
+ * Invalidates and recalculates map container size.
+ */
+export function invalidateMapSize() {
+  if (currentMapInstance && typeof currentMapInstance.invalidateSize === 'function') {
+    try {
+      currentMapInstance.invalidateSize();
+    } catch (_) {}
+  }
+}
+
 // Optional browser window hook for cross-module integration
 if (typeof window !== 'undefined') {
   window.__routeMap = {
@@ -343,6 +361,7 @@ if (typeof window !== 'undefined') {
     clearScrubberMarker,
     decodePolyline,
     filterGpsOutliers,
-    calculateBounds
+    calculateBounds,
+    invalidateMapSize
   };
 }

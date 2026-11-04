@@ -150,6 +150,76 @@
     <!-- Main Body Container -->
     <main id="dashboard-main" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 flex-1 w-full">
       
+      <!-- ===================================================================== -->
+      <!-- HEALTH & FITNESS DASHBOARD (Garmin Connect Web Layout)                -->
+      <!-- ===================================================================== -->
+      <section id="health-fitness-dashboard" class="space-y-6">
+        <div id="wellness-dashboard" class="space-y-6">
+          <!-- Dashboard Header & Controls -->
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#1f1f24]">
+            <div>
+              <div class="flex items-center space-x-2.5">
+                <h2 class="text-base font-semibold text-white tracking-tight">Health & Fitness</h2>
+                <span class="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold border text-emerald-400 border-emerald-500/30 bg-emerald-500/10">
+                  DAILY WELLNESS
+                </span>
+              </div>
+              <p class="text-xs text-zinc-400 mt-0.5">Garmin Connect overview: synced biometric telemetry, recovery & vitals</p>
+            </div>
+
+            <div class="flex items-center space-x-2">
+              <button
+                id="btn-edit-home"
+                type="button"
+                class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#111114] hover:bg-[#18181b] text-zinc-300 hover:text-white border border-[#1f1f24] text-xs font-semibold transition"
+              >
+                <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                </svg>
+                <span>Edit Cards</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Empty State Notice (shown when wellness telemetry is missing/unsynced) -->
+          <div id="wellness-empty-notice" class="hidden border border-dashed border-[#1f1f24] rounded-xl p-8 text-center flex flex-col items-center justify-center space-y-3">
+            <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#1f1f24] flex items-center justify-center mb-1">
+              <svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+              </svg>
+            </div>
+            <p class="text-xs font-semibold text-zinc-300">No Synced Garmin Wellness Metrics Available</p>
+            <p class="text-xs text-zinc-500 max-w-md">No synced Garmin wellness metrics available. Sync with Garmin Connect to view daily wellness data.</p>
+          </div>
+
+          <!-- 1. IN FOCUS CONTAINER -->
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300 flex items-center space-x-1.5">
+                <span>In Focus</span>
+                <span class="text-[10px] font-mono font-normal text-zinc-500">(Primary Goals & Recovery)</span>
+              </h3>
+            </div>
+            <div id="wellness-in-focus" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <!-- Dynamically populated hero cards -->
+            </div>
+          </div>
+
+          <!-- 2. AT A GLANCE CONTAINER -->
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300 flex items-center space-x-1.5">
+                <span>At a Glance</span>
+                <span class="text-[10px] font-mono font-normal text-zinc-500">(Daily Vital Metrics)</span>
+              </h3>
+            </div>
+            <div id="wellness-at-a-glance" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              <!-- Dynamically populated compact cards -->
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Top KPI Summary Cards -->
       <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <!-- KPI 1: Distance -->
@@ -197,14 +267,15 @@
             <p class="text-xs text-zinc-400">Weekly duration breakdown & continuous fitness/fatigue/form curves</p>
           </div>
 
-          <!-- Sport Filter Pills (All · Cycling · Hiking · Weights + Dynamic Sports) -->
+          <!-- Sport Filter Pills (All · Cycling · Running · Walking · Hiking · Weights + Dynamic Sports) -->
           <div id="sport-filter-bar" class="flex flex-wrap items-center gap-1 bg-[#111114] border border-[#1f1f24] rounded-xl p-1">
             <button id="filter-btn-all" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white">All</button>
             <button id="filter-btn-cycling" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Cycling</button>
+            <button id="filter-btn-running" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Running</button>
+            <button id="filter-btn-walking" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Walking</button>
             <button id="filter-btn-hiking" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Hiking</button>
             <button id="filter-btn-strength" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Weights</button>
             <!-- Backward compatibility aliases for legacy test suites -->
-            <button id="filter-btn-running" class="hidden" style="display:none"></button>
             <button id="filter-btn-weights" class="hidden" style="display:none"></button>
           </div>
         </div>
@@ -214,7 +285,7 @@
           <div id="card-weekly-volume" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
             <div class="flex items-center justify-between mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Stacked Weekly Duration</h3>
-              <span class="text-[11px] font-mono text-zinc-400">Cycling • Hiking • Weights</span>
+              <span class="text-[11px] font-mono text-zinc-400">Cycling • Running • Walking • Hiking • Weights</span>
             </div>
             <div class="flex-1 min-h-[280px] relative">
               <canvas id="weekly-volume-chart" class="w-full h-full"></canvas>
@@ -416,7 +487,7 @@
     <div id="drawer-backdrop" class="fixed inset-0 drawer-backdrop transition-opacity"></div>
 
     <!-- Drawer Panel -->
-    <div class="relative w-full max-w-2xl bg-[#111114] border-l border-[#1f1f24] h-full p-6 shadow-2xl flex flex-col overflow-y-auto z-10">
+    <div id="drawer-panel" class="relative w-full max-w-2xl bg-[#111114] border-l border-[#1f1f24] h-full p-6 shadow-2xl flex flex-col overflow-y-auto z-10">
       
       <!-- Drawer Header -->
       <div class="flex items-start justify-between pb-4 border-b border-[#1f1f24]">
@@ -424,14 +495,34 @@
           <h3 id="drawer-activity-title" class="text-base font-semibold text-white">Workout Details</h3>
           <p id="drawer-activity-date" class="text-xs text-zinc-400 mt-0.5">Date & Sport</p>
         </div>
-        <button
-          id="btn-close-drawer"
-          class="p-2 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition"
-        >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-          </svg>
-        </button>
+        <div class="flex items-center space-x-2">
+          <button
+            id="btn-expand-drawer"
+            type="button"
+            class="p-2 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition"
+            title="Expand to Full Screen"
+            aria-label="Expand to Full Screen"
+          >
+            <!-- Maximize Icon (arrows pointing outward) -->
+            <svg id="icon-expand" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+            </svg>
+            <!-- Minimize Icon (arrows pointing inward, hidden by default) -->
+            <svg id="icon-collapse" class="w-5 h-5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 4v4H5m4 0L4 3m11 1v4h4m-4 0l5-5M9 20v-4H5m4 0l-5 5m11-1v-4h4m-4 0l5 5"/>
+            </svg>
+          </button>
+          <button
+            id="btn-close-drawer"
+            class="p-2 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition"
+            title="Close Drawer"
+            aria-label="Close Drawer"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <!-- Telemetry KPI Summary -->
@@ -491,6 +582,43 @@
             <span id="readout-dist" class="text-zinc-400 hidden sm:inline">Dist: —</span>
           </div>
         </div>
+        <!-- Telemetry Stream Toggle Buttons -->
+        <div class="flex items-center space-x-2 mb-2 flex-wrap gap-y-1">
+          <span class="text-[10px] uppercase font-semibold text-zinc-500 tracking-wider">Streams:</span>
+          <button
+            id="toggle-stream-elevation"
+            type="button"
+            class="stream-toggle-btn px-2.5 py-0.5 rounded text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 transition cursor-pointer"
+            data-stream="elevation"
+          >
+            Elevation
+          </button>
+          <button
+            id="toggle-stream-hr"
+            type="button"
+            class="stream-toggle-btn px-2.5 py-0.5 rounded text-xs font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30 transition cursor-pointer"
+            data-stream="hr"
+          >
+            Heart Rate
+          </button>
+          <button
+            id="toggle-stream-pace"
+            type="button"
+            class="stream-toggle-btn px-2.5 py-0.5 rounded text-xs font-semibold bg-sky-500/20 text-sky-400 border border-sky-500/30 transition cursor-pointer"
+            data-stream="pace"
+          >
+            Pace / Speed
+          </button>
+          <button
+            id="toggle-stream-cadence"
+            type="button"
+            class="stream-toggle-btn px-2.5 py-0.5 rounded text-xs font-semibold bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 transition cursor-pointer"
+            data-stream="cadence"
+          >
+            Cadence
+          </button>
+        </div>
+
         <div class="h-44 relative">
           <canvas id="activity-profile-chart" class="w-full h-full"></canvas>
         </div>
@@ -504,6 +632,7 @@
             <thead class="bg-[#18181b] text-zinc-400 uppercase text-[11px] font-medium">
               <tr>
                 <th class="py-2 px-3">Split</th>
+                <th class="py-2 px-3">Distance</th>
                 <th class="py-2 px-3">Time</th>
                 <th class="py-2 px-3">Pace / Speed</th>
                 <th class="py-2 px-3">Avg HR</th>
@@ -570,6 +699,80 @@
             <input type="checkbox" data-card-target="card-backup-vault" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
             <span class="text-zinc-200">Hetzner Multi-Year Backup Vault Explorer</span>
           </label>
+        </div>
+      </div>
+
+      <!-- Health & Wellness Cards Layout Customization -->
+      <div class="space-y-2.5 pt-2 border-t border-[#1f1f24]">
+        <div class="flex items-center justify-between">
+          <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Health & Wellness Cards Layout</div>
+          <span class="text-[10px] text-zinc-500">In Focus / At a Glance / Hidden</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs" id="wellness-modal-cards-grid">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+            <span class="text-zinc-200">Daily Steps</span>
+            <select data-wellness-select="steps" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+              <option value="in_focus">In Focus</option>
+              <option value="at_a_glance">At a Glance</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+            <span class="text-zinc-200">Resting Heart Rate</span>
+            <select data-wellness-select="resting_hr" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+              <option value="in_focus">In Focus</option>
+              <option value="at_a_glance">At a Glance</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+            <span class="text-zinc-200">Sleep</span>
+            <select data-wellness-select="sleep" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+              <option value="in_focus">In Focus</option>
+              <option value="at_a_glance">At a Glance</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+            <span class="text-zinc-200">Stress</span>
+            <select data-wellness-select="stress" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+              <option value="in_focus">In Focus</option>
+              <option value="at_a_glance">At a Glance</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+            <span class="text-zinc-200">Body Battery</span>
+            <select data-wellness-select="body_battery" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+              <option value="in_focus">In Focus</option>
+              <option value="at_a_glance">At a Glance</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+            <span class="text-zinc-200">HRV Status</span>
+            <select data-wellness-select="hrv" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+              <option value="in_focus">In Focus</option>
+              <option value="at_a_glance">At a Glance</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+            <span class="text-zinc-200">Active Intensity Minutes</span>
+            <select data-wellness-select="intensity_minutes" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+              <option value="in_focus">In Focus</option>
+              <option value="at_a_glance">At a Glance</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+            <span class="text-zinc-200">Daily Calories</span>
+            <select data-wellness-select="calories" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+              <option value="in_focus">In Focus</option>
+              <option value="at_a_glance">At a Glance</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
         </div>
       </div>
 

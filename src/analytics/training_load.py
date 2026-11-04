@@ -138,12 +138,15 @@ def calculate_continuous_training_load(
             weekly_agg[week_key] = {
                 "week": week_label,
                 "week_start": week_start_str,
+                "running_hours": 0.0,
+                "walking_hours": 0.0,
                 "hiking_hours": 0.0,
                 "cycling_hours": 0.0,
                 "strength_hours": 0.0,
+                "run_km": 0.0,
+                "walk_km": 0.0,
                 "hiking_km": 0.0,
                 "cycle_km": 0.0,
-                "run_km": 0.0,
                 "load": 0.0,
                 "atl": round(atl, 1),
                 "ctl": round(ctl, 1),
@@ -159,14 +162,19 @@ def calculate_continuous_training_load(
 
         # Accumulate sport-specific distance and duration from day activities
         for a in day_acts:
-            sport = str(a.get("sport", "hiking")).lower()
+            sport = str(a.get("sport", "other")).lower()
             dist_km = float(a.get("distance_meters", 0.0)) / 1000.0
             dur_hours = float(a.get("duration_seconds", 0.0)) / 3600.0
 
-            if sport in ("hiking", "running"):
+            if sport in ("running", "run"):
+                w_entry["run_km"] = round(w_entry["run_km"] + dist_km, 1)
+                w_entry["running_hours"] = round(w_entry["running_hours"] + dur_hours, 1)
+            elif sport in ("walking", "walk"):
+                w_entry["walk_km"] = round(w_entry["walk_km"] + dist_km, 1)
+                w_entry["walking_hours"] = round(w_entry["walking_hours"] + dur_hours, 1)
+            elif sport in ("hiking", "hike"):
                 w_entry["hiking_km"] = round(w_entry["hiking_km"] + dist_km, 1)
                 w_entry["hiking_hours"] = round(w_entry["hiking_hours"] + dur_hours, 1)
-                w_entry["run_km"] = w_entry["hiking_km"]
             elif sport in ("cycling", "cycle"):
                 w_entry["cycle_km"] = round(w_entry["cycle_km"] + dist_km, 1)
                 w_entry["cycling_hours"] = round(w_entry["cycling_hours"] + dur_hours, 1)

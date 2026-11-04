@@ -29,19 +29,19 @@ export function formatDuration(totalSeconds) {
   return `${minutes}m`;
 }
 
-/**
- * Filter activities by sport.
- * @param {Array} activities
- * @param {string} filter
- * @returns {Array}
- */
 function filterActivitiesBySport(activities, filter) {
   if (!filter || filter === 'all') return activities || [];
   const target = filter.toLowerCase();
   return (activities || []).filter(a => {
     const sp = (a.sport || '').toLowerCase();
-    if (target === 'hiking' || target === 'running') {
-      return sp === 'hiking' || sp === 'running';
+    if (target === 'hiking' || target === 'hike') {
+      return sp === 'hiking' || sp === 'hike';
+    }
+    if (target === 'running' || target === 'run') {
+      return sp === 'running' || sp === 'run';
+    }
+    if (target === 'walking' || target === 'walk') {
+      return sp === 'walking' || sp === 'walk';
     }
     if (target === 'weights' || target === 'strength') {
       return sp === 'strength' || sp === 'weights';
@@ -170,23 +170,58 @@ export function renderWeeklyVolumeChart(rollup, unit = 'km', sportFilter = 'all'
   const weeklyData = rollup?.training_load?.weekly || [];
   const labels = weeklyData.map(w => w.week || 'Week');
 
-  // Compute weekly duration in hours for all three sports
-  const cyclingHours = weeklyData.map(w => {
-    if (w.cycling_hours !== undefined) return Number(w.cycling_hours.toFixed(1));
-    return Number(((w.cycle_km || 0) / 28.0).toFixed(1));
+  // Compute weekly duration in hours for all distinct sports
+  const runningHours = weeklyData.map(w => {
+    if (w.running_hours !== undefined) return Number(w.running_hours.toFixed(1));
+    return Number(((w.run_km || 0) / 10.0).toFixed(1));
+  });
+
+  const walkingHours = weeklyData.map(w => {
+    if (w.walking_hours !== undefined) return Number(w.walking_hours.toFixed(1));
+    return Number(((w.walk_km || 0) / 4.8).toFixed(1));
   });
 
   const hikingHours = weeklyData.map(w => {
     if (w.hiking_hours !== undefined) return Number(w.hiking_hours.toFixed(1));
-    return Number(((w.run_km || w.hiking_km || 0) / 4.2).toFixed(1));
+    return Number(((w.hiking_km || 0) / 4.2).toFixed(1));
+  });
+
+  const cyclingHours = weeklyData.map(w => {
+    if (w.cycling_hours !== undefined) return Number(w.cycling_hours.toFixed(1));
+    return Number(((w.cycle_km || 0) / 28.0).toFixed(1));
   });
 
   const strengthHours = weeklyData.map(w => Number((w.strength_hours || 0).toFixed(1)));
 
   const datasets = [];
   const normalizedFilter = (sportFilter || 'all').toLowerCase();
+  const isAll = normalizedFilter === 'all';
 
-  if (normalizedFilter === 'all' || normalizedFilter === 'cycling' || normalizedFilter === 'cycle') {
+  if (isAll || normalizedFilter === 'running' || normalizedFilter === 'run') {
+    datasets.push({
+      label: 'Running (hrs)',
+      data: runningHours,
+      backgroundColor: '#f97316'
+    });
+  }
+
+  if (isAll || normalizedFilter === 'walking' || normalizedFilter === 'walk') {
+    datasets.push({
+      label: 'Walking (hrs)',
+      data: walkingHours,
+      backgroundColor: '#10b981'
+    });
+  }
+
+  if (isAll || normalizedFilter === 'hiking' || normalizedFilter === 'hike') {
+    datasets.push({
+      label: 'Hiking (hrs)',
+      data: hikingHours,
+      backgroundColor: '#14b8a6'
+    });
+  }
+
+  if (isAll || normalizedFilter === 'cycling' || normalizedFilter === 'cycle') {
     datasets.push({
       label: 'Cycling (hrs)',
       data: cyclingHours,
@@ -194,15 +229,7 @@ export function renderWeeklyVolumeChart(rollup, unit = 'km', sportFilter = 'all'
     });
   }
 
-  if (normalizedFilter === 'all' || normalizedFilter === 'hiking' || normalizedFilter === 'running') {
-    datasets.push({
-      label: 'Hiking (hrs)',
-      data: hikingHours,
-      backgroundColor: '#34d399'
-    });
-  }
-
-  if (normalizedFilter === 'all' || normalizedFilter === 'strength' || normalizedFilter === 'weights') {
+  if (isAll || normalizedFilter === 'strength' || normalizedFilter === 'weights') {
     datasets.push({
       label: 'Weights (hrs)',
       data: strengthHours,

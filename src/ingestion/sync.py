@@ -100,7 +100,7 @@ SPORT_TAXONOMY_MAP: Dict[str, str] = {
 }
 
 
-def resolve_sport_taxonomy(summary_or_type: Any) -> str:
+def resolve_sport_taxonomy(summary_or_type: Any, default: str = "hiking") -> str:
     """Standardize raw Garmin activity types into canonical sport keys while preserving dynamic sports."""
     if isinstance(summary_or_type, dict):
         raw = (
@@ -116,7 +116,7 @@ def resolve_sport_taxonomy(summary_or_type: Any) -> str:
 
     raw_clean = re.sub(r"[^a-zA-Z0-9_]+", "_", str(raw).strip().lower()).strip("_")
     if not raw_clean:
-        return "hiking"
+        return default
 
     if raw_clean in SPORT_TAXONOMY_MAP:
         return SPORT_TAXONOMY_MAP[raw_clean]
@@ -153,7 +153,7 @@ def resolve_sport_taxonomy(summary_or_type: Any) -> str:
 
 def normalize_splits(
     raw_splits: List[Dict[str, Any]],
-    sport: str = "hiking",
+    sport: str = "other",
     default_hr: int = 130,
     default_cadence: int = 0,
 ) -> List[Dict[str, Any]]:

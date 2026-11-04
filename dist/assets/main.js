@@ -39,6 +39,13 @@ import {
 import {
   renderBackupVaultExplorer
 } from './charts/backup_vault.js';
+import {
+  renderWellnessDashboard,
+  loadWellnessLayout,
+  saveWellnessLayout,
+  setupWellnessEventListeners,
+  DEFAULT_WELLNESS_LAYOUT
+} from './charts/wellness.js';
 
 const CUSTOMIZATION_STORAGE_KEY = 'garmin_dash_customization';
 
@@ -47,6 +54,7 @@ let activeRollup = null;
 let activeUnit = 'km'; // 'km' or 'mi'
 let activeSportFilter = 'all'; // 'all', 'running', 'cycling', 'strength', etc.
 let activeCustomization = {
+  wellness_layout: JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT)),
   hidden_cards: [],
   thresholds: {
     max_hr: null,
@@ -68,6 +76,7 @@ export function loadCustomizationPreferences() {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
       activeCustomization = {
+        wellness_layout: parsed.wellness_layout || loadWellnessLayout(),
         hidden_cards: Array.isArray(parsed.hidden_cards) ? parsed.hidden_cards : [],
         thresholds: {
           max_hr: Number(parsed.thresholds?.max_hr) > 0 ? Number(parsed.thresholds.max_hr) : null,
@@ -183,6 +192,9 @@ function renderDashboard(rollup) {
   loadCustomizationPreferences();
   applyCardVisibility();
   syncDynamicSportFilterButtons(rollup.activities || []);
+
+  // 0. Health & Fitness Dashboard (Garmin Connect Web Layout: In Focus & At a Glance)
+  renderWellnessDashboard(rollup);
 
   // 1. KPI Cards (reacts to active unit and sport filter)
   renderKPICards(rollup, activeUnit, activeSportFilter);
@@ -361,9 +373,10 @@ function updateSportFilter(sport) {
   const buttonMap = [
     { id: 'filter-btn-all', match: ['all'] },
     { id: 'filter-btn-cycling', match: ['cycling', 'cycle'] },
-    { id: 'filter-btn-hiking', match: ['hiking', 'running'] },
+    { id: 'filter-btn-running', match: ['running', 'run'] },
+    { id: 'filter-btn-walking', match: ['walking', 'walk'] },
+    { id: 'filter-btn-hiking', match: ['hiking', 'hike'] },
     { id: 'filter-btn-strength', match: ['strength', 'weights'] },
-    { id: 'filter-btn-running', match: ['hiking', 'running'] },
     { id: 'filter-btn-weights', match: ['strength', 'weights'] }
   ];
 
@@ -372,7 +385,7 @@ function updateSportFilter(sport) {
   buttonMap.forEach(({ id, match }) => {
     const btn = document.getElementById(id);
     if (!btn) return;
-    const isAlias = id === 'filter-btn-running' || id === 'filter-btn-weights';
+    const isAlias = id === 'filter-btn-weights';
     if (isAlias) {
       btn.className = 'hidden';
       return;
@@ -423,6 +436,18 @@ function setupCustomizationModalListeners() {
         const cardId = cb.getAttribute('data-card-target');
         cb.checked = !hiddenSet.has(cardId);
       });
+
+      const layout = activeCustomization.wellness_layout || loadWellnessLayout();
+      modal.querySelectorAll('[data-wellness-select]').forEach(sel => {
+        const metric = sel.getAttribute('data-wellness-select');
+        if (layout.in_focus?.includes(metric)) {
+          sel.value = 'in_focus';
+        } else if (layout.hidden?.includes(metric)) {
+          sel.value = 'hidden';
+        } else {
+          sel.value = 'at_a_glance';
+        }
+      });
     }
     const maxHrInput = document.getElementById('input-custom-max-hr');
     const lthrInput = document.getElementById('input-custom-lthr');
@@ -457,11 +482,28 @@ function setupCustomizationModalListeners() {
           }
         });
       }
+
+      const newWellnessLayout = { in_focus: [], at_a_glance: [], hidden: [] };
+      if (modal.querySelectorAll) {
+        modal.querySelectorAll('[data-wellness-select]').forEach(sel => {
+          const metric = sel.getAttribute('data-wellness-select');
+          const val = sel.value;
+          if (metric && newWellnessLayout[val]) {
+            newWellnessLayout[val].push(metric);
+          }
+        });
+      }
+      if (newWellnessLayout.in_focus.length === 0 && newWellnessLayout.at_a_glance.length === 0) {
+        newWellnessLayout.in_focus = activeCustomization.wellness_layout?.in_focus || [...DEFAULT_WELLNESS_LAYOUT.in_focus];
+        newWellnessLayout.at_a_glance = activeCustomization.wellness_layout?.at_a_glance || [...DEFAULT_WELLNESS_LAYOUT.at_a_glance];
+      }
+
       const maxHrVal = Number(document.getElementById('input-custom-max-hr')?.value || 0);
       const lthrVal = Number(document.getElementById('input-custom-lthr')?.value || 0);
       const ftpVal = Number(document.getElementById('input-custom-ftp')?.value || 0);
 
       activeCustomization = {
+        wellness_layout: newWellnessLayout,
         hidden_cards: hidden,
         thresholds: {
           max_hr: maxHrVal >= 120 ? maxHrVal : null,
@@ -470,6 +512,7 @@ function setupCustomizationModalListeners() {
         }
       };
       saveCustomizationPreferences();
+      saveWellnessLayout(newWellnessLayout);
       modal.classList.add('hidden');
       if (activeRollup) {
         renderDashboard(activeRollup);
@@ -482,10 +525,12 @@ function setupCustomizationModalListeners() {
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
       activeCustomization = {
+        wellness_layout: JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT)),
         hidden_cards: [],
         thresholds: { max_hr: null, lthr: null, cycling_ftp: null }
       };
       saveCustomizationPreferences();
+      saveWellnessLayout(activeCustomization.wellness_layout);
       syncModalFields();
       if (activeRollup) {
         renderDashboard(activeRollup);
@@ -517,6 +562,7 @@ function toggleDistanceUnit() {
 export async function initApp() {
   setupActivityEventListeners();
   setupCustomizationModalListeners();
+  setupWellnessEventListeners();
 
   // Attach submit listeners
   const form = document.getElementById('passphrase-form');
@@ -545,9 +591,10 @@ export async function initApp() {
   const sportButtons = [
     { id: 'filter-btn-all', sport: 'all' },
     { id: 'filter-btn-cycling', sport: 'cycling' },
+    { id: 'filter-btn-running', sport: 'running' },
+    { id: 'filter-btn-walking', sport: 'walking' },
     { id: 'filter-btn-hiking', sport: 'hiking' },
     { id: 'filter-btn-strength', sport: 'strength' },
-    { id: 'filter-btn-running', sport: 'hiking' },
     { id: 'filter-btn-weights', sport: 'strength' }
   ];
 

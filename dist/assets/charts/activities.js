@@ -16,7 +16,8 @@ import {
   destroyRouteMap,
   updateScrubberMarker,
   clearScrubberMarker,
-  decodePolyline
+  decodePolyline,
+  invalidateMapSize
 } from './route_map.js';
 
 let profileChartInstance = null;
@@ -25,6 +26,15 @@ let currentFilter = 'all';
 let currentSearch = '';
 let currentSort = 'date-desc';
 let currentUnit = 'km';
+let currentSelectedActivity = null;
+let isDrawerExpanded = false;
+
+export const streamVisibility = {
+  elevation: true,
+  hr: true,
+  pace: true,
+  cadence: true
+};
 
 /**
  * Formats split duration seconds into "MM:SS" (or "H:MM:SS" if >= 1 hour).
@@ -156,8 +166,14 @@ export function applyFiltersAndRender() {
     const target = currentFilter.toLowerCase();
     filtered = filtered.filter(a => {
       const sp = (a.sport || '').toLowerCase();
-      if (target === 'hiking' || target === 'running') {
-        return sp === 'hiking' || sp === 'running';
+      if (target === 'hiking' || target === 'hike') {
+        return sp === 'hiking' || sp === 'hike';
+      }
+      if (target === 'running' || target === 'run') {
+        return sp === 'running' || sp === 'run';
+      }
+      if (target === 'walking' || target === 'walk') {
+        return sp === 'walking' || sp === 'walk';
       }
       if (target === 'weights' || target === 'strength') {
         return sp === 'strength' || sp === 'weights';
@@ -229,6 +245,15 @@ export function applyFiltersAndRender() {
     } else if (sport === 'running' || sport === 'run') {
       sportBadgeClass = 'badge-running';
       sportLabel = 'RUNNING';
+    } else if (sport === 'walking' || sport === 'walk') {
+      sportBadgeClass = 'badge-walking';
+      sportLabel = 'WALKING';
+    } else if (sport === 'hiking' || sport === 'hike') {
+      sportBadgeClass = 'badge-hiking';
+      sportLabel = 'HIKING';
+    } else if (sport) {
+      sportBadgeClass = 'badge-other';
+      sportLabel = sport.toUpperCase();
     }
 
     const dateStr = formatDate(act.date || act.start_time);
@@ -260,6 +285,50 @@ export function applyFiltersAndRender() {
 }
 
 /**
+ * Toggles Activity Inspection Drawer between slide-over panel and full-window modal view.
+ */
+export function toggleDrawerExpand() {
+  const drawer = document.getElementById('activity-drawer');
+  const panel = document.getElementById('drawer-panel');
+  const iconExpand = document.getElementById('icon-expand');
+  const iconCollapse = document.getElementById('icon-collapse');
+  const expandBtn = document.getElementById('btn-expand-drawer');
+  if (!drawer || !panel) return;
+
+  isDrawerExpanded = !isDrawerExpanded;
+
+  if (isDrawerExpanded) {
+    drawer.classList.remove('justify-end');
+    drawer.classList.add('justify-center');
+    panel.classList.remove('max-w-2xl', 'border-l');
+    panel.classList.add('max-w-none', 'w-full', 'h-full', 'rounded-none');
+    if (iconExpand) iconExpand.classList.add('hidden');
+    if (iconCollapse) iconCollapse.classList.remove('hidden');
+    if (expandBtn) expandBtn.title = 'Collapse to Side Drawer';
+  } else {
+    drawer.classList.remove('justify-center');
+    drawer.classList.add('justify-end');
+    panel.classList.remove('max-w-none', 'rounded-none');
+    panel.classList.add('max-w-2xl', 'border-l');
+    if (iconExpand) iconExpand.classList.remove('hidden');
+    if (iconCollapse) iconCollapse.classList.add('hidden');
+    if (expandBtn) expandBtn.title = 'Expand to Full Screen';
+  }
+
+  // Trigger map & profile canvas recalculations
+  invalidateMapSize();
+  if (currentSelectedActivity) {
+    renderActivityProfileChart(currentSelectedActivity, currentUnit);
+  }
+  setTimeout(() => {
+    invalidateMapSize();
+    if (currentSelectedActivity) {
+      renderActivityProfileChart(currentSelectedActivity, currentUnit);
+    }
+  }, 150);
+}
+
+/**
  * Opens detailed Activity Inspection Drawer with splits, laps, and profile chart.
  * Tailored for Weights (duration & HR only), Cycling (rpm), and Hiking (spm & ascent).
  * @param {object} act - Selected Activity
@@ -268,6 +337,8 @@ export function applyFiltersAndRender() {
 export function openActivityDrawer(act, unit = 'km') {
   const drawer = document.getElementById('activity-drawer');
   if (!drawer) return;
+
+  currentSelectedActivity = act;
 
   const sport = (act.sport || '').toLowerCase();
   const isStrength = sport === 'strength' || sport === 'weights';
@@ -325,12 +396,24 @@ export function openActivityDrawer(act, unit = 'km') {
     splitsTbody.innerHTML = '';
     const splits = act.splits || [];
     if (splits.length === 0) {
-      splitsTbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-zinc-500">No split breakdown recorded.</td></tr>`;
+      splitsTbody.innerHTML = `<tr><td colspan="7" class="py-4 text-center text-zinc-500">No split breakdown recorded.</td></tr>`;
     } else {
       splits.forEach((s, idx) => {
         const splitNum = s.split_number || s.km || (idx + 1);
         const splitSec = s.split_sec || s.duration_seconds || s.moving_time_seconds || 0;
         const splitDur = formatSplitDuration(splitSec);
+
+        // Distance formatting
+        let splitDist = '—';
+        if (!isStrength) {
+          if (s.distance_meters !== undefined && s.distance_meters !== null && s.distance_meters > 0) {
+            splitDist = formatDistance(s.distance_meters, unit);
+          } else if (s.distance_meters === 0) {
+            splitDist = formatDistance(0, unit);
+          } else {
+            splitDist = '-';
+          }
+        }
 
         // Pace vs Speed: Cycling displays speed in km/h or mph; foot sports display pace in mm:ss/km or mm:ss/mi
         let paceOrSpeed = '-';
@@ -372,6 +455,7 @@ export function openActivityDrawer(act, unit = 'km') {
         tr.className = 'border-b border-[#1f1f24] text-xs font-mono text-zinc-300 tabular-nums';
         tr.innerHTML = `
           <td class="py-2 px-3 text-zinc-400">#${splitNum}</td>
+          <td class="py-2 px-3 text-white font-semibold">${splitDist}</td>
           <td class="py-2 px-3">${splitDur}</td>
           <td class="py-2 px-3 text-teal-400">${paceOrSpeed}</td>
           <td class="py-2 px-3 text-rose-400">${splitHR}</td>
@@ -398,14 +482,32 @@ export function openActivityDrawer(act, unit = 'km') {
  */
 export function closeActivityDrawer() {
   const drawer = document.getElementById('activity-drawer');
-  if (!drawer) return;
-  drawer.classList.add('hidden');
+  const panel = document.getElementById('drawer-panel');
+  const iconExpand = document.getElementById('icon-expand');
+  const iconCollapse = document.getElementById('icon-collapse');
+  const expandBtn = document.getElementById('btn-expand-drawer');
+
+  if (isDrawerExpanded && panel) {
+    isDrawerExpanded = false;
+    if (drawer) {
+      drawer.classList.remove('justify-center');
+      drawer.classList.add('justify-end');
+    }
+    panel.classList.remove('max-w-none', 'rounded-none');
+    panel.classList.add('max-w-2xl', 'border-l');
+    if (iconExpand) iconExpand.classList.remove('hidden');
+    if (iconCollapse) iconCollapse.classList.add('hidden');
+    if (expandBtn) expandBtn.title = 'Expand to Full Screen';
+  }
+
+  if (drawer) drawer.classList.add('hidden');
   if (profileChartInstance) {
     if (typeof profileChartInstance.destroy === 'function') {
       profileChartInstance.destroy();
     }
     profileChartInstance = null;
   }
+  currentSelectedActivity = null;
   destroyRouteMap();
 }
 
@@ -420,34 +522,98 @@ export function extractActivityTelemetry(act) {
   let hrs = [];
   let distances = [];
   let coords = [];
+  let speeds = [];
+  let cadences = [];
 
-  const stream = act.telemetry_stream;
+  const stream = act ? act.telemetry_stream : null;
   if (stream) {
     times = stream.time || stream.time_s || [];
     elevations = stream.elevation || [];
     hrs = stream.hr || stream.heart_rate || [];
     distances = stream.distance_m || stream.distance || [];
+    speeds = stream.speed || stream.speed_mps || [];
+    cadences = stream.cadence || [];
   }
 
   // Fallback / supplement from gps_track.points ([lat, lon, elev, hr])
-  if (act.gps_track && Array.isArray(act.gps_track.points) && act.gps_track.points.length > 0) {
+  if (act && act.gps_track && Array.isArray(act.gps_track.points) && act.gps_track.points.length > 0) {
     const pts = act.gps_track.points;
     if (coords.length === 0) coords = pts.map(p => [Number(p[0]), Number(p[1])]);
     if (elevations.length === 0) elevations = pts.map(p => Number(p[2]) || 0);
-    if (hrs.length === 0) hrs = pts.map(p => Number(p[3]) || 0);
+    const hasHrInStream = hrs.some(h => typeof h === 'number' && h > 0);
+    if (!hasHrInStream && pts[0] && pts[0].length >= 4) {
+      hrs = pts.map(p => Number(p[3]) || 0);
+    }
     if (times.length === 0) {
       const dur = act.moving_time_seconds || act.duration_seconds || 3600;
       times = pts.map((_, i) => Math.round(i * dur / Math.max(1, pts.length - 1)));
     }
   }
 
-  if (coords.length === 0 && act.gps_track && typeof act.gps_track.polyline === 'string') {
+  if (coords.length === 0 && act && act.gps_track && typeof act.gps_track.polyline === 'string') {
     coords = decodePolyline(act.gps_track.polyline);
+  }
+
+  // Fallback HR interpolation if hrs is missing or all zeros
+  const hasValidHr = hrs.some(h => typeof h === 'number' && h > 0);
+  if (!hasValidHr && act) {
+    if (Array.isArray(act.splits) && act.splits.some(s => s.avg_hr > 0)) {
+      const totalPts = Math.max(elevations.length, times.length, 50);
+      const splitCount = act.splits.length;
+      hrs = Array.from({ length: totalPts }, (_, i) => {
+        const splitIdx = Math.min(splitCount - 1, Math.floor((i / totalPts) * splitCount));
+        return act.splits[splitIdx]?.avg_hr || act.avg_hr || 0;
+      });
+    } else if (act.avg_hr && act.avg_hr > 0) {
+      const totalPts = Math.max(elevations.length, times.length, 50);
+      hrs = Array.from({ length: totalPts }, () => act.avg_hr);
+    }
+  }
+
+  // Fallback speed interpolation if speeds is missing
+  const hasValidSpeed = speeds.some(s => typeof s === 'number' && s > 0);
+  if (!hasValidSpeed && act) {
+    if (Array.isArray(act.splits) && act.splits.length > 0) {
+      const totalPts = Math.max(elevations.length, times.length, hrs.length, 50);
+      const splitCount = act.splits.length;
+      speeds = Array.from({ length: totalPts }, (_, i) => {
+        const splitIdx = Math.min(splitCount - 1, Math.floor((i / totalPts) * splitCount));
+        const s = act.splits[splitIdx];
+        if (s?.speed_mps > 0) return s.speed_mps;
+        const dur = s?.split_sec || s?.duration_seconds || 0;
+        const dist = s?.distance_meters || 0;
+        if (dur > 0 && dist > 0) return dist / dur;
+        return 0;
+      });
+    } else if (distances.length > 1 && times.length > 1) {
+      speeds = times.map((t, i) => {
+        if (i === 0) return 0;
+        const dt = t - times[i - 1];
+        const dd = distances[i] - distances[i - 1];
+        return dt > 0 && dd >= 0 ? dd / dt : 0;
+      });
+    }
+  }
+
+  // Fallback cadence interpolation if cadences is missing
+  const hasValidCadence = cadences.some(c => typeof c === 'number' && c > 0);
+  if (!hasValidCadence && act) {
+    if (Array.isArray(act.splits) && act.splits.some(s => s.avg_cadence > 0)) {
+      const totalPts = Math.max(elevations.length, times.length, hrs.length, 50);
+      const splitCount = act.splits.length;
+      cadences = Array.from({ length: totalPts }, (_, i) => {
+        const splitIdx = Math.min(splitCount - 1, Math.floor((i / totalPts) * splitCount));
+        return act.splits[splitIdx]?.avg_cadence || act.avg_cadence || 0;
+      });
+    } else if (act.avg_cadence && act.avg_cadence > 0) {
+      const totalPts = Math.max(elevations.length, times.length, hrs.length, 50);
+      cadences = Array.from({ length: totalPts }, () => act.avg_cadence);
+    }
   }
 
   const hasStream = (elevations.length > 1 && elevations.some(e => e !== 0)) ||
                     (hrs.length > 1 && hrs.some(h => h !== 0));
-  return { times, elevations, hrs, distances, coords, hasStream };
+  return { times, elevations, hrs, distances, coords, speeds, cadences, hasStream };
 }
 
 /**
@@ -571,13 +737,25 @@ export function renderActivityProfileChart(act, unit = 'km') {
   const width = rect.width > 0 ? rect.width : (canvas.width || 600);
   const height = rect.height > 0 ? rect.height : (canvas.height || 180);
 
-  if (typeof ctx.resetTransform === 'function') ctx.resetTransform();
-  if (typeof ctx.scale === 'function' && dpr !== 1) ctx.scale(dpr, dpr);
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  if (canvas.style) {
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+  }
+
+  if (typeof ctx.setTransform === 'function') {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  } else if (typeof ctx.resetTransform === 'function') {
+    ctx.resetTransform();
+    if (typeof ctx.scale === 'function' && dpr !== 1) ctx.scale(dpr, dpr);
+  }
   if (typeof ctx.clearRect === 'function') ctx.clearRect(0, 0, width, height);
 
   const sport = (act.sport || '').toLowerCase();
   const isStrength = sport === 'strength' || sport === 'weights';
-  const { times, elevations, hrs, distances, coords, hasStream } = extractActivityTelemetry(act);
+  const isCycling = sport === 'cycling' || sport === 'cycle';
+  const { times, elevations, hrs, distances, coords, speeds, cadences, hasStream } = extractActivityTelemetry(act);
 
   // Readout elements
   const elevEl = document.getElementById('readout-elev');
@@ -593,7 +771,7 @@ export function renderActivityProfileChart(act, unit = 'km') {
     return;
   }
 
-  const n = Math.max(elevations.length, hrs.length);
+  const n = Math.max(elevations.length, hrs.length, speeds.length, cadences.length);
   const padLeft = 45;
   const padRight = 45;
   const padTop = 15;
@@ -605,8 +783,8 @@ export function renderActivityProfileChart(act, unit = 'km') {
   const isImperial = unit === 'mi';
   const elevValues = elevations.map(e => isImperial ? e * 3.28084 : e);
   const elevUnit = isImperial ? 'ft' : 'm';
-  let minElev = Math.min(...elevValues);
-  let maxElev = Math.max(...elevValues);
+  let minElev = elevValues.length > 0 ? Math.min(...elevValues) : 0;
+  let maxElev = elevValues.length > 0 ? Math.max(...elevValues) : 100;
   if (minElev === maxElev) { minElev -= 10; maxElev += 10; }
   const elevPad = Math.max((maxElev - minElev) * 0.1, 5);
   minElev = Math.floor(minElev - elevPad);
@@ -621,11 +799,34 @@ export function renderActivityProfileChart(act, unit = 'km') {
   minHR = Math.floor(minHR - hrPad);
   maxHR = Math.ceil(maxHR + hrPad);
 
+  // Pace / Speed scale
+  const validSpeeds = speeds.filter(s => typeof s === 'number' && s > 0);
+  let minSpeed = validSpeeds.length > 0 ? Math.min(...validSpeeds) : 0;
+  let maxSpeed = validSpeeds.length > 0 ? Math.max(...validSpeeds) : 10;
+  if (minSpeed === maxSpeed) { minSpeed = Math.max(0, minSpeed - 2); maxSpeed += 2; }
+  const speedPad = Math.max((maxSpeed - minSpeed) * 0.1, 0.5);
+  minSpeed = Math.max(0, minSpeed - speedPad);
+  maxSpeed = maxSpeed + speedPad;
+
+  // Cadence scale
+  const validCads = cadences.filter(c => typeof c === 'number' && c > 0);
+  let minCad = validCads.length > 0 ? Math.min(...validCads) : 40;
+  let maxCad = validCads.length > 0 ? Math.max(...validCads) : 200;
+  if (minCad === maxCad) { minCad -= 10; maxCad += 10; }
+  const cadPad = Math.max((maxCad - minCad) * 0.1, 5);
+  minCad = Math.max(0, minCad - cadPad);
+  maxCad = maxCad + cadPad;
+
   const getX = (i) => padLeft + (i / Math.max(1, n - 1)) * plotW;
   const getYElev = (val) => padTop + (1 - (val - minElev) / Math.max(1, maxElev - minElev)) * plotH;
   const getYHR = (val) => padTop + (1 - (val - minHR) / Math.max(1, maxHR - minHR)) * plotH;
+  const getYSpeed = (val) => padTop + (1 - (val - minSpeed) / Math.max(0.1, maxSpeed - minSpeed)) * plotH;
+  const getYCad = (val) => padTop + (1 - (val - minCad) / Math.max(1, maxCad - minCad)) * plotH;
+
+  let currentScrub = null;
 
   function drawProfile(scrubIdx = null) {
+    currentScrub = scrubIdx;
     if (typeof ctx.clearRect === 'function') ctx.clearRect(0, 0, width, height);
 
     // 1. Gridlines & Y-Axis labels
@@ -638,25 +839,29 @@ export function renderActivityProfileChart(act, unit = 'km') {
       ctx.lineTo(width - padRight, y);
       ctx.stroke();
 
-      // Left Y-Axis: Elevation
-      const eVal = Math.round(maxElev - (step / 4) * (maxElev - minElev));
-      ctx.fillStyle = '#10b981';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`${eVal}`, padLeft - 6, y);
+      // Left Y-Axis: Elevation (if enabled)
+      if (streamVisibility.elevation !== false) {
+        const eVal = Math.round(maxElev - (step / 4) * (maxElev - minElev));
+        ctx.fillStyle = '#10b981';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${eVal}`, padLeft - 6, y);
+      }
 
-      // Right Y-Axis: Heart Rate
-      const hVal = Math.round(maxHR - (step / 4) * (maxHR - minHR));
-      ctx.fillStyle = '#f43f5e';
-      ctx.font = '9px monospace';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`${hVal}`, width - padRight + 6, y);
+      // Right Y-Axis: Heart Rate (if enabled)
+      if (streamVisibility.hr !== false) {
+        const hVal = Math.round(maxHR - (step / 4) * (maxHR - minHR));
+        ctx.fillStyle = '#f43f5e';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${hVal}`, width - padRight + 6, y);
+      }
     }
 
-    // 2. Elevation Area Curve (Emerald gradient fill)
-    if (elevValues.length > 1) {
+    // 2. Elevation Area Curve (Emerald gradient fill + line)
+    if (streamVisibility.elevation !== false && elevValues.length > 1) {
       ctx.beginPath();
       ctx.moveTo(getX(0), getYElev(elevValues[0]));
       for (let i = 1; i < elevValues.length; i++) {
@@ -687,19 +892,79 @@ export function renderActivityProfileChart(act, unit = 'km') {
       ctx.stroke();
     }
 
-    // 3. Heart Rate Line Curve (Rose line)
-    if (hrs.length > 1) {
+    // 3. Pace / Speed Curve (Sky Blue line)
+    if (streamVisibility.pace !== false && speeds.length > 1 && validSpeeds.length > 0) {
       ctx.beginPath();
-      ctx.moveTo(getX(0), getYHR(hrs[0]));
-      for (let i = 1; i < hrs.length; i++) {
-        ctx.lineTo(getX(i), getYHR(hrs[i]));
+      let speedStarted = false;
+      for (let i = 0; i < speeds.length; i++) {
+        const s = speeds[i];
+        if (s && s > 0) {
+          const x = getX(i);
+          const y = getYSpeed(s);
+          if (!speedStarted) {
+            ctx.moveTo(x, y);
+            speedStarted = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
       }
-      ctx.strokeStyle = '#f43f5e';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+      if (speedStarted) {
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     }
 
-    // 4. X-Axis labels
+    // 4. Cadence Curve (Indigo line)
+    if (streamVisibility.cadence !== false && cadences.length > 1 && validCads.length > 0) {
+      ctx.beginPath();
+      let cadStarted = false;
+      for (let i = 0; i < cadences.length; i++) {
+        const c = cadences[i];
+        if (c && c > 0) {
+          const x = getX(i);
+          const y = getYCad(c);
+          if (!cadStarted) {
+            ctx.moveTo(x, y);
+            cadStarted = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+      }
+      if (cadStarted) {
+        ctx.strokeStyle = '#818cf8';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
+
+    // 5. Heart Rate Line Curve (Rose line)
+    if (streamVisibility.hr !== false && hrs.length > 1) {
+      ctx.beginPath();
+      let hrStarted = false;
+      for (let i = 0; i < hrs.length; i++) {
+        const h = hrs[i];
+        if (h && h > 0) {
+          const x = getX(i);
+          const y = getYHR(h);
+          if (!hrStarted) {
+            ctx.moveTo(x, y);
+            hrStarted = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+      }
+      if (hrStarted) {
+        ctx.strokeStyle = '#f43f5e';
+        ctx.lineWidth = 1.75;
+        ctx.stroke();
+      }
+    }
+
+    // 6. X-Axis labels
     ctx.fillStyle = '#71717a';
     ctx.font = '9px monospace';
     ctx.textBaseline = 'top';
@@ -711,7 +976,7 @@ export function renderActivityProfileChart(act, unit = 'km') {
     ctx.textAlign = 'right';
     ctx.fillText(formatDistance(act.distance_meters || 0, unit), width - padRight, padTop + plotH + 6);
 
-    // 5. Hairline scrubber & highlight dots
+    // 7. Hairline scrubber & highlight dots
     if (scrubIdx !== null && scrubIdx >= 0 && scrubIdx < n) {
       const xScrub = getX(scrubIdx);
       ctx.strokeStyle = '#e4e4e7';
@@ -723,7 +988,7 @@ export function renderActivityProfileChart(act, unit = 'km') {
       ctx.stroke();
       if (typeof ctx.setLineDash === 'function') ctx.setLineDash([]);
 
-      if (elevValues[scrubIdx] !== undefined) {
+      if (streamVisibility.elevation !== false && elevValues[scrubIdx] !== undefined) {
         ctx.beginPath();
         ctx.arc(xScrub, getYElev(elevValues[scrubIdx]), 4, 0, Math.PI * 2);
         ctx.fillStyle = '#10b981';
@@ -733,7 +998,27 @@ export function renderActivityProfileChart(act, unit = 'km') {
         ctx.stroke();
       }
 
-      if (hrs[scrubIdx] !== undefined) {
+      if (streamVisibility.pace !== false && speeds[scrubIdx] !== undefined && speeds[scrubIdx] > 0) {
+        ctx.beginPath();
+        ctx.arc(xScrub, getYSpeed(speeds[scrubIdx]), 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      if (streamVisibility.cadence !== false && cadences[scrubIdx] !== undefined && cadences[scrubIdx] > 0) {
+        ctx.beginPath();
+        ctx.arc(xScrub, getYCad(cadences[scrubIdx]), 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#818cf8';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      if (streamVisibility.hr !== false && hrs[scrubIdx] !== undefined && hrs[scrubIdx] > 0) {
         ctx.beginPath();
         ctx.arc(xScrub, getYHR(hrs[scrubIdx]), 4, 0, Math.PI * 2);
         ctx.fillStyle = '#f43f5e';
@@ -744,6 +1029,33 @@ export function renderActivityProfileChart(act, unit = 'km') {
       }
     }
   }
+
+  // Interactive stream toggles UI
+  const streamToggleDefs = [
+    { id: 'toggle-stream-elevation', key: 'elevation', activeCls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
+    { id: 'toggle-stream-hr', key: 'hr', activeCls: 'bg-rose-500/20 text-rose-400 border-rose-500/30' },
+    { id: 'toggle-stream-pace', key: 'pace', activeCls: 'bg-sky-500/20 text-sky-400 border-sky-500/30' },
+    { id: 'toggle-stream-cadence', key: 'cadence', activeCls: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30' }
+  ];
+
+  function syncToggleButtons() {
+    streamToggleDefs.forEach(({ id, key, activeCls }) => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      const isActive = streamVisibility[key] !== false;
+      if (isActive) {
+        btn.className = `stream-toggle-btn px-2.5 py-0.5 rounded text-xs font-semibold ${activeCls} border transition cursor-pointer`;
+      } else {
+        btn.className = 'stream-toggle-btn px-2.5 py-0.5 rounded text-xs font-semibold bg-zinc-800 text-zinc-500 border border-zinc-700/50 opacity-50 transition cursor-pointer';
+      }
+      btn.onclick = () => {
+        streamVisibility[key] = !streamVisibility[key];
+        syncToggleButtons();
+        drawProfile(currentScrub);
+      };
+    });
+  }
+  syncToggleButtons();
 
   // Initial draw
   drawProfile(null);
@@ -815,6 +1127,11 @@ export function setupActivityEventListeners() {
       currentSort = e.target.value;
       applyFiltersAndRender();
     });
+  }
+
+  const expandBtn = document.getElementById('btn-expand-drawer');
+  if (expandBtn) {
+    expandBtn.addEventListener('click', toggleDrawerExpand);
   }
 
   const closeBtn = document.getElementById('btn-close-drawer');

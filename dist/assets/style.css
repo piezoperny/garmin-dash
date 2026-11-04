@@ -89,11 +89,21 @@ table,
   color: #34d399;
   border: 1px solid rgba(52, 211, 153, 0.2);
 }
+.badge-walking {
+  background-color: rgba(16, 185, 129, 0.08);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
 .badge-strength,
 .badge-weights {
   background-color: rgba(251, 191, 36, 0.08);
   color: #fbbf24;
   border: 1px solid rgba(251, 191, 36, 0.2);
+}
+.badge-other {
+  background-color: rgba(161, 161, 170, 0.08);
+  color: #a1a1aa;
+  border: 1px solid rgba(161, 161, 170, 0.2);
 }
 
 /* Drawer Backdrop */

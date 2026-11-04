@@ -165,7 +165,28 @@ export function renderHeartRateZoneChart(rollup, customThresholds = null) {
 }
 
 /**
+ * Returns the Coggan 7-zone watt range string for a given zone index and FTP.
+ * @param {number} idx
+ * @param {number} ftp
+ * @returns {string}
+ */
+export function getCogganWattRange(idx, ftp) {
+  const f = Math.max(50, Number(ftp) || 280);
+  switch (idx) {
+    case 0: return `< ${Math.round(f * 0.55)} W`;
+    case 1: return `${Math.round(f * 0.55) + 1} - ${Math.round(f * 0.75)} W`;
+    case 2: return `${Math.round(f * 0.75) + 1} - ${Math.round(f * 0.90)} W`;
+    case 3: return `${Math.round(f * 0.90) + 1} - ${Math.round(f * 1.05)} W`;
+    case 4: return `${Math.round(f * 1.05) + 1} - ${Math.round(f * 1.20)} W`;
+    case 5: return `${Math.round(f * 1.20) + 1} - ${Math.round(f * 1.50)} W`;
+    case 6: return `> ${Math.round(f * 1.50)} W`;
+    default: return '';
+  }
+}
+
+/**
  * Renders Coggan 7-Zone Power Distribution Chart (Cycling-Specific FTP).
+ * Displays power zones only when real cycling power data exists, with explicit watt ranges.
  * @param {object} rollup
  * @param {object} [customThresholds]
  */
@@ -183,22 +204,59 @@ export function renderPowerZoneChart(rollup, customThresholds = null) {
     ? Number(customThresholds.cycling_ftp)
     : defaultFtp;
 
+  const zones = rollup?.physiological?.power_zones || [];
+  const hasExplicitPowerFlag = rollup?.physiological?.has_power_data;
+  const hasPositiveSeconds = zones.some(z => (Number(z.seconds) || 0) > 0);
+  const hasRealPower = hasExplicitPowerFlag !== false && (Boolean(hasExplicitPowerFlag) || hasPositiveSeconds) && zones.length > 0;
+
   const subtitleEl = document.getElementById('power-zone-subtitle');
   if (subtitleEl) {
-    subtitleEl.textContent = `Cycling Power Only • FTP: ${activeFtp} W (Coggan 7-Zone)`;
+    if (hasRealPower) {
+      subtitleEl.textContent = `Cycling Power Only • FTP: ${activeFtp} W (Coggan 7-Zone)`;
+    } else {
+      subtitleEl.textContent = 'Cycling Power Only • No Power Meter Connected';
+    }
   }
 
-  const zones = rollup?.physiological?.power_zones || [
-    { zone: 'Z1 Active Recovery', seconds: 15000 },
-    { zone: 'Z2 Endurance', seconds: 60000 },
-    { zone: 'Z3 Tempo', seconds: 28000 },
-    { zone: 'Z4 Threshold', seconds: 15000 },
-    { zone: 'Z5 VO2Max', seconds: 5000 },
-    { zone: 'Z6 Anaerobic', seconds: 1800 },
-    { zone: 'Z7 Neuromuscular', seconds: 600 }
-  ];
+  const cardEl = document.getElementById('card-power-zone') || canvas.parentElement;
+  const emptyNoticeId = 'power-zone-empty-notice';
+  let emptyEl = document.getElementById(emptyNoticeId);
 
-  const labels = zones.map(z => z.zone.split(' ')[0]);
+  if (!hasRealPower) {
+    if (canvas.style) canvas.style.display = 'none';
+    if (cardEl) {
+      if (!emptyEl) {
+        emptyEl = document.createElement('div');
+        emptyEl.id = emptyNoticeId;
+        emptyEl.className = 'flex flex-col items-center justify-center h-full min-h-[220px] text-center p-4';
+        emptyEl.innerHTML = `
+          <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#1f1f24] flex items-center justify-center mb-3">
+            <svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+          </div>
+          <p class="text-xs font-semibold text-zinc-300">No Cycling Power Data Available</p>
+          <p class="text-[11px] text-zinc-500 mt-1 max-w-[220px]">No cycling power meter data recorded. Connect a power meter to view power zones.</p>
+        `;
+        cardEl.appendChild(emptyEl);
+      }
+      if (emptyEl.style) emptyEl.style.display = 'flex';
+    }
+    return;
+  }
+
+  if (emptyEl && emptyEl.style) {
+    emptyEl.style.display = 'none';
+  }
+  if (canvas.style) canvas.style.display = '';
+
+  const labels = zones.map((z, idx) => {
+    const range = z.range_label || getCogganWattRange(idx, activeFtp);
+    const zoneName = z.name || (z.zone && z.zone.includes(' ') ? z.zone.split(' ').slice(1).join(' ') : (z.zone || `Zone ${idx + 1}`));
+    const zoneCode = `Z${idx + 1}`;
+    const fullTitle = `${zoneCode} ${zoneName}`.trim();
+    return [fullTitle, range];
+  });
   const data = zones.map(z => secToHours(z.seconds));
 
   powerChartInstance = new Chart(canvas, {

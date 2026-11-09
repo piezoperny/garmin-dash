@@ -111,3 +111,15 @@ table,
   background: rgba(9, 9, 11, 0.82);
   backdrop-filter: blur(10px);
 }
+
+/* Touch & Mobile Scroll Ergonomics */
+canvas,
+.chart-container {
+  touch-action: pan-y;
+}
+
+[data-metric] {
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}

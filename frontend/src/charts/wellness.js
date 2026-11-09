@@ -47,6 +47,23 @@ export { openMetricTrendModal };
 let activeRollupCache = null;
 
 /**
+ * Detects whether the current client supports touch events.
+ * On mobile/touch devices, HTML5 drag attributes hijack native touch scrolling.
+ */
+export function isTouchDevice() {
+  if (typeof window === 'undefined') return false;
+  return ('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
+}
+
+/**
+ * Returns draggable attribute string: 'draggable="true"' on desktop pointer devices,
+ * or omitted on touch-capable screens to ensure smooth native scrolling.
+ */
+function getDraggableAttr() {
+  return isTouchDevice() ? '' : 'draggable="true"';
+}
+
+/**
  * Normalizes any metric key or card ID alias into canonical metric key.
  * @param {string} key
  * @returns {string|null}
@@ -289,8 +306,9 @@ function renderCircularRing(pct, radius = 22, strokeWidth = 4, color = '#10b981'
 }
 
 function renderCardControls(metricKey, isHero) {
+  const touchClass = isTouchDevice() ? 'opacity-80' : 'opacity-0 group-hover:opacity-100';
   return `
-    <div class="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div class="flex items-center space-x-1 ${touchClass} transition-opacity">
       <button type="button" data-wellness-action="prev" data-metric="${metricKey}" title="Move earlier" class="p-1 rounded bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white text-[10px] leading-none transition">
         ◀
       </button>
@@ -319,7 +337,7 @@ function buildStepsCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-steps" draggable="true" data-metric="steps" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-steps" ${getDraggableAttr()} data-metric="steps" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -343,7 +361,7 @@ function buildStepsCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-steps" draggable="true" data-metric="steps" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-steps" ${getDraggableAttr()} data-metric="steps" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Steps</span>
         ${renderCardControls('steps', false)}
@@ -366,7 +384,7 @@ function buildRhrCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-rhr" draggable="true" data-metric="resting_hr" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-rhr" ${getDraggableAttr()} data-metric="resting_hr" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -390,7 +408,7 @@ function buildRhrCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-rhr" draggable="true" data-metric="resting_hr" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-rhr" ${getDraggableAttr()} data-metric="resting_hr" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Resting HR</span>
         ${renderCardControls('resting_hr', false)}
@@ -421,7 +439,7 @@ function buildSleepCard(c, daily, isHero) {
     const awakePct = ((awake / totalStages) * 100).toFixed(1);
 
     return `
-      <div id="card-wellness-sleep" draggable="true" data-metric="sleep" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-sleep" ${getDraggableAttr()} data-metric="sleep" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -454,7 +472,7 @@ function buildSleepCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-sleep" draggable="true" data-metric="sleep" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-sleep" ${getDraggableAttr()} data-metric="sleep" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Sleep</span>
         ${renderCardControls('sleep', false)}
@@ -474,7 +492,7 @@ function buildStressCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-stress" draggable="true" data-metric="stress" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-stress" ${getDraggableAttr()} data-metric="stress" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -510,7 +528,7 @@ function buildStressCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-stress" draggable="true" data-metric="stress" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-stress" ${getDraggableAttr()} data-metric="stress" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Stress</span>
         ${renderCardControls('stress', false)}
@@ -531,7 +549,7 @@ function buildBodyBatteryCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-body-battery" draggable="true" data-metric="body_battery" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-body-battery" ${getDraggableAttr()} data-metric="body_battery" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -561,7 +579,7 @@ function buildBodyBatteryCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-body-battery" draggable="true" data-metric="body_battery" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-body-battery" ${getDraggableAttr()} data-metric="body_battery" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Body Battery</span>
         ${renderCardControls('body_battery', false)}
@@ -584,7 +602,7 @@ function buildHrvCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-hrv" draggable="true" data-metric="hrv" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-hrv" ${getDraggableAttr()} data-metric="hrv" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -617,7 +635,7 @@ function buildHrvCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-hrv" draggable="true" data-metric="hrv" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-hrv" ${getDraggableAttr()} data-metric="hrv" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">HRV Status</span>
         ${renderCardControls('hrv', false)}
@@ -640,7 +658,7 @@ function buildIntensityCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-intensity" draggable="true" data-metric="intensity_minutes" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-intensity" ${getDraggableAttr()} data-metric="intensity_minutes" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -670,7 +688,7 @@ function buildIntensityCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-intensity" draggable="true" data-metric="intensity_minutes" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-intensity" ${getDraggableAttr()} data-metric="intensity_minutes" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Intensity Min</span>
         ${renderCardControls('intensity_minutes', false)}
@@ -694,7 +712,7 @@ function buildCaloriesCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-calories" draggable="true" data-metric="calories" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-calories" ${getDraggableAttr()} data-metric="calories" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -725,7 +743,7 @@ function buildCaloriesCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-calories" draggable="true" data-metric="calories" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-calories" ${getDraggableAttr()} data-metric="calories" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Calories</span>
         ${renderCardControls('calories', false)}
@@ -894,8 +912,10 @@ function attachCardActionListeners() {
 
 /**
  * HTML5 Drag-and-Drop support for cards.
+ * Disabled on touch-capable screens to prevent touch gesture conflicts with scrolling.
  */
 function attachDragAndDropListeners() {
+  if (isTouchDevice()) return;
   const cards = document.querySelectorAll ? document.querySelectorAll('[data-metric][draggable="true"]') : [];
   let draggedMetric = null;
 

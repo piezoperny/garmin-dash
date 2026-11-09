@@ -218,11 +218,10 @@ export function renderRouteMap(activity) {
       attributionControl: true
     });
 
-    // Dark Matter CartoDB tile layer matching obsidian aesthetic
-    const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 19,
+    // Esri World Dark Gray Canvas tile layer (open, free, keyless, matching obsidian aesthetic)
+    const tileLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{x}/{y}', {
+      attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ, Garmin',
+      maxZoom: 16,
       crossOrigin: true
     });
     if (typeof tileLayer.on === 'function') {

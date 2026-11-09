@@ -105,6 +105,62 @@ class TestMilestone2TaxonomyAndPeriodization(unittest.TestCase):
             self.assertEqual(w.get("hiking_hours", 0.0), 0.0, f"Week {w['week']} should have 0 hiking hours")
             self.assertEqual(w.get("hiking_km", 0.0), 0.0, f"Week {w['week']} should have 0 hiking km")
 
+    def test_retroactive_reprocessing_of_stale_hiking_fallback(self):
+        """M2-05: Retroactive reprocessing corrects historical activities falsely defaulted to hiking."""
+        from src.ingestion.sync import reprocess_canonical_activities, compute_activity_tss
+
+        stale_acts = [
+            {
+                "id": "101",
+                "sport": "hiking",
+                "title": "Morning Walk with Dog",
+                "duration_seconds": 3600,
+                "distance_meters": 4000.0,
+                "avg_hr": 105,
+                "elevation_gain_meters": 15,
+                "tss": 55.0,
+            },
+            {
+                "id": "102",
+                "sport": "hiking",
+                "title": "Alpine Peak Summit",
+                "duration_seconds": 14400,
+                "distance_meters": 12000.0,
+                "avg_hr": 142,
+                "elevation_gain_meters": 850,
+                "tss": 280.0,
+            },
+            {
+                "id": "103",
+                "sport": "hiking",
+                "title": "Full Body Gym Workout",
+                "raw_activity_type": "strength_training",
+                "duration_seconds": 3600,
+                "avg_hr": 130,
+                "tss": 55.0,
+            },
+        ]
+
+        reprocessed = reprocess_canonical_activities(stale_acts)
+        self.assertEqual(len(reprocessed), 3)
+
+        # 101 corrected to walking
+        self.assertEqual(reprocessed[0]["sport"], "walking")
+        self.assertEqual(reprocessed[0]["distance_meters"], 4000.0)
+        self.assertEqual(reprocessed[0]["tss"], compute_activity_tss("walking", 3600, 105, 15))
+
+        # 102 kept as hiking with recalculated TSS
+        self.assertEqual(reprocessed[1]["sport"], "hiking")
+        self.assertEqual(reprocessed[1]["elevation_gain_meters"], 850)
+        self.assertEqual(reprocessed[1]["tss"], compute_activity_tss("hiking", 14400, 142, 850))
+
+        # 103 corrected to strength
+        self.assertEqual(reprocessed[2]["sport"], "strength")
+        self.assertEqual(reprocessed[2]["distance_meters"], 0.0)
+        self.assertEqual(reprocessed[2]["elevation_gain_meters"], 0)
+        self.assertEqual(reprocessed[2]["tss"], compute_activity_tss("strength", 3600, 130))
+
 
 if __name__ == "__main__":
     unittest.main()
+

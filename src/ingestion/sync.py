@@ -151,6 +151,125 @@ def resolve_sport_taxonomy(summary_or_type: Any, default: str = "other") -> str:
     return raw_clean
 
 
+def compute_activity_tss(
+    sport: str,
+    dur_sec: int,
+    avg_hr: int,
+    elev_m: int = 0,
+    avg_power: Optional[float] = None,
+) -> float:
+    """Calculate sport-specific Training Stress Score (TSS) with calibrated factors."""
+    if dur_sec <= 0:
+        return 0.0
+    dur_h = dur_sec / 3600.0
+    if sport == "cycling" and avg_power is not None and avg_power > 0:
+        return round(dur_h * ((avg_power / 280.0) ** 2) * 100.0, 1)
+
+    hr_val = avg_hr if avg_hr > 0 else 130
+    if sport in ("hiking", "hike"):
+        hr_factor = (hr_val / 168.0) ** 2
+        elev_factor = (elev_m / 100.0) * 4.0
+        return round(dur_h * hr_factor * 55.0 + elev_factor, 1)
+    elif sport in ("running", "run"):
+        hr_factor = (hr_val / 168.0) ** 2
+        return round(dur_h * hr_factor * 65.0, 1)
+    elif sport in ("walking", "walk"):
+        hr_factor = (hr_val / 168.0) ** 2
+        return round(dur_h * hr_factor * 35.0, 1)
+    elif sport in ("strength", "weights"):
+        hr_factor = (hr_val / 168.0) ** 2
+        return round(dur_h * hr_factor * 55.0, 1)
+    else:
+        hr_factor = (hr_val / 145.0)
+        return round(dur_h * hr_factor * 55.0, 1)
+
+
+def reprocess_canonical_activities(
+    canonical_acts: List[Dict[str, Any]],
+    raw_summaries_getter: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Retroactively reprocess and re-normalize canonical activities.
+    Corrects past activities that defaulted to 'hiking' when they were not true hikes,
+    re-applies the sport taxonomy, and recalculates TSS / metrics.
+    """
+    reprocessed: List[Dict[str, Any]] = []
+    for act in canonical_acts:
+        if not isinstance(act, dict):
+            continue
+        act_id = str(act.get("id"))
+
+        # Check raw summary if available
+        raw_summary: Optional[Dict[str, Any]] = None
+        if raw_summaries_getter:
+            try:
+                raw_summary = raw_summaries_getter(act_id)
+            except Exception:
+                raw_summary = None
+
+        raw_type = (
+            (raw_summary.get("activityType", {}).get("typeKey") if isinstance(raw_summary.get("activityType"), dict) else raw_summary.get("activityType"))
+            if raw_summary
+            else act.get("raw_activity_type")
+            or act.get("activityType")
+            or act.get("raw_type")
+        )
+
+        curr_sport = str(act.get("sport") or "")
+
+        # If we have a raw type, resolve it with 'other' default
+        if raw_type:
+            new_sport = resolve_sport_taxonomy(raw_type, default="other")
+        else:
+            # If current sport is 'hiking' but title suggests walking/cardio/strength/generic, fix fallback
+            title_lower = str(act.get("title") or "").lower()
+            if curr_sport == "hiking":
+                if any(w in title_lower for w in ("walk", "stroll")):
+                    new_sport = "walking"
+                elif any(w in title_lower for w in ("gym", "weight", "strength", "workout")):
+                    new_sport = "strength"
+                elif any(w in title_lower for w in ("cardio", "fitness", "aerobic")):
+                    new_sport = "other"
+                elif "hike" in title_lower or "trail" in title_lower or "alpine" in title_lower:
+                    new_sport = "hiking"
+                else:
+                    new_sport = "other"
+            else:
+                new_sport = resolve_sport_taxonomy(curr_sport, default="other")
+
+        dur_sec = int(float(act.get("duration_seconds") or 0))
+        dist_m = 0.0 if new_sport in ("strength", "weights") else float(act.get("distance_meters") or 0.0)
+        avg_hr = int(float(act.get("avg_hr") or 130))
+        elev_m = 0 if new_sport in ("strength", "weights", "swimming") else int(float(act.get("elevation_gain_meters") or 0))
+        avg_power = act.get("avg_power")
+
+        if new_sport in ("hiking", "running", "walking") and dist_m > 0 and dur_sec > 0:
+            avg_pace_sec_km = round(dur_sec / (dist_m / 1000.0), 1)
+        else:
+            avg_pace_sec_km = None
+
+        calc_tss = compute_activity_tss(
+            sport=new_sport,
+            dur_sec=dur_sec,
+            avg_hr=avg_hr,
+            elev_m=elev_m,
+            avg_power=avg_power,
+        )
+
+        act["sport"] = new_sport
+        act["distance_meters"] = dist_m
+        act["elevation_gain_meters"] = elev_m
+        act["avg_pace_sec_km"] = avg_pace_sec_km
+        act["tss"] = calc_tss
+        act["training_stress_score"] = calc_tss
+        if raw_type and not act.get("raw_activity_type"):
+            act["raw_activity_type"] = raw_type
+
+        reprocessed.append(act)
+
+    return reprocessed
+
+
 def normalize_splits(
     raw_splits: List[Dict[str, Any]],
     sport: str = "other",
@@ -462,6 +581,16 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(details, dict):
         details = {}
 
+    raw_activity_type = (
+        summary.get("activityType", {}).get("typeKey")
+        if isinstance(summary.get("activityType"), dict)
+        else summary.get("activityType")
+        or summary.get("sport")
+        or summary.get("typeKey")
+        or summary.get("raw_activity_type")
+        or summary.get("raw_type")
+        or ""
+    )
     sport = resolve_sport_taxonomy(summary)
 
     act_id = str(summary.get("activityId") or summary.get("id") or int(time.time()))
@@ -494,7 +623,18 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
             or 0
         ))
 
-    tss = float(summary.get("activityTrainingLoad") or summary.get("trainingStressScore") or summary.get("tss") or round((dur_sec / 3600.0) * (avg_hr / 145.0) * 55.0, 1))
+    tss = float(
+        summary.get("activityTrainingLoad")
+        or summary.get("trainingStressScore")
+        or summary.get("tss")
+        or compute_activity_tss(
+            sport=sport,
+            dur_sec=dur_sec,
+            avg_hr=avg_hr,
+            elev_m=elev_m,
+            avg_power=avg_power,
+        )
+    )
 
     if sport in ("hiking", "running", "walking") and dist_m > 0 and dur_sec > 0:
         avg_pace_sec_km = round(dur_sec / (dist_m / 1000.0), 1)
@@ -680,6 +820,7 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
         "hr_zones": details.get("hr_zones") or summary.get("hr_zones") or {},
         "gps_track": gps_track,
         "telemetry_stream": telemetry_stream,
+        "raw_activity_type": raw_activity_type,
     }
 
 
@@ -922,6 +1063,7 @@ def execute_incremental_pull(
 def run_sync_pipeline(
     mock_mode: bool = False,
     force_refresh: bool = False,
+    reprocess_archive: bool = False,
     lookback_days: int = 90,
     staging_dir: Union[Path, str] = Path(".raw_staging"),
     output_rollup: Union[Path, str] = Path(".staging/dashboard_rollup.json"),
@@ -983,6 +1125,8 @@ def run_sync_pipeline(
         if is_mock:
             gen = SyntheticDatasetGenerator(seed=42)
             canonical_acts = gen.generate_activities()
+            if reprocess_archive:
+                canonical_acts = reprocess_canonical_activities(canonical_acts)
         else:
             existing_acts_map: Dict[str, Dict[str, Any]] = {}
             if sftp_client.file_exists(REMOTE_CANONICAL_PATH):
@@ -1012,6 +1156,8 @@ def run_sync_pipeline(
                 existing_acts_map[str(norm_act["id"])] = norm_act
 
             canonical_acts = list(existing_acts_map.values())
+            # Schema migration and taxonomy normalization pass on all canonical activities
+            canonical_acts = reprocess_canonical_activities(canonical_acts)
             sftp_client.write_text_atomic(REMOTE_CANONICAL_PATH, json.dumps(canonical_acts, indent=2))
 
         rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest)
@@ -1055,10 +1201,11 @@ class IngestionCoordinator:
         self.output_rollup = Path(output_rollup)
         self.lookback_days = lookback_days
 
-    def run_sync(self, force_refresh: bool = False, mock_mode: bool = False) -> int:
+    def run_sync(self, force_refresh: bool = False, mock_mode: bool = False, reprocess_archive: bool = False) -> int:
         return run_sync_pipeline(
             mock_mode=mock_mode,
             force_refresh=force_refresh,
+            reprocess_archive=reprocess_archive,
             lookback_days=self.lookback_days,
             staging_dir=self.staging_dir,
             output_rollup=self.output_rollup,
@@ -1073,6 +1220,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Garmin Ingestion, SFTP Archival, and Rollup Pipeline")
     parser.add_argument("--mock", action="store_true", help="Force synthetic mock mode (offline)")
     parser.add_argument("--force-refresh", action="store_true", help="Ignore high-water mark; re-sync full lookback window")
+    parser.add_argument("--recalculate", "--reprocess-archive", dest="reprocess_archive", action="store_true", help="Retroactively reprocess and re-normalize all archived activities")
     parser.add_argument("--lookback-days", type=int, default=90, help="Initial lookback window in days (default: 90)")
     parser.add_argument("--staging-dir", type=Path, default=Path(".raw_staging"), help="Temporary raw staging directory")
     parser.add_argument("--output-rollup", type=Path, default=Path(".staging/dashboard_rollup.json"), help="Output path for compiled rollup JSON")
@@ -1090,10 +1238,12 @@ def main() -> None:
 
     env_mock = os.environ.get("FORCE_MOCK", "").lower() in ("true", "1", "yes") or args.mock
     env_force = os.environ.get("FORCE_REFRESH", "").lower() in ("true", "1", "yes") or args.force_refresh
+    env_reprocess = os.environ.get("REPROCESS_ARCHIVE", "").lower() in ("true", "1", "yes") or args.reprocess_archive
 
     exit_code = run_sync_pipeline(
         mock_mode=env_mock,
         force_refresh=env_force,
+        reprocess_archive=env_reprocess,
         lookback_days=args.lookback_days,
         staging_dir=args.staging_dir,
         output_rollup=args.output_rollup,

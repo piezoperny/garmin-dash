@@ -1009,8 +1009,11 @@ def generate_wellness_dataset(
         athlete_profile = dict(DEFAULT_ATHLETE_PROFILE)
 
     # Determine timeline boundaries
+    parsed_dates: List[datetime] = []
+    min_dt: Optional[datetime] = None
+    max_dt: Optional[datetime] = None
+
     if activities and len(activities) > 0:
-        parsed_dates = []
         for a in activities:
             d_str = a.get("start_time") or a.get("date") or ""
             if d_str:
@@ -1067,7 +1070,9 @@ def generate_wellness_dataset(
 
         # 1. Steps
         steps_goal = 10000
-        base_steps = w_rng.randint(6400, 8900)
+        # If activities are provided, strictly do not generate synthetic random steps prior to the earliest synced activity
+        is_unrecorded = bool(parsed_dates and day_date < min_dt)
+        base_steps = 0 if is_unrecorded else w_rng.randint(6400, 8900)
         act_steps = 0
         for a in day_acts:
             sp = str(a.get("sport") or "").lower()
@@ -1151,6 +1156,7 @@ def generate_wellness_dataset(
             "date": date_str,
             "steps": total_steps,
             "steps_goal": steps_goal,
+            "unrecorded": is_unrecorded,
             "resting_hr": rhr,
             "resting_heart_rate": rhr,
             "resting_hr_7d_avg": rhr_7d_avg,

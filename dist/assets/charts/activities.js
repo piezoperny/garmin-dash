@@ -732,12 +732,22 @@ export function extractActivityTelemetry(act) {
   const hasValidHr = hrs.length > 0 && hrs.some(h => h > 0);
   if (!hasValidHr && act) {
     if (Array.isArray(act.splits) && act.splits.some(s => s && s.avg_hr > 0)) {
+      const splitHrs = act.splits.map(s => (s && s.avg_hr > 0) ? s.avg_hr : (act.avg_hr || 0));
+      const splitCount = splitHrs.length;
       const totalPts = Math.max(elevations.length, times.length, 50);
-      const splitCount = act.splits.length;
-      hrs = Array.from({ length: totalPts }, (_, i) => {
-        const splitIdx = Math.min(splitCount - 1, Math.floor((i / totalPts) * splitCount));
-        return act.splits[splitIdx]?.avg_hr || act.avg_hr || 0;
-      });
+      if (splitCount === 1) {
+        hrs = Array.from({ length: totalPts }, () => splitHrs[0]);
+      } else {
+        hrs = Array.from({ length: totalPts }, (_, i) => {
+          const t = (i / Math.max(1, totalPts - 1)) * (splitCount - 1);
+          const low = Math.floor(t);
+          const high = Math.min(splitCount - 1, Math.ceil(t));
+          const frac = t - low;
+          const hLow = splitHrs[low] || act.avg_hr || 0;
+          const hHigh = splitHrs[high] || hLow;
+          return Math.round(hLow + (hHigh - hLow) * frac);
+        });
+      }
     } else if (act.avg_hr && act.avg_hr > 0) {
       const totalPts = Math.max(elevations.length, times.length, 50);
       hrs = Array.from({ length: totalPts }, () => act.avg_hr);
@@ -748,17 +758,28 @@ export function extractActivityTelemetry(act) {
   const hasValidSpeed = speeds.length > 0 && speeds.some(s => s > 0);
   if (!hasValidSpeed && act && !isStrength) {
     if (Array.isArray(act.splits) && act.splits.length > 0) {
-      const totalPts = Math.max(elevations.length, times.length, hrs.length, 50);
-      const splitCount = act.splits.length;
-      speeds = Array.from({ length: totalPts }, (_, i) => {
-        const splitIdx = Math.min(splitCount - 1, Math.floor((i / totalPts) * splitCount));
-        const s = act.splits[splitIdx];
+      const splitSpeeds = act.splits.map(s => {
         if (s && s.speed_mps > 0) return s.speed_mps;
         const dur = s?.split_sec || s?.duration_seconds || 0;
         const dist = s?.distance_meters || 0;
         if (dur > 0 && dist > 0) return dist / dur;
         return 0;
       });
+      const splitCount = splitSpeeds.length;
+      const totalPts = Math.max(elevations.length, times.length, hrs.length, 50);
+      if (splitCount === 1) {
+        speeds = Array.from({ length: totalPts }, () => splitSpeeds[0]);
+      } else {
+        speeds = Array.from({ length: totalPts }, (_, i) => {
+          const t = (i / Math.max(1, totalPts - 1)) * (splitCount - 1);
+          const low = Math.floor(t);
+          const high = Math.min(splitCount - 1, Math.ceil(t));
+          const frac = t - low;
+          const sLow = splitSpeeds[low] || 0;
+          const sHigh = splitSpeeds[high] || sLow;
+          return sLow + (sHigh - sLow) * frac;
+        });
+      }
     } else if (distances.length > 1 && times.length > 1) {
       speeds = times.map((t, i) => {
         if (i === 0) return 0;
@@ -767,6 +788,21 @@ export function extractActivityTelemetry(act) {
         return dt > 0 && dd >= 0 ? dd / dt : 0;
       });
     }
+  }
+
+  // Parametric elevation profile fallback for outdoor activities with elevation gain
+  const elevGain = Number(act?.elevation_gain_meters || 0);
+  const hasValidElev = elevations.length > 0 && elevations.some(e => typeof e === 'number' && !isNaN(e) && e > 0);
+  if (!hasValidElev && !isIndoor && elevGain > 0) {
+    const totalPts = Math.max(times.length, hrs.length, speeds.length, coords.length, 50);
+    const baseElev = 50.0;
+    elevations = Array.from({ length: totalPts }, (_, i) => {
+      const frac = i / Math.max(1, totalPts - 1);
+      const u = Math.PI * frac;
+      const undulation = 0.08 * elevGain * Math.sin(4 * u);
+      const elev = baseElev + (elevGain * Math.sin(u)) + undulation;
+      return Math.round(Math.max(1.0, elev) * 10) / 10;
+    });
   }
 
   // Fallback cadence interpolation if cadences is missing

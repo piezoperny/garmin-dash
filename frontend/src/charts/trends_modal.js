@@ -597,18 +597,20 @@ function renderKPICards(metric, records, cfg) {
     kpi3 = { label: 'Highest RHR', val: `${max} bpm`, sub: 'Fatigue / stress peak' };
     kpi4 = { label: 'Latest Day', val: `${latest} bpm`, sub: 'Optimal aerobic recovery' };
   } else if (metric === 'steps') {
-    const vals = records.map(r => r.steps || 0);
-    const sum = vals.reduce((s, v) => s + v, 0);
-    const avg = Math.round(sum / vals.length);
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
+    const recordedRecs = records.filter(r => !r.unrecorded && (r.steps || 0) > 0);
+    const effectiveRecs = recordedRecs.length > 0 ? recordedRecs : records;
+    const vals = effectiveRecs.map(r => r.steps || 0);
+    const sum = records.reduce((s, r) => s + (r.steps || 0), 0);
+    const avg = vals.length > 0 ? Math.round(sum / vals.length) : 0;
+    const min = vals.length > 0 ? Math.min(...vals) : 0;
+    const max = vals.length > 0 ? Math.max(...vals) : 0;
     const daysMet = vals.filter(v => v >= 10000).length;
-    const pctMet = Math.round((daysMet / vals.length) * 100);
+    const pctMet = vals.length > 0 ? Math.round((daysMet / vals.length) * 100) : 0;
 
-    kpi1 = { label: 'Daily Average', val: `${avg.toLocaleString()} steps`, sub: `${pctMet}% of goal met` };
+    kpi1 = { label: 'Daily Average', val: `${avg.toLocaleString()} steps`, sub: `${pctMet}% of goal met (${effectiveRecs.length} recorded days)` };
     kpi2 = { label: 'Min Day', val: `${min.toLocaleString()} steps`, sub: 'Active recovery day' };
     kpi3 = { label: 'Max Day', val: `${max.toLocaleString()} steps`, sub: 'Long hike / excursion' };
-    kpi4 = { label: 'Period Total', val: `${sum.toLocaleString()} steps`, sub: `${records.length} days accumulated` };
+    kpi4 = { label: 'Period Total', val: `${sum.toLocaleString()} steps`, sub: `${effectiveRecs.length} days accumulated` };
   } else if (metric === 'body_battery') {
     const highs = records.map(r => r.body_battery_high ?? 90);
     const lows = records.map(r => r.body_battery_low ?? 25);
@@ -1030,7 +1032,10 @@ function renderBreakdownTable(metric, records, cfg) {
       `;
     }).join('');
   } else if (metric === 'steps') {
-    const avg = Math.round(records.reduce((s, r) => s + (r.steps || 0), 0) / records.length);
+    const recordedRecs = records.filter(r => !r.unrecorded && (r.steps || 0) > 0);
+    const avg = recordedRecs.length > 0
+      ? Math.round(recordedRecs.reduce((s, r) => s + (r.steps || 0), 0) / recordedRecs.length)
+      : 0;
     theadRow.innerHTML = `
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Steps</th>
@@ -1038,6 +1043,17 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">Delta vs Avg</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
+      const isUnrecorded = Boolean(r.unrecorded || ((r.steps === 0 || r.steps === null) && records.some(x => x.unrecorded)));
+      if (isUnrecorded && (r.steps === 0 || r.steps === null)) {
+        return `
+          <tr class="hover:bg-[#18181b]/50 transition opacity-60">
+            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono italic">Unrecorded</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right font-mono text-zinc-500">—</td>
+          </tr>
+        `;
+      }
       const s = r.steps || 0;
       const pct = Math.round((s / 10000) * 100);
       const delta = s - avg;

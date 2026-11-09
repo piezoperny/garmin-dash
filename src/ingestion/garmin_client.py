@@ -617,7 +617,7 @@ class LiveGarminClient:
                 logger.warning(f"Could not fetch personal activity splits for {activity_id}: {e}")
 
             try:
-                details = self._personal_garmin.get_activity_details(activity_id, maxchart=200, maxpoly=400)
+                details = self._personal_garmin.get_activity_details(activity_id, maxchart=2000, maxpoly=4000)
                 if isinstance(details, dict):
                     if "geoPolylineDTO" in details:
                         result["geoPolylineDTO"] = details["geoPolylineDTO"]

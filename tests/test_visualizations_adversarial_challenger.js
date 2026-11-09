@@ -653,18 +653,20 @@ async function runAdversarialVisualizationsSuite() {
     const tbody = table.querySelector('tbody');
 
     // Count expected sports from decrypted data
-    const expectedRunning = decryptedRollup.activities.filter(a => a.sport === 'hiking' || a.sport === 'running').length;
-    const expectedCycling = decryptedRollup.activities.filter(a => a.sport === 'cycling').length;
+    const expectedHiking = decryptedRollup.activities.filter(a => a.sport === 'hiking' || a.sport === 'hike').length;
+    const expectedRunning = decryptedRollup.activities.filter(a => a.sport === 'running' || a.sport === 'run').length;
+    const expectedCycling = decryptedRollup.activities.filter(a => a.sport === 'cycling' || a.sport === 'cycle').length;
     const expectedStrength = decryptedRollup.activities.filter(a => a.sport === 'strength' || a.sport === 'weights').length;
 
-    assert.ok(expectedRunning > 0, 'Decrypted data must contain hiking/running');
+    assert.ok(expectedHiking > 0, 'Decrypted data must contain hiking');
+    assert.ok(expectedRunning > 0, 'Decrypted data must contain running');
     assert.ok(expectedCycling > 0, 'Decrypted data must contain cycling');
     assert.ok(expectedStrength > 0, 'Decrypted data must contain strength');
-    assert.strictEqual(expectedRunning + expectedCycling + expectedStrength, 49);
+    assert.strictEqual(expectedHiking + expectedRunning + expectedCycling + expectedStrength, 49);
 
     // Filter Running / Hiking
     activitiesModule.setActivitySportFilter('hiking');
-    assert.strictEqual(tbody.children.length, expectedRunning, 'Hiking filter must show exact hiking count');
+    assert.strictEqual(tbody.children.length, expectedHiking, 'Hiking filter must show exact hiking count');
     activitiesModule.setActivitySportFilter('running');
     assert.strictEqual(tbody.children.length, expectedRunning, 'Running filter must show exact running count');
 

@@ -9,6 +9,7 @@
  */
 
 import { Chart } from './chart_engine.js';
+import { openMetricTrendModal } from './trends_modal.js';
 
 let hrChartInstance = null;
 let powerChartInstance = null;
@@ -218,17 +219,18 @@ export function renderPowerZoneChart(rollup, customThresholds = null) {
     }
   }
 
-  const cardEl = document.getElementById('card-power-zone') || canvas.parentElement;
+  const cardEl = document.getElementById('card-power-zone');
+  const container = canvas.parentElement || cardEl;
   const emptyNoticeId = 'power-zone-empty-notice';
   let emptyEl = document.getElementById(emptyNoticeId);
 
   if (!hasRealPower) {
     if (canvas.style) canvas.style.display = 'none';
-    if (cardEl) {
+    if (container) {
       if (!emptyEl) {
         emptyEl = document.createElement('div');
         emptyEl.id = emptyNoticeId;
-        emptyEl.className = 'flex flex-col items-center justify-center h-full min-h-[220px] text-center p-4';
+        emptyEl.className = 'flex flex-col items-center justify-center h-full min-h-[260px] text-center p-4';
         emptyEl.innerHTML = `
           <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#1f1f24] flex items-center justify-center mb-3">
             <svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -238,7 +240,9 @@ export function renderPowerZoneChart(rollup, customThresholds = null) {
           <p class="text-xs font-semibold text-zinc-300">No Cycling Power Data Available</p>
           <p class="text-[11px] text-zinc-500 mt-1 max-w-[220px]">No cycling power meter data recorded. Connect a power meter to view power zones.</p>
         `;
-        cardEl.appendChild(emptyEl);
+        container.appendChild(emptyEl);
+      } else if (emptyEl.parentElement !== container) {
+        container.appendChild(emptyEl);
       }
       if (emptyEl.style) emptyEl.style.display = 'flex';
     }
@@ -350,6 +354,14 @@ export function renderThresholdTrendsChart(rollup, customThresholds = null) {
       }
     }
   });
+
+  const card = document.getElementById('card-threshold-trends');
+  if (card) {
+    card.classList.add('cursor-pointer');
+    card.onclick = () => {
+      openMetricTrendModal('thresholds', rollup, customThresholds);
+    };
+  }
 }
 
 /**

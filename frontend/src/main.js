@@ -46,6 +46,12 @@ import {
   setupWellnessEventListeners,
   DEFAULT_WELLNESS_LAYOUT
 } from './charts/wellness.js';
+import {
+  initTrendsModal,
+  openMetricTrendModal
+} from './charts/trends_modal.js';
+
+export { openMetricTrendModal, initTrendsModal };
 
 const CUSTOMIZATION_STORAGE_KEY = 'garmin_dash_customization';
 
@@ -563,6 +569,7 @@ export async function initApp() {
   setupActivityEventListeners();
   setupCustomizationModalListeners();
   setupWellnessEventListeners();
+  initTrendsModal();
 
   // Attach submit listeners
   const form = document.getElementById('passphrase-form');

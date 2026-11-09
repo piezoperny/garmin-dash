@@ -70,6 +70,12 @@ export class Chart {
     if (typeof window !== 'undefined') {
       window.addEventListener('resize', this._onResize);
     }
+    if (typeof ResizeObserver !== 'undefined' && this.canvas.parentElement) {
+      this._resizeObserver = new ResizeObserver(() => {
+        this._handleResize();
+      });
+      this._resizeObserver.observe(this.canvas.parentElement);
+    }
 
     this.render();
   }
@@ -79,6 +85,10 @@ export class Chart {
     this.canvas.removeEventListener('mouseleave', this._onMouseLeave);
     if (typeof window !== 'undefined') {
       window.removeEventListener('resize', this._onResize);
+    }
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
     }
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
   }
@@ -92,16 +102,48 @@ export class Chart {
   }
 
   _setupCanvasDPI() {
-    const rect = this.canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    const width = rect.width > 0 ? rect.width : (this._lastDisplayWidth || this.canvas._cssWidth || (this.canvas.width ? (this._scaled ? this.canvas.width / dpr : this.canvas.width) : 600));
-    const height = rect.height > 0 ? rect.height : (this._lastDisplayHeight || this.canvas._cssHeight || (this.canvas.height ? (this._scaled ? this.canvas.height / dpr : this.canvas.height) : 300));
+    if (typeof ResizeObserver !== 'undefined' && this.canvas.parentElement && !this._resizeObserver) {
+      this._resizeObserver = new ResizeObserver(() => {
+        this._handleResize();
+      });
+      this._resizeObserver.observe(this.canvas.parentElement);
+    }
+
+    const parent = this.canvas.parentElement;
+    const parentRect = (parent && typeof parent.getBoundingClientRect === 'function') ? parent.getBoundingClientRect() : null;
+    const rect = typeof this.canvas.getBoundingClientRect === 'function' ? this.canvas.getBoundingClientRect() : { width: 0, height: 0 };
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+
+    let width = 0;
+    if (parentRect && parentRect.width > 0) {
+      width = parentRect.width;
+    } else if (rect.width > 0) {
+      width = rect.width;
+    } else {
+      width = this._lastDisplayWidth || this.canvas._cssWidth || (this.canvas.width ? (this._scaled ? this.canvas.width / dpr : this.canvas.width) : 600);
+    }
+
+    let height = 0;
+    if (parentRect && parentRect.height > 0) {
+      height = parentRect.height;
+    } else if (rect.height > 0) {
+      height = rect.height;
+    } else {
+      height = this._lastDisplayHeight || this.canvas._cssHeight || (this.canvas.height ? (this._scaled ? this.canvas.height / dpr : this.canvas.height) : 300);
+    }
+
     this._lastDisplayWidth = width;
     this._lastDisplayHeight = height;
     this._scaled = true;
 
     this.canvas.width = Math.round(width * dpr);
     this.canvas.height = Math.round(height * dpr);
+
+    if (this.canvas.style) {
+      this.canvas.style.width = width + 'px';
+      this.canvas.style.height = height + 'px';
+    }
+
     if (typeof this.ctx.resetTransform === 'function') {
       this.ctx.resetTransform();
     } else if (typeof this.ctx.setTransform === 'function') {
@@ -197,6 +239,12 @@ export class Chart {
         let posSum = 0;
         let negSum = 0;
         for (const ds of datasets) {
+          if (ds.type === 'line') {
+            const v = Number(ds.data?.[i]) || 0;
+            if (v > maxY) maxY = v;
+            if (v < minY) minY = v;
+            continue;
+          }
           const val = Number(ds.data?.[i]) || 0;
           if (val >= 0) posSum += val;
           else negSum += val;
@@ -214,6 +262,18 @@ export class Chart {
       }
     }
 
+    // Include annotations in range if present
+    if (this.options.annotations && Array.isArray(this.options.annotations)) {
+      for (const ann of this.options.annotations) {
+        if (typeof ann.y === 'number') {
+          if (ann.y > maxY) maxY = ann.y;
+          if (ann.y < minY) minY = ann.y;
+        }
+        if (typeof ann.yMax === 'number' && ann.yMax > maxY) maxY = ann.yMax;
+        if (typeof ann.yMin === 'number' && ann.yMin < minY) minY = ann.yMin;
+      }
+    }
+
     if (maxY === minY) {
       maxY += 10;
       minY = Math.min(0, minY);
@@ -221,6 +281,40 @@ export class Chart {
     const range = maxY - minY;
     maxY = maxY + range * 0.1;
     if (minY < 0) minY = minY - range * 0.05;
+
+    // Override with explicit user-defined scale bounds if provided
+    if (typeof this.options.scales?.y?.min === 'number') {
+      minY = this.options.scales.y.min;
+    }
+    if (typeof this.options.scales?.y?.max === 'number') {
+      maxY = this.options.scales.y.max;
+    }
+
+    // Render Background Annotations Bands (e.g. HRV Baseline, Stress Zones)
+    if (this.options.annotations && Array.isArray(this.options.annotations)) {
+      for (const ann of this.options.annotations) {
+        if (ann.type === 'band' && typeof ann.yMin === 'number' && typeof ann.yMax === 'number') {
+          const normTop = (maxY - ann.yMax) / (maxY - minY);
+          const normBottom = (maxY - ann.yMin) / (maxY - minY);
+          const yTop = Math.max(padding.top, padding.top + normTop * chartH);
+          const yBottom = Math.min(padding.top + chartH, padding.top + normBottom * chartH);
+          const h = yBottom - yTop;
+          if (h > 0) {
+            ctx.save();
+            ctx.fillStyle = ann.color || 'rgba(16, 185, 129, 0.12)';
+            ctx.fillRect(padding.left, yTop, chartW, h);
+            if (ann.label) {
+              ctx.fillStyle = ann.labelColor || '#71717a';
+              ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+              ctx.textAlign = 'left';
+              ctx.textBaseline = 'top';
+              ctx.fillText(ann.label, padding.left + 6, yTop + 4);
+            }
+            ctx.restore();
+          }
+        }
+      }
+    }
 
     // Y Gridlines and Ticks
     const steps = 4;
@@ -371,7 +465,7 @@ export class Chart {
           }
           ctx.lineTo(pts[pts.length - 1].x, padding.top + chartH);
           ctx.lineTo(pts[0].x, padding.top + chartH);
-          ctx.closePath();
+          if (typeof ctx.closePath === 'function') ctx.closePath();
 
           if (typeof ctx.createLinearGradient === 'function') {
             const grad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
@@ -421,11 +515,14 @@ export class Chart {
       }
     } else {
       // Bar Datasets
+      const barDatasets = datasets.filter(ds => ds.type !== 'line');
+      const lineDatasets = datasets.filter(ds => ds.type === 'line');
+
       if (isStacked) {
         const stackAccum = new Array(labels.length).fill(0);
-        for (const ds of datasets) {
+        for (const ds of barDatasets) {
           const color = ds.backgroundColor || '#38bdf8';
-          const barWidth = Math.min(28, xStep * 0.6);
+          const barWidth = Math.max(1, Math.min(28, xStep * 0.6));
 
           for (let i = 0; i < labels.length; i++) {
             const val = Number(ds.data?.[i]) || 0;
@@ -445,7 +542,8 @@ export class Chart {
             ctx.fillStyle = color;
             ctx.beginPath();
             if (typeof ctx.roundRect === 'function') {
-              ctx.roundRect(x, yTop, barWidth, h, 2);
+              const radius = Math.min(2, Math.floor(barWidth / 2));
+              ctx.roundRect(x, yTop, barWidth, h, radius);
             } else {
               ctx.rect(x, yTop, barWidth, h);
             }
@@ -464,11 +562,11 @@ export class Chart {
           }
         }
       } else {
-        const groupCount = datasets.length;
+        const groupCount = barDatasets.length;
         const totalBarGroupWidth = Math.min(44, xStep * 0.7);
         const singleBarWidth = totalBarGroupWidth / Math.max(1, groupCount);
 
-        datasets.forEach((ds, dsIdx) => {
+        barDatasets.forEach((ds, dsIdx) => {
           const color = ds.backgroundColor || '#38bdf8';
           for (let i = 0; i < labels.length; i++) {
             const val = Number(ds.data?.[i]) || 0;
@@ -478,16 +576,19 @@ export class Chart {
             const y = padding.top + normVal * chartH;
             const zeroNorm = (maxY - 0) / (maxY - minY);
             const zeroY = padding.top + zeroNorm * chartH;
-            const h = zeroY - y;
+            const barY = Math.min(y, zeroY);
+            const barH = Math.max(1, Math.abs(zeroY - y));
 
             ctx.fillStyle = color;
             ctx.beginPath();
-            ctx.rect(x, y, Math.max(1, singleBarWidth - 1), h);
+            ctx.rect(x, barY, Math.max(1, singleBarWidth - 1), barH);
             ctx.fill();
 
             this.dataPoints.push({
               x: x + singleBarWidth / 2,
-              y: y + h / 2,
+              y: barY + barH / 2,
+              w: singleBarWidth,
+              h: barH,
               val,
               label: labels[i],
               datasetName: ds.label,
@@ -495,6 +596,85 @@ export class Chart {
             });
           }
         });
+      }
+
+      // Render line datasets overlaid on bar charts
+      for (const ds of lineDatasets) {
+        const color = ds.borderColor || ds.backgroundColor || '#38bdf8';
+        const pts = [];
+
+        for (let i = 0; i < labels.length; i++) {
+          const val = Number(ds.data?.[i]) ?? 0;
+          const x = padding.left + (i + 0.5) * xStep;
+          const normY = (maxY - val) / (maxY - minY);
+          const y = padding.top + normY * chartH;
+          pts.push({ x, y, val, label: labels[i], datasetName: ds.label, color });
+        }
+
+        if (pts.length === 0) continue;
+
+        ctx.beginPath();
+        if (typeof ctx.bezierCurveTo === 'function') {
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p0 = pts[i === 0 ? 0 : i - 1];
+            const p1 = pts[i];
+            const p2 = pts[i + 1];
+            const p3 = pts[i + 2 < pts.length ? i + 2 : i + 1];
+            const tension = 0.18;
+            const cp1x = p1.x + (p2.x - p0.x) * tension;
+            const cp1y = p1.y + (p2.y - p0.y) * tension;
+            const cp2x = p2.x - (p3.x - p1.x) * tension;
+            const cp2y = p2.y - (p3.y - p1.y) * tension;
+            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+          }
+        } else {
+          pts.forEach((p, i) => {
+            if (i === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          });
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = ds.borderWidth || 2;
+        ctx.stroke();
+
+        pts.forEach(p => {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.fill();
+          this.dataPoints.push({ ...p, radius: 8 });
+        });
+      }
+    }
+
+    // Render Reference Lines (e.g. Goal Lines)
+    if (this.options.annotations && Array.isArray(this.options.annotations)) {
+      for (const ann of this.options.annotations) {
+        if (ann.type === 'line' && typeof ann.y === 'number') {
+          const normY = (maxY - ann.y) / (maxY - minY);
+          const y = padding.top + normY * chartH;
+          if (y >= padding.top - 2 && y <= padding.top + chartH + 2) {
+            ctx.save();
+            ctx.strokeStyle = ann.color || '#10b981';
+            ctx.lineWidth = ann.lineWidth || 1.5;
+            if (ann.borderDash && typeof ctx.setLineDash === 'function') {
+              ctx.setLineDash(ann.borderDash);
+            }
+            ctx.beginPath();
+            ctx.moveTo(padding.left, y);
+            ctx.lineTo(padding.left + chartW, y);
+            ctx.stroke();
+            if (ann.label) {
+              ctx.fillStyle = ann.labelColor || ann.color || '#10b981';
+              ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+              ctx.textAlign = 'right';
+              ctx.textBaseline = 'bottom';
+              ctx.fillText(ann.label, padding.left + chartW - 4, y - 2);
+            }
+            ctx.restore();
+          }
+        }
       }
     }
 

@@ -109,10 +109,29 @@ export function renderKPICards(rollup, unit = 'km', sportFilter = 'all') {
     if (sportFilter === 'all' && weekly.length > 0) {
       const latest = weekly[weekly.length - 1];
       weeklyLoad = latest.load || 0;
+    } else if (weekly.length > 0) {
+      const latest = weekly[weekly.length - 1];
+      const normFilter = (sportFilter || '').toLowerCase();
+      if (latest.sport_loads && (latest.sport_loads[sportFilter] !== undefined || latest.sport_loads[normFilter] !== undefined)) {
+        weeklyLoad = latest.sport_loads[sportFilter] ?? latest.sport_loads[normFilter] ?? 0;
+      } else {
+        const latestWeekStart = latest.week_start ? new Date(latest.week_start).getTime() : null;
+        if (latestWeekStart) {
+          const latestWeekEnd = latestWeekStart + 7 * 24 * 60 * 60 * 1000;
+          const recentActs = filtered.filter(a => {
+            const actTime = new Date(a.date || a.start_time || 0).getTime();
+            return actTime >= latestWeekStart && actTime < latestWeekEnd;
+          });
+          weeklyLoad = recentActs.reduce((acc, a) => acc + (a.tss || a.training_stress_score || 0), 0);
+        } else {
+          const latestActTime = allActivities.reduce((max, a) => Math.max(max, new Date(a.date || a.start_time || 0).getTime()), 0);
+          const cutoff = latestActTime - 7 * 24 * 60 * 60 * 1000;
+          const recentActs = filtered.filter(a => new Date(a.date || a.start_time || 0).getTime() >= cutoff);
+          weeklyLoad = recentActs.reduce((acc, a) => acc + (a.tss || a.training_stress_score || 0), 0);
+        }
+      }
     } else {
-      const totalLoad = filtered.reduce((acc, a) => acc + (a.tss || a.training_stress_score || 0), 0);
-      const numWeeks = Math.max(1, weekly.length || 8);
-      weeklyLoad = Math.round(totalLoad / numWeeks);
+      weeklyLoad = 0;
     }
     loadEl.textContent = `${Math.round(weeklyLoad)} TSS/wk`;
   }
@@ -217,7 +236,7 @@ export function renderWeeklyVolumeChart(rollup, unit = 'km', sportFilter = 'all'
     datasets.push({
       label: 'Hiking (hrs)',
       data: hikingHours,
-      backgroundColor: '#14b8a6'
+      backgroundColor: '#06b6d4'
     });
   }
 

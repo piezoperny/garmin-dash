@@ -100,7 +100,7 @@ SPORT_TAXONOMY_MAP: Dict[str, str] = {
 }
 
 
-def resolve_sport_taxonomy(summary_or_type: Any, default: str = "hiking") -> str:
+def resolve_sport_taxonomy(summary_or_type: Any, default: str = "other") -> str:
     """Standardize raw Garmin activity types into canonical sport keys while preserving dynamic sports."""
     if isinstance(summary_or_type, dict):
         raw = (
@@ -289,10 +289,178 @@ def normalize_splits(
     return normalized
 
 
+def safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
+    """Safely convert a metric value to float, handling null strings, NaN, and invalid types."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        import math
+        return float(val) if not math.isnan(val) else default
+    if isinstance(val, str):
+        val_s = val.strip().lower()
+        if val_s in ("null", "none", "n/a", "na", "", "nan"):
+            return default
+        try:
+            f = float(val_s)
+            import math
+            return f if not math.isnan(f) else default
+        except (ValueError, TypeError):
+            return default
+    return default
+
+
+def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
+    """Safely convert a metric value to int, handling null strings, NaN, and invalid types."""
+    f = safe_float(val)
+    if f is None:
+        return default
+    try:
+        return int(round(f))
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
+def parse_garmin_activity_detail_metrics(
+    details: Any,
+    dur_sec: int = 0,
+    avg_hr: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """Parse Garmin metricDescriptors and activityDetailMetrics into telemetry_stream dict."""
+    if not isinstance(details, dict):
+        return None
+
+    descriptors = details.get("metricDescriptors")
+    raw_metrics = details.get("activityDetailMetrics")
+    if not isinstance(descriptors, list) or not isinstance(raw_metrics, list) or not raw_metrics:
+        return None
+
+    key_to_idx: Dict[str, int] = {}
+    for d in descriptors:
+        if isinstance(d, dict):
+            idx = d.get("metricsIndex") if d.get("metricsIndex") is not None else d.get("metricIndex", d.get("index"))
+            k = str(d.get("key") or d.get("descriptorKey") or d.get("metricDescriptorKey") or "")
+            if idx is not None and k:
+                try:
+                    key_to_idx[k.lower()] = int(idx)
+                except (ValueError, TypeError):
+                    pass
+
+    def find_idx(*candidates: str) -> Optional[int]:
+        for c in candidates:
+            if c.lower() in key_to_idx:
+                return key_to_idx[c.lower()]
+        return None
+
+    t_idx = find_idx("directtimestamp", "timestamp", "directtime", "time")
+    elev_idx = find_idx("directelevation", "elevation", "directaltitude", "altitude")
+    hr_idx = find_idx("directheartrate", "heartrate", "directheartratebpm", "hr")
+    speed_idx = find_idx("directspeed", "speed")
+    cad_idx = find_idx("directruncadence", "directbikecadence", "directcadence", "cadence")
+    dist_idx = find_idx("directdistance", "distance", "directsumdistance")
+    lat_idx = find_idx("directlatitude", "latitude", "lat")
+    lon_idx = find_idx("directlongitude", "longitude", "lon")
+
+    time_stream: List[int] = []
+    elev_stream: List[float] = []
+    hr_stream: List[int] = []
+    speed_stream: List[float] = []
+    cad_stream: List[int] = []
+    dist_stream: List[float] = []
+    geo_pts: List[List[float]] = []
+
+    first_t: Optional[float] = None
+    metric_count = len(raw_metrics)
+
+    for i, item in enumerate(raw_metrics):
+        vals = item.get("metrics") if isinstance(item, dict) else (item if isinstance(item, list) else None)
+        if not vals or not isinstance(vals, list):
+            continue
+
+        def get_metric(idx: Optional[int], default: Any = None) -> Any:
+            if idx is not None and 0 <= idx < len(vals):
+                val = vals[idx]
+                return val if val is not None else default
+            return default
+
+        # Timestamp
+        raw_t = get_metric(t_idx)
+        t_f = safe_float(raw_t)
+        if t_f is not None:
+            if first_t is None:
+                first_t = t_f
+            if t_f > 10_000_000_000:  # ms epoch
+                t_sec = int((t_f - first_t) / 1000.0)
+            elif t_f > 1_000_000_000:  # s epoch
+                t_sec = int(t_f - first_t)
+            else:
+                t_sec = int(t_f)
+        else:
+            t_sec = int((i / max(1, metric_count - 1)) * dur_sec) if dur_sec > 0 else i
+        time_stream.append(t_sec)
+
+        # Elevation
+        raw_e = get_metric(elev_idx)
+        e_f = safe_float(raw_e)
+        elev_stream.append(round(e_f, 1) if e_f is not None else 0.0)
+
+        # Heart Rate
+        raw_h = get_metric(hr_idx)
+        h_i = safe_int(raw_h)
+        hr_stream.append(h_i if h_i is not None else (avg_hr or 0))
+
+        # Speed
+        raw_s = get_metric(speed_idx)
+        s_f = safe_float(raw_s)
+        speed_stream.append(round(s_f, 2) if s_f is not None else 0.0)
+
+        # Cadence
+        raw_c = get_metric(cad_idx)
+        c_i = safe_int(raw_c)
+        cad_stream.append(c_i if c_i is not None else 0)
+
+        # Distance
+        raw_d = get_metric(dist_idx)
+        d_f = safe_float(raw_d)
+        if d_f is not None:
+            dist_stream.append(round(d_f, 1))
+
+        # Lat / Lon
+        raw_lat = get_metric(lat_idx)
+        raw_lon = get_metric(lon_idx)
+        lat_f = safe_float(raw_lat)
+        lon_f = safe_float(raw_lon)
+        if lat_f is not None and lon_f is not None and (abs(lat_f) > 0.001 or abs(lon_f) > 0.001):
+            geo_pts.append([lat_f, lon_f, elev_stream[-1], hr_stream[-1]])
+
+    if not time_stream:
+        return None
+
+    stream_res: Dict[str, Any] = {
+        "time": time_stream,
+        "elevation": elev_stream,
+        "hr": hr_stream,
+        "speed": speed_stream,
+        "cadence": cad_stream,
+    }
+    if dist_stream and len(dist_stream) == len(time_stream):
+        stream_res["distance"] = dist_stream
+
+    if geo_pts:
+        stream_res["_geo_points"] = geo_pts
+
+    return stream_res
+
+
 def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize a raw Garmin summary+details payload into canonical rollup format."""
+    if not isinstance(payload, dict):
+        payload = {}
     summary = payload.get("summary") or payload
-    details = payload.get("details") or {}
+    if not isinstance(summary, dict):
+        summary = {}
+    details = payload.get("details")
+    if not isinstance(details, dict):
+        details = {}
 
     sport = resolve_sport_taxonomy(summary)
 
@@ -356,9 +524,26 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
     canonical_splits = normalize_splits(raw_splits, sport=sport, default_hr=avg_hr, default_cadence=avg_cadence)
     canonical_laps = normalize_splits(raw_laps, sport=sport, default_hr=avg_hr, default_cadence=avg_cadence)
 
-    # Live GPS extraction
+    # Live GPS & Telemetry extraction
     gps_track = details.get("gps_track")
     telemetry_stream = details.get("telemetry_stream")
+
+    # Ingest metricDescriptors & activityDetailMetrics if available
+    if not telemetry_stream and "metricDescriptors" in details and "activityDetailMetrics" in details:
+        parsed_stream = parse_garmin_activity_detail_metrics(details, dur_sec=dur_sec, avg_hr=avg_hr)
+        if parsed_stream:
+            geo_pts = parsed_stream.pop("_geo_points", None)
+            telemetry_stream = parsed_stream
+            if not gps_track and geo_pts:
+                min_lat = min(p[0] for p in geo_pts)
+                max_lat = max(p[0] for p in geo_pts)
+                min_lon = min(p[1] for p in geo_pts)
+                max_lon = max(p[1] for p in geo_pts)
+                gps_track = {
+                    "polyline": encode_polyline([(p[0], p[1]) for p in geo_pts]),
+                    "points": geo_pts,
+                    "bounds": [[min_lat, min_lon], [max_lat, max_lon]],
+                }
 
     if not gps_track and "geoPolylineDTO" in details and isinstance(details["geoPolylineDTO"], dict):
         poly_raw = details["geoPolylineDTO"].get("polyline")
@@ -369,9 +554,24 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                 max_lat = max(p[0] for p in pts)
                 min_lon = min(p[1] for p in pts)
                 max_lon = max(p[1] for p in pts)
+                pts_with_telemetry = []
+                for idx_p, p in enumerate(pts):
+                    e_val = 0.0
+                    h_val = avg_hr
+                    if telemetry_stream:
+                        elevs = telemetry_stream.get("elevation") or []
+                        hrs = telemetry_stream.get("hr") or []
+                        if elevs:
+                            s_idx = int((idx_p / max(1, len(pts) - 1)) * (len(elevs) - 1))
+                            e_val = elevs[s_idx]
+                        if hrs:
+                            s_idx = int((idx_p / max(1, len(pts) - 1)) * (len(hrs) - 1))
+                            h_val = hrs[s_idx]
+                    pts_with_telemetry.append([p[0], p[1], e_val, h_val])
+
                 gps_track = {
                     "polyline": poly_raw,
-                    "points": [[p[0], p[1], 0.0, avg_hr] for p in pts],
+                    "points": pts_with_telemetry,
                     "bounds": [[min_lat, min_lon], [max_lat, max_lon]],
                 }
         elif isinstance(poly_raw, list) and poly_raw:

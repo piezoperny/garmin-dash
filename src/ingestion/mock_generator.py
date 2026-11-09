@@ -343,13 +343,19 @@ class SyntheticDatasetGenerator:
             day_plan: Optional[Tuple[str, str]] = None
             if day_of_week == 0:
                 if week_idx != 3 or day % 2 == 0:
-                    day_plan = ("hiking", "Recovery Trail Hike")
+                    if week_idx < 2:
+                        day_plan = ("hiking", "Recovery Trail Hike")
+                    else:
+                        day_plan = ("running", "Recovery Trail Run")
             elif day_of_week == 1:
                 day_plan = ("cycling", "Sweetspot Intervals" if week_idx in (1, 2, 5, 6) else "Aerobic Base Ride")
             elif day_of_week == 2:
                 day_plan = ("strength", "Weights & Core Strength")
             elif day_of_week == 3:
-                day_plan = ("hiking", "Mountain Ascent Hike" if week_idx in (2, 5, 6) else "Ridge Trail Hike")
+                if week_idx < 2:
+                    day_plan = ("hiking", "Mountain Ascent Hike" if week_idx in (2, 5, 6) else "Ridge Trail Hike")
+                else:
+                    day_plan = ("running", "Threshold Trail Run" if week_idx in (2, 5, 6) else "Ridge Trail Run")
             elif day_of_week == 4:
                 if week_idx in (4, 5):  # Peak weeks include active recovery spin
                     day_plan = ("cycling", "Recovery Spin")
@@ -358,7 +364,10 @@ class SyntheticDatasetGenerator:
             elif day_of_week == 5:
                 day_plan = ("cycling", "Weekend Endurance Ride")
             elif day_of_week == 6:
-                day_plan = ("hiking", "Alpine Summit Hike")
+                if week_idx < 2:
+                    day_plan = ("hiking", "Alpine Summit Hike")
+                else:
+                    day_plan = ("running", "Alpine Trail Run")
 
             if day_plan is None:
                 # Rest day updates daily EWMA with TSS = 0
@@ -395,7 +404,7 @@ class SyntheticDatasetGenerator:
                 distance_m = round(base_dist, 1)
                 moving_sec = duration_sec - self.rng.randint(60, 240)
                 max_hr = min(202, avg_hr + self.rng.randint(16, 28))
-                avg_cadence = self.rng.randint(92, 114)  # hiking step rate (spm)
+                avg_cadence = self.rng.randint(92, 114) if sport == "hiking" else self.rng.randint(155, 175)
                 avg_power = None
                 speed_mps = distance_m / moving_sec
                 avg_pace_sec_km = round(1000.0 / speed_mps, 1)
@@ -961,14 +970,15 @@ class SyntheticDatasetGenerator:
         """Alias for generate_fit_file."""
         return self.generate_fit_file(activity)
 
-    def generate_wellness(self, activities: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-        """Generates deterministic 8-week Garmin wellness metrics aligned with activities."""
+    def generate_wellness(self, activities: Optional[List[Dict[str, Any]]] = None, days: Optional[int] = None) -> Dict[str, Any]:
+        """Generates deterministic Garmin wellness metrics aligned with activities."""
         acts = activities if activities is not None else (self._cached_activities or self.generate_activities())
         return generate_wellness_dataset(
             activities=acts,
             athlete_profile=self.athlete,
             seed=self.seed,
             anchor_date=self.anchor_date,
+            days=days,
         )
 
 
@@ -981,6 +991,7 @@ def generate_wellness_dataset(
     athlete_profile: Optional[Dict[str, Any]] = None,
     seed: int = 42,
     anchor_date: Optional[datetime] = None,
+    days: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Generates deterministic Garmin daily wellness metrics and current snapshot.
@@ -1011,18 +1022,21 @@ def generate_wellness_dataset(
         if parsed_dates:
             min_dt = min(parsed_dates).replace(hour=0, minute=0, second=0, microsecond=0)
             max_dt = max(parsed_dates).replace(hour=0, minute=0, second=0, microsecond=0)
-            span_days = max(56, (max_dt - min_dt).days + 1)
+            if days is not None:
+                span_days = max(1, int(days))
+            else:
+                span_days = max(56, (max_dt - min_dt).days + 1)
             start_dt = max_dt - timedelta(days=span_days - 1)
             end_dt = max_dt
             num_days = span_days
         else:
             end_dt = (anchor_date or datetime(2026, 10, 26, 12, 0, 0, tzinfo=timezone.utc)).replace(hour=0, minute=0, second=0, microsecond=0)
-            start_dt = end_dt - timedelta(days=55)
-            num_days = 56
+            num_days = int(days) if days is not None else 56
+            start_dt = end_dt - timedelta(days=num_days - 1)
     else:
         end_dt = (anchor_date or datetime(2026, 10, 26, 12, 0, 0, tzinfo=timezone.utc)).replace(hour=0, minute=0, second=0, microsecond=0)
-        start_dt = end_dt - timedelta(days=55)
-        num_days = 56
+        num_days = int(days) if days is not None else 56
+        start_dt = end_dt - timedelta(days=num_days - 1)
 
     acts_by_date: Dict[str, List[Dict[str, Any]]] = {}
     if activities:
@@ -1522,6 +1536,12 @@ def compile_rollup(
     ]
 
     threshold_trends = [
+        {"date": "2025-11-01", "vo2max": 48, "cycling_ftp": 252, "ftp": 252, "lthr": 162},
+        {"date": "2025-12-15", "vo2max": 49, "cycling_ftp": 258, "ftp": 258, "lthr": 163},
+        {"date": "2026-02-01", "vo2max": 50, "cycling_ftp": 262, "ftp": 262, "lthr": 164},
+        {"date": "2026-04-15", "vo2max": 50, "cycling_ftp": 265, "ftp": 265, "lthr": 164},
+        {"date": "2026-06-01", "vo2max": 51, "cycling_ftp": 268, "ftp": 268, "lthr": 165},
+        {"date": "2026-07-15", "vo2max": 51, "cycling_ftp": 270, "ftp": 270, "lthr": 165},
         {"date": "2026-09-01", "vo2max": 51, "cycling_ftp": 268, "ftp": 268, "lthr": 165},
         {"date": "2026-09-15", "vo2max": 52, "cycling_ftp": 272, "ftp": 272, "lthr": 166},
         {"date": "2026-10-01", "vo2max": 53, "cycling_ftp": 276, "ftp": 276, "lthr": 167},
@@ -1680,7 +1700,7 @@ def compile_rollup(
         },
         "activities": canonical_activities,
         "backup_vault": vault_entry,
-        "wellness": wellness if (wellness is not None and isinstance(wellness, dict)) else generate_wellness_dataset(activities=canonical_activities, athlete_profile=athlete_profile, seed=42),
+        "wellness": wellness if (wellness is not None and isinstance(wellness, dict)) else generate_wellness_dataset(activities=canonical_activities, athlete_profile=athlete_profile, seed=42, days=365),
     }
 
 

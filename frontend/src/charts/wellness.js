@@ -41,6 +41,9 @@ export const WELLNESS_METRIC_METADATA = {
   calories: { id: 'card-wellness-calories', name: 'Daily Calories', defaultSection: 'at_a_glance' }
 };
 
+import { openMetricTrendModal } from './trends_modal.js';
+export { openMetricTrendModal };
+
 let activeRollupCache = null;
 
 /**
@@ -869,6 +872,21 @@ function attachCardActionListeners() {
       const metric = btn.getAttribute('data-metric');
       if (action && metric) {
         moveWellnessCard(metric, action);
+      }
+    };
+  });
+
+  // Attach modal opening click handlers to metric cards
+  root.querySelectorAll('[data-metric]').forEach(card => {
+    if (card.hasAttribute('data-wellness-action')) return;
+    card.classList.add('cursor-pointer');
+    card.onclick = (e) => {
+      if (e.target && e.target.closest && e.target.closest('[data-wellness-action]')) {
+        return;
+      }
+      const metric = card.getAttribute('data-metric');
+      if (metric) {
+        openMetricTrendModal(metric, activeRollupCache);
       }
     };
   });

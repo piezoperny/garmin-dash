@@ -321,8 +321,8 @@
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Heart Rate Zones</h3>
               <p id="hr-zone-subtitle" class="text-[11px] text-zinc-400">5-Zone Model (Z1 - Z5)</p>
             </div>
-            <div class="flex-1 min-h-[260px] relative">
-              <canvas id="hr-zone-chart" class="w-full h-full"></canvas>
+            <div class="flex-1 min-h-[260px] max-h-[280px] relative flex items-center justify-center">
+              <canvas id="hr-zone-chart" class="w-full h-full block"></canvas>
             </div>
           </div>
 
@@ -332,8 +332,8 @@
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Cycling Power Zones</h3>
               <p id="power-zone-subtitle" class="text-[11px] text-zinc-400">Cycling Power Only • Coggan 7-Zone</p>
             </div>
-            <div class="flex-1 min-h-[260px] relative">
-              <canvas id="power-zone-chart" class="w-full h-full"></canvas>
+            <div class="flex-1 min-h-[260px] max-h-[280px] relative">
+              <canvas id="power-zone-chart" class="w-full h-full block"></canvas>
             </div>
           </div>
 
@@ -343,8 +343,8 @@
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Hiking Pace & Grade Zones</h3>
               <p class="text-[11px] text-zinc-400">Speed & Vertical Distribution</p>
             </div>
-            <div class="flex-1 min-h-[260px] relative">
-              <canvas id="pace-zone-chart" class="w-full h-full"></canvas>
+            <div class="flex-1 min-h-[260px] max-h-[280px] relative">
+              <canvas id="pace-zone-chart" class="w-full h-full block"></canvas>
             </div>
           </div>
 
@@ -354,8 +354,8 @@
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Threshold Performance Trends</h3>
               <p class="text-[11px] text-zinc-400">VO2max • Cycling FTP • LTHR Progression</p>
             </div>
-            <div class="flex-1 min-h-[260px] relative">
-              <canvas id="threshold-trends-chart" class="w-full h-full"></canvas>
+            <div class="flex-1 min-h-[260px] max-h-[280px] relative">
+              <canvas id="threshold-trends-chart" class="w-full h-full block"></canvas>
             </div>
           </div>
         </div>
@@ -806,6 +806,133 @@
           Apply & Save Layout
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- METRIC TREND MODAL / TIME-SERIES EXPLORER (Garmin Connect Style)          -->
+  <!-- ========================================================================= -->
+  <div id="metric-trend-modal" class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 hidden" aria-hidden="true">
+    <!-- Backdrop -->
+    <div id="trend-modal-backdrop" class="fixed inset-0 bg-[#09090b]/80 backdrop-blur-md transition-opacity"></div>
+
+    <!-- Modal Card Panel -->
+    <div id="trend-modal-panel" class="relative w-full max-w-4xl bg-[#111114] border border-[#1f1f24] rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden z-10 transition-all">
+      
+      <!-- Modal Header: Metric Identity & Time Selectors -->
+      <div class="px-6 py-4 border-b border-[#1f1f24] flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#111114]">
+        
+        <!-- Metric Title & Badge -->
+        <div class="flex items-center space-x-3">
+          <div id="trend-metric-icon" class="w-9 h-9 rounded-xl bg-[#18181b] border border-[#1f1f24] flex items-center justify-center text-zinc-300">
+            <!-- Icon injected dynamically -->
+          </div>
+          <div>
+            <div class="flex items-center space-x-2">
+              <h3 id="trend-metric-title" class="text-base font-semibold text-white tracking-tight">Metric Trends</h3>
+              <span id="trend-metric-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-semibold border text-emerald-400 border-emerald-500/30 bg-emerald-500/10">
+                OPTIMAL
+              </span>
+            </div>
+            <p id="trend-metric-subtitle" class="text-xs text-zinc-400 mt-0.5">Historical telemetry & rolling averages</p>
+          </div>
+        </div>
+
+        <!-- Time Interval Selector Bar (1D · 7D · 1M · 1Y · Custom) & Window Actions -->
+        <div class="flex items-center space-x-2">
+          <div id="trend-range-selector" class="flex items-center bg-[#09090b] border border-[#1f1f24] rounded-xl p-1">
+            <button type="button" data-trend-range="1d" class="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">1D</button>
+            <button type="button" data-trend-range="7d" class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white shadow-sm transition">7D</button>
+            <button type="button" data-trend-range="1m" class="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">1M</button>
+            <button type="button" data-trend-range="1y" class="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">1Y</button>
+            <button type="button" data-trend-range="custom" class="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Custom</button>
+          </div>
+
+          <!-- Window Action Buttons (Expand & Close) -->
+          <button id="btn-expand-trend-modal" type="button" class="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition" title="Toggle Fullscreen" aria-label="Toggle Fullscreen">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+            </svg>
+          </button>
+          <button id="btn-close-trend-modal" type="button" class="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition" title="Close Window" aria-label="Close Window">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Date Navigator & Custom Range Bar -->
+      <div class="px-6 py-2.5 bg-[#09090b]/60 border-b border-[#1f1f24] flex flex-wrap items-center justify-between gap-3 text-xs">
+        <!-- Chronological Pagination Controls -->
+        <div class="flex items-center space-x-2">
+          <button id="trend-nav-prev" type="button" class="p-1 px-2 rounded bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition text-xs font-mono" title="Previous period">
+            ◀
+          </button>
+          <span id="trend-date-label" class="font-mono text-zinc-200 font-medium tracking-tight">Oct 20, 2026 – Oct 26, 2026</span>
+          <button id="trend-nav-next" type="button" class="p-1 px-2 rounded bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition text-xs font-mono" title="Next period">
+            ▶
+          </button>
+        </div>
+
+        <!-- Custom Date Range Inputs (hidden unless 'custom' is active) -->
+        <div id="trend-custom-date-container" class="hidden flex items-center space-x-2">
+          <span class="text-zinc-500 text-[11px] uppercase tracking-wider">From:</span>
+          <input id="trend-input-start-date" type="date" class="bg-[#111114] border border-[#1f1f24] rounded px-2 py-1 text-[11px] text-white font-mono" />
+          <span class="text-zinc-500 text-[11px] uppercase tracking-wider">To:</span>
+          <input id="trend-input-end-date" type="date" class="bg-[#111114] border border-[#1f1f24] rounded px-2 py-1 text-[11px] text-white font-mono" />
+          <button id="trend-btn-apply-custom" type="button" class="px-2.5 py-1 rounded bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-[11px] transition">Apply</button>
+          <span id="trend-custom-error" class="hidden text-rose-400 text-[11px] font-sans"></span>
+        </div>
+      </div>
+
+      <!-- Scrollable Modal Body -->
+      <div class="p-6 space-y-6 overflow-y-auto flex-1">
+        
+        <!-- Metric KPI Highlight Strip (4 Stat Cards) -->
+        <div id="trend-kpi-grid" class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <!-- Dynamically injected stats (Average, Min, Max, Current/Total) -->
+        </div>
+
+        <!-- Main Canvas Chart Container -->
+        <div class="bg-[#09090b] border border-[#1f1f24] rounded-xl p-4 flex flex-col relative">
+          <div class="flex items-center justify-between mb-2">
+            <span id="trend-chart-legend-label" class="text-[11px] uppercase tracking-wider font-semibold text-zinc-400">Time-Series Trend</span>
+            <span id="trend-chart-meta" class="text-[10px] font-mono text-zinc-500">Interactive Canvas 2D Engine</span>
+          </div>
+          <div class="h-64 sm:h-72 w-full relative">
+            <canvas id="metric-trend-chart" class="w-full h-full block"></canvas>
+            <div id="trend-chart-empty" class="hidden absolute inset-0 flex items-center justify-center bg-[#09090b]/90 text-zinc-500 text-xs font-sans">
+              No wellness telemetry recorded for this date range.
+            </div>
+          </div>
+        </div>
+
+        <!-- Detailed Breakdown Table -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-semibold text-zinc-300 uppercase tracking-wider">Historical Log Breakdown</h4>
+            <span id="trend-table-count" class="text-[10px] font-mono text-zinc-500">7 records</span>
+          </div>
+          <div class="border border-[#1f1f24] rounded-xl overflow-hidden">
+            <div class="overflow-x-auto max-h-52">
+              <table class="w-full text-left text-xs">
+                <thead class="bg-[#18181b] text-zinc-400 uppercase text-[10px] font-medium tracking-wider sticky top-0 border-b border-[#1f1f24]">
+                  <tr id="trend-table-header-row">
+                    <!-- Dynamic table columns -->
+                  </tr>
+                </thead>
+                <tbody id="trend-table-body" class="divide-y divide-[#1f1f24]/70 font-mono text-zinc-300">
+                  <!-- Dynamically populated rows -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
     </div>
   </div>
 

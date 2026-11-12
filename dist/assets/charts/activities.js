@@ -274,7 +274,16 @@ export function applyFiltersAndRender() {
     return;
   }
 
-  filtered.forEach(act => {
+  const ACTIVITY_PAGE_SIZE = 15;
+  if (typeof window !== 'undefined' && typeof window.__activityDisplayLimit !== 'number') {
+    window.__activityDisplayLimit = ACTIVITY_PAGE_SIZE;
+  }
+  const limit = (typeof window !== 'undefined' && typeof window.__activityDisplayLimit === 'number')
+    ? window.__activityDisplayLimit
+    : ACTIVITY_PAGE_SIZE;
+  const visibleActivities = filtered.slice(0, limit);
+
+  visibleActivities.forEach(act => {
     const row = document.createElement('tr');
     row.className = 'hover:bg-[#18181b]/60 cursor-pointer border-b border-[#1f1f24] transition-colors duration-150';
 
@@ -330,6 +339,40 @@ export function applyFiltersAndRender() {
 
     tbody.appendChild(row);
   });
+
+  if (filtered.length > visibleActivities.length) {
+    const footerRow = document.createElement('tr');
+    footerRow.className = 'border-t border-[#1f1f24] bg-[#0d0d10]';
+    footerRow.innerHTML = `
+      <td colspan="8" class="py-3 px-4 text-center">
+        <div class="flex items-center justify-center gap-3 text-xs text-zinc-400">
+          <span>Showing ${visibleActivities.length} of ${filtered.length} activities</span>
+          <button type="button" id="btn-show-more-activities" class="px-3 py-1 rounded-md bg-[#18181b] hover:bg-[#27272a] text-zinc-200 border border-[#27272a] transition-colors">
+            Show more (+${ACTIVITY_PAGE_SIZE})
+          </button>
+          <button type="button" id="btn-show-all-activities" class="px-3 py-1 rounded-md bg-[#18181b] hover:bg-[#27272a] text-emerald-400 border border-[#27272a] transition-colors">
+            Show all
+          </button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(footerRow);
+
+    const btnMore = document.getElementById('btn-show-more-activities');
+    if (btnMore) {
+      btnMore.addEventListener('click', () => {
+        window.__activityDisplayLimit = limit + ACTIVITY_PAGE_SIZE;
+        applyFiltersAndRender();
+      });
+    }
+    const btnAll = document.getElementById('btn-show-all-activities');
+    if (btnAll) {
+      btnAll.addEventListener('click', () => {
+        window.__activityDisplayLimit = filtered.length;
+        applyFiltersAndRender();
+      });
+    }
+  }
 }
 
 /**
@@ -1502,6 +1545,53 @@ export function renderActivityProfileChart(act, unit = 'km') {
 }
 
 /**
+ * Reprocesses all loaded activities in-memory using the latest telemetry extraction
+ * and metric calculation algorithms, then refreshes the table.
+ * @returns {number} Number of activities reprocessed
+ */
+export function reprocessAllActivities() {
+  if (!Array.isArray(currentActivities) || currentActivities.length === 0) return 0;
+
+  let count = 0;
+  for (const act of currentActivities) {
+    const telemetry = extractActivityTelemetry(act);
+
+    if (telemetry.hr && telemetry.hr.length > 0) {
+      const validHr = telemetry.hr.filter(v => typeof v === 'number' && v > 0);
+      if (validHr.length > 0) {
+        const sumHr = validHr.reduce((a, b) => a + b, 0);
+        act.avg_hr = Math.round(sumHr / validHr.length);
+        act.max_hr = Math.max(...validHr);
+      }
+    }
+
+    if (telemetry.elevation && telemetry.elevation.length > 1) {
+      let gain = 0;
+      for (let i = 1; i < telemetry.elevation.length; i++) {
+        const diff = telemetry.elevation[i] - telemetry.elevation[i - 1];
+        if (diff > 0.5) gain += diff;
+      }
+      if (gain > 0) {
+        act.elevation_gain_meters = Math.round(gain);
+      }
+    }
+
+    const durSec = act.moving_time_seconds || act.duration_seconds || 0;
+    if ((!act.tss && !act.training_stress_score) && durSec > 0 && act.avg_hr) {
+      const hours = durSec / 3600;
+      const hrRatio = Math.min(1.2, Math.max(0.4, (act.avg_hr - 60) / 120));
+      act.tss = Math.round(hours * hrRatio * hrRatio * 100);
+    }
+
+    act._reprocessed = true;
+    count++;
+  }
+
+  applyFiltersAndRender();
+  return count;
+}
+
+/**
  * Setup activity filter and search event listeners.
  */
 export function setupActivityEventListeners() {
@@ -1518,6 +1608,20 @@ export function setupActivityEventListeners() {
     sortSelect.addEventListener('change', (e) => {
       currentSort = e.target.value;
       applyFiltersAndRender();
+    });
+  }
+
+  const reprocessBtn = document.getElementById('btn-reprocess-activities');
+  if (reprocessBtn) {
+    reprocessBtn.addEventListener('click', () => {
+      const count = reprocessAllActivities();
+      const origHtml = reprocessBtn.innerHTML;
+      reprocessBtn.innerHTML = `<span class="text-emerald-400">✓ Reprocessed ${count}</span>`;
+      reprocessBtn.disabled = true;
+      setTimeout(() => {
+        reprocessBtn.innerHTML = origHtml;
+        reprocessBtn.disabled = false;
+      }, 2500);
     });
   }
 

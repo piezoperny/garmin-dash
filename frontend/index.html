@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Garmin Vault — Client-Side Encrypted Fitness Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2309090b' stroke='%2310b981' stroke-width='1.5'/%3E%3Cpath d='M5 17h5l3-7 4 12 3-7 2 2h5' fill='none' stroke='%2310b981' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./src/styles/style.css" />
   <!-- Standalone Tailwind CSS CDN Fallback for Zero-Build Preview -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -390,6 +391,15 @@
               <option value="dist-desc">Longest Distance</option>
               <option value="time-desc">Longest Duration</option>
             </select>
+            <button
+              id="btn-reprocess-activities"
+              type="button"
+              title="Re-analyze all activities using the latest telemetry & metric algorithms"
+              class="bg-[#111114] hover:bg-[#18181b] border border-[#1f1f24] hover:border-emerald-500/50 rounded-lg px-3 py-1.5 text-xs text-zinc-300 hover:text-emerald-400 transition-colors flex items-center gap-1.5"
+            >
+              <span>↻</span>
+              <span>Reprocess</span>
+            </button>
           </div>
         </div>
 

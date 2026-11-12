@@ -218,10 +218,11 @@ export function renderRouteMap(activity) {
       attributionControl: true
     });
 
-    // Esri World Dark Gray Canvas tile layer (open, free, keyless, matching obsidian aesthetic)
-    const tileLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{x}/{y}', {
-      attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ, Garmin',
-      maxZoom: 16,
+    // CartoDB Dark Matter (No Labels) tile layer — open, keyless, minimalist obsidian aesthetic
+    const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 20,
       crossOrigin: true
     });
     if (typeof tileLayer.on === 'function') {

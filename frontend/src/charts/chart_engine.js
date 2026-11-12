@@ -60,14 +60,28 @@ export class Chart {
     this.data = this.config.data || { labels: [], datasets: [] };
     this.options = this.config.options || {};
     this.activeTooltip = null;
+    this._view = { xZoom: 1, yZoom: 1, xPan: 0, yPan: 0 };
+    this._drag = null;
+    this._legendHitboxes = [];
 
     this._onMouseMove = this._handleMouseMove.bind(this);
     this._onMouseLeave = this._handleMouseLeave.bind(this);
+    this._onMouseDown = this._handleMouseDown.bind(this);
+    this._onMouseUp = this._handleMouseUp.bind(this);
+    this._onContextMenu = (e) => e.preventDefault();
+    this._onDblClick = () => {
+      this._view = { xZoom: 1, yZoom: 1, xPan: 0, yPan: 0 };
+      this.render();
+    };
     this._onResize = this._handleResize.bind(this);
 
     this.canvas.addEventListener('mousemove', this._onMouseMove);
     this.canvas.addEventListener('mouseleave', this._onMouseLeave);
+    this.canvas.addEventListener('mousedown', this._onMouseDown);
+    this.canvas.addEventListener('contextmenu', this._onContextMenu);
+    this.canvas.addEventListener('dblclick', this._onDblClick);
     if (typeof window !== 'undefined') {
+      window.addEventListener('mouseup', this._onMouseUp);
       window.addEventListener('resize', this._onResize);
     }
     if (typeof ResizeObserver !== 'undefined' && this.canvas.parentElement) {
@@ -83,7 +97,11 @@ export class Chart {
   destroy() {
     this.canvas.removeEventListener('mousemove', this._onMouseMove);
     this.canvas.removeEventListener('mouseleave', this._onMouseLeave);
+    this.canvas.removeEventListener('mousedown', this._onMouseDown);
+    this.canvas.removeEventListener('contextmenu', this._onContextMenu);
+    this.canvas.removeEventListener('dblclick', this._onDblClick);
     if (typeof window !== 'undefined') {
+      window.removeEventListener('mouseup', this._onMouseUp);
       window.removeEventListener('resize', this._onResize);
     }
     if (this._resizeObserver) {
@@ -679,6 +697,7 @@ export class Chart {
     }
 
     // Render wrapped legend rows at top
+    this._legendHitboxes = [];
     if (legendRows.length > 0) {
       let currentY = 12;
       legendRows.forEach(row => {
@@ -686,6 +705,9 @@ export class Chart {
         let startX = Math.max(10, (this.displayWidth - rowWidth) / 2);
 
         row.forEach(item => {
+          this._legendHitboxes.push({ x: startX - 2, y: currentY - 9, w: item.w, h: 18, dsIndex: item.dsIndex });
+          ctx.save();
+          if (item.hidden) ctx.globalAlpha = 0.35;
           ctx.fillStyle = item.color;
           ctx.beginPath();
           if (typeof ctx.roundRect === 'function') {
@@ -709,6 +731,7 @@ export class Chart {
             nameToDraw += '…';
           }
           ctx.fillText(nameToDraw, startX + 11, currentY);
+          ctx.restore();
           startX += item.w;
         });
         currentY += 16;
@@ -830,7 +853,61 @@ export class Chart {
     });
   }
 
+  _handleMouseDown(evt) {
+    if (evt.button !== 0 && evt.button !== 2) return;
+    const mode = evt.button === 2 ? 'scale' : 'pan';
+    this._drag = {
+      mode,
+      startX: evt.clientX,
+      startY: evt.clientY,
+      startView: { ...this._view },
+      moved: false
+    };
+  }
+
+  _handleMouseUp(evt) {
+    if (!this._drag) return;
+    const wasMoved = this._drag.moved;
+    const mode = this._drag.mode;
+    this._drag = null;
+
+    if (!wasMoved && mode === 'pan' && evt && evt.target === this.canvas) {
+      const rect = this.canvas.getBoundingClientRect();
+      const x = evt.clientX - rect.left;
+      const y = evt.clientY - rect.top;
+      for (const hb of this._legendHitboxes || []) {
+        if (x >= hb.x && x <= hb.x + hb.w && y >= hb.y && y <= hb.y + hb.h) {
+          const ds = this.data.datasets?.[hb.dsIndex];
+          if (ds) {
+            ds.hidden = !ds.hidden;
+            this.render();
+          }
+          return;
+        }
+      }
+    }
+  }
+
   _handleMouseMove(evt) {
+    if (this._drag) {
+      const dx = evt.clientX - this._drag.startX;
+      const dy = evt.clientY - this._drag.startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        this._drag.moved = true;
+      }
+      if (this._drag.moved) {
+        if (this._drag.mode === 'pan') {
+          this._view.xPan = this._drag.startView.xPan + dx;
+          this._view.yPan = this._drag.startView.yPan + dy;
+        } else if (this._drag.mode === 'scale') {
+          this._view.xZoom = Math.max(0.25, Math.min(10, this._drag.startView.xZoom * Math.exp(dx * 0.008)));
+          this._view.yZoom = Math.max(0.25, Math.min(10, this._drag.startView.yZoom * Math.exp(-dy * 0.008)));
+        }
+        this.render();
+        return;
+      }
+    }
+
     const rect = this.canvas.getBoundingClientRect();
     const x = evt.clientX - rect.left;
     const y = evt.clientY - rect.top;

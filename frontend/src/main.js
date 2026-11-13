@@ -594,6 +594,24 @@ export async function initApp() {
     unitBtn.addEventListener('click', toggleDistanceUnit);
   }
 
+  // Attach Header Reprocess listener
+  const headerReprocessBtn = document.getElementById('btn-header-reprocess');
+  if (headerReprocessBtn) {
+    headerReprocessBtn.addEventListener('click', () => {
+      const count = reprocessAllActivities();
+      if (activeRollup) {
+        renderDashboard(activeRollup);
+      }
+      const origHtml = headerReprocessBtn.innerHTML;
+      headerReprocessBtn.innerHTML = `<span class="text-emerald-400">✓ Reprocessed ${count}</span>`;
+      headerReprocessBtn.disabled = true;
+      setTimeout(() => {
+        headerReprocessBtn.innerHTML = origHtml;
+        headerReprocessBtn.disabled = false;
+      }, 2500);
+    });
+  }
+
   // Attach Sport filter buttons
   const sportButtons = [
     { id: 'filter-btn-all', sport: 'all' },

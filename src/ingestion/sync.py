@@ -1162,6 +1162,24 @@ def run_sync_pipeline(
 
         rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest)
 
+        # Fetch live HRV summary from Garmin Connect if available
+        if hasattr(garmin_client, "get_hrv_data"):
+            try:
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                hrv_raw = garmin_client.get_hrv_data(today_str)
+                if isinstance(hrv_raw, dict):
+                    hrv_sum = hrv_raw.get("hrvSummary") or hrv_raw
+                    if isinstance(hrv_sum, dict):
+                        cur = rollup_dict.setdefault("current", {})
+                        if hrv_sum.get("status"):
+                            cur["hrv_status"] = str(hrv_sum["status"]).title()
+                        if hrv_sum.get("weeklyAvg") is not None:
+                            cur["hrv_weekly_avg"] = hrv_sum["weeklyAvg"]
+                        if hrv_sum.get("lastNightAvg") is not None:
+                            cur["hrv_last_night_avg"] = hrv_sum["lastNightAvg"]
+            except Exception as e:
+                logger.warning(f"Could not fetch/populate HRV data: {e}")
+
         output_rollup_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_rollup_path, "w", encoding="utf-8") as f:
             json.dump(rollup_dict, f, indent=2)

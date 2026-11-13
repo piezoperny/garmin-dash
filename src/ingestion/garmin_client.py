@@ -656,6 +656,14 @@ class LiveGarminClient:
     def fetch_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
         return self.get_activity_details(activity_id)
 
+    def get_hrv_data(self, cdate: str) -> Optional[Dict[str, Any]]:
+        if self._personal_garmin is not None and hasattr(self._personal_garmin, "get_hrv_data"):
+            try:
+                return self._personal_garmin.get_hrv_data(cdate)
+            except Exception as e:
+                logger.warning(f"Could not fetch HRV data for {cdate}: {e}")
+        return None
+
     def download_fit_file(self, activity_id: str) -> Optional[bytes]:
         if self._personal_garmin is not None:
             try:
@@ -840,6 +848,9 @@ class MockGarminClient:
 
     def fetch_gpx_file(self, activity_id: str) -> Optional[bytes]:
         return self.download_gpx_file(activity_id)
+
+    def get_hrv_data(self, cdate: str) -> Optional[Dict[str, Any]]:
+        return None
 
     def get_session_state(self) -> Optional[OAuthSessionState]:
         return self._session_state

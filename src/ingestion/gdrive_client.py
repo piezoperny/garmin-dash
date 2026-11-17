@@ -74,7 +74,7 @@ class GoogleDriveStorageClient:
             ) from exc
 
         raw_creds = self.config.credentials_json.strip()
-        if Path(raw_creds).is_file():
+        if not raw_creds.startswith("{") and len(raw_creds) < 1024 and Path(raw_creds).is_file():
             raw_creds = Path(raw_creds).read_text(encoding="utf-8")
 
         try:

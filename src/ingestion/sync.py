@@ -354,6 +354,8 @@ def normalize_splits(
         elif sport == "cycling":
             cad_val = (
                 raw.get("averageBikingCadenceInRevPerMinute")
+                or raw.get("averageBikeCadence")
+                or raw.get("averageCadence")
                 or raw.get("avg_cadence")
                 or raw.get("avgCadence")
                 or default_cadence
@@ -364,6 +366,8 @@ def normalize_splits(
             cad_val = (
                 raw.get("averageRunCadenceInStepsPerMinute")
                 or raw.get("averageRunningCadenceInStepsPerMinute")
+                or raw.get("averageRunCadence")
+                or raw.get("averageCadence")
                 or raw.get("avg_cadence")
                 or raw.get("avgCadence")
                 or default_cadence

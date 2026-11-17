@@ -1760,103 +1760,120 @@ export function renderTodayActivityBanner(activities, unit = 'km') {
     const db = String(b?.date || b?.start_time || '');
     return db.localeCompare(da);
   });
-  const act = sorted[0];
-  if (!act) {
-    container.classList.add('hidden');
-    return;
-  }
 
-  const rawDate = String(act.start_time || act.date || '');
-  const actDateOnly = rawDate.slice(0, 10);
   const now = new Date();
   const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const isToday = actDateOnly === todayIso;
+  const todaysActs = sorted.filter(a => String(a?.start_time || a?.date || '').slice(0, 10) === todayIso);
+  const hasToday = todaysActs.length > 0;
+  const displayActs = hasToday ? todaysActs : [sorted[0]];
 
-  let timeLabel = formatDate(rawDate);
-  const timeMatch = rawDate.match(/T(\d{2}:\d{2})/);
-  if (isToday) {
-    timeLabel = timeMatch ? `Today @ ${timeMatch[1]}` : 'Today';
-  } else if (timeMatch) {
-    timeLabel = `${formatDate(rawDate)} @ ${timeMatch[1]}`;
-  }
+  const cardsHtml = displayActs.map((act, idx) => {
+    const rawDate = String(act.start_time || act.date || '');
+    const timeMatch = rawDate.match(/T(\d{2}:\d{2})/);
+    let timeLabel = formatDate(rawDate);
+    if (hasToday) {
+      timeLabel = timeMatch ? `Today @ ${timeMatch[1]}` : 'Today';
+    } else if (timeMatch) {
+      timeLabel = `${formatDate(rawDate)} @ ${timeMatch[1]}`;
+    }
 
-  const sport = String(act.sport || 'other').toLowerCase();
-  const sportLabel = sport.charAt(0).toUpperCase() + sport.slice(1).replace(/_/g, ' ');
-  const isStrength = sport === 'strength' || sport === 'weights';
-  const distM = Number(act.distance_meters || 0);
-  const durSec = Number(act.duration_seconds || 0);
-  const elevM = Number(act.elevation_gain_meters || 0);
-  const calories = Number(act.calories || 0);
-  const avgHr = Number(act.avg_hr || 0);
+    const sport = String(act.sport || 'other').toLowerCase();
+    const sportLabel = sport.charAt(0).toUpperCase() + sport.slice(1).replace(/_/g, ' ');
+    const isStrength = sport === 'strength' || sport === 'weights';
+    const distM = Number(act.distance_meters || 0);
+    const durSec = Number(act.duration_seconds || 0);
+    const elevM = Number(act.elevation_gain_meters || 0);
+    const calories = Number(act.calories || 0);
+    const avgHr = Number(act.avg_hr || 0);
 
-  const metrics = [];
-  if (!isStrength && distM > 0) {
-    metrics.push({ label: 'Distance', value: formatDistance(distM, unit) });
-  }
-  if (durSec > 0) {
-    metrics.push({ label: 'Time', value: formatSplitDuration(durSec) });
-  }
-  if (!isStrength && sport === 'cycling' && distM > 0 && durSec > 0) {
-    metrics.push({ label: 'Avg Speed', value: formatSpeed(distM / durSec, unit) });
-  } else if (!isStrength && act.avg_pace_sec_km > 0) {
-    metrics.push({ label: 'Avg Pace', value: formatPace(act.avg_pace_sec_km, unit) });
-  }
-  if (!isStrength && elevM > 0) {
-    metrics.push({ label: 'Total Ascent', value: formatElevation(elevM, unit) });
-  }
-  if (calories > 0) {
-    metrics.push({ label: 'Calories', value: `${calories.toLocaleString()} kcal` });
-  }
-  if (avgHr > 0 && metrics.length < 5) {
-    metrics.push({ label: 'Avg HR', value: `${avgHr} bpm` });
-  }
+    const metrics = [];
+    if (!isStrength && distM > 0) {
+      metrics.push({ label: 'Distance', value: formatDistance(distM, unit) });
+    }
+    if (durSec > 0) {
+      metrics.push({ label: 'Time', value: formatSplitDuration(durSec) });
+    }
+    if (!isStrength && sport === 'cycling' && distM > 0 && durSec > 0) {
+      metrics.push({ label: 'Avg Speed', value: formatSpeed(distM / durSec, unit) });
+    } else if (!isStrength && act.avg_pace_sec_km > 0) {
+      metrics.push({ label: 'Avg Pace', value: formatPace(act.avg_pace_sec_km, unit) });
+    }
+    if (!isStrength && elevM > 0) {
+      metrics.push({ label: 'Total Ascent', value: formatElevation(elevM, unit) });
+    }
+    if (calories > 0) {
+      metrics.push({ label: 'Calories', value: `${calories.toLocaleString()} kcal` });
+    }
+    if (avgHr > 0 && metrics.length < 5) {
+      metrics.push({ label: 'Avg HR', value: `${avgHr} bpm` });
+    }
 
-  const metricsHtml = metrics.slice(0, 5).map(m => `
-    <div>
-      <div class="text-lg sm:text-xl font-bold font-mono text-purple-50 tabular-nums leading-tight">${m.value}</div>
-      <div class="text-[11px] text-purple-300/65 mt-0.5">${m.label}</div>
-    </div>
-  `).join('');
+    const metricsHtml = metrics.slice(0, 5).map(m => `
+      <div>
+        <div class="text-lg sm:text-xl font-bold font-mono text-purple-50 tabular-nums leading-tight">${m.value}</div>
+        <div class="text-[11px] text-purple-300/65 mt-0.5">${m.label}</div>
+      </div>
+    `).join('');
 
-  const routeSvg = renderMiniRouteSvg(act);
+    const routeSvg = renderMiniRouteSvg(act);
+
+    return `
+      <div data-today-act-idx="${idx}" role="button" tabindex="0" class="bg-[#130d21] border border-[#2d2147] hover:border-purple-500/60 rounded-2xl p-5 transition-card cursor-pointer shadow-lg shadow-purple-950/20">
+        <div class="flex items-center justify-between gap-4">
+          <div class="min-w-0 flex-1 space-y-3">
+            <div class="flex flex-wrap items-center gap-2 text-xs text-purple-300/80">
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${hasToday ? 'text-emerald-300 border-emerald-500/35 bg-emerald-500/15' : 'text-purple-300 border-purple-500/35 bg-purple-500/15'}">
+                ${hasToday ? 'TODAY' : 'LATEST'}
+              </span>
+              <span class="font-medium text-purple-200">${sportLabel}</span>
+              <span class="text-purple-400/60">•</span>
+              <span class="font-mono text-[11px] text-purple-300/70">${timeLabel}</span>
+            </div>
+
+            <div class="text-lg sm:text-xl font-semibold text-white tracking-tight truncate">
+              ${act.title || `${sportLabel} Session`}
+            </div>
+
+            <div class="flex flex-wrap items-center gap-x-7 gap-y-2 pt-1">
+              ${metricsHtml}
+            </div>
+          </div>
+
+          ${routeSvg}
+        </div>
+      </div>
+    `;
+  }).join('');
 
   container.classList.remove('hidden');
   container.innerHTML = `
-    <div id="today-activity-card" role="button" tabindex="0" class="bg-[#130d21] border border-[#2d2147] hover:border-purple-500/60 rounded-2xl p-5 transition-card cursor-pointer shadow-lg shadow-purple-950/20">
-      <div class="flex items-center justify-between gap-4">
-        <div class="min-w-0 flex-1 space-y-3">
-          <div class="flex flex-wrap items-center gap-2 text-xs text-purple-300/80">
-            <span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${isToday ? 'text-emerald-300 border-emerald-500/35 bg-emerald-500/15' : 'text-purple-300 border-purple-500/35 bg-purple-500/15'}">
-              ${isToday ? 'TODAY' : 'LATEST ACTIVITY'}
-            </span>
-            <span class="font-medium text-purple-200">${sportLabel}</span>
-            <span class="text-purple-400/60">•</span>
-            <span class="font-mono text-[11px] text-purple-300/70">${timeLabel}</span>
-          </div>
-
-          <div class="text-lg sm:text-xl font-semibold text-white tracking-tight truncate">
-            ${act.title || `${sportLabel} Session`}
-          </div>
-
-          <div class="flex flex-wrap items-center gap-x-7 gap-y-2 pt-1">
-            ${metricsHtml}
-          </div>
+    <div class="space-y-3">
+      <div class="flex items-center justify-between pb-2 border-b border-[#2d2147]">
+        <div class="flex items-center space-x-2.5">
+          <h2 class="text-base font-semibold text-white tracking-tight">Today's Activities</h2>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${hasToday ? 'text-emerald-300 border-emerald-500/35 bg-emerald-500/15' : 'text-purple-300 border-purple-500/35 bg-purple-500/15'}">
+            ${hasToday ? `${todaysActs.length} TODAY` : 'LATEST'}
+          </span>
         </div>
-
-        ${routeSvg}
+        ${!hasToday ? '<span class="text-[11px] text-zinc-400">No activities recorded today yet</span>' : ''}
+      </div>
+      <div class="space-y-3">
+        ${cardsHtml}
       </div>
     </div>
   `;
 
-  const card = document.getElementById('today-activity-card');
-  if (card) {
-    card.addEventListener('click', () => openActivityDrawer(act, unit));
-    card.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        openActivityDrawer(act, unit);
-      }
-    });
-  }
+  displayActs.forEach((act, idx) => {
+    const card = container.querySelector(`[data-today-act-idx="${idx}"]`);
+    if (card) {
+      card.addEventListener('click', () => openActivityDrawer(act, unit));
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openActivityDrawer(act, unit);
+        }
+      });
+    }
+  });
 }
 

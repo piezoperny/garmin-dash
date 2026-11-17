@@ -49,19 +49,51 @@ class GDriveConfig:
 
 class GoogleDriveStorageClient:
     """
-    Google Drive API v3 client implementing SFTPClientProtocol.
+    Google Drive storage client implementing SFTPClientProtocol.
     Points directly to 'My Drive/Drive/health/garmin-dash' without rclone.
+    Supports:
+      1. Google Apps Script Web App URL (https://script.google.com/macros/s/.../exec) — zero-config personal Drive!
+      2. OAuth2 Authorized User / Service Account JSON.
     """
 
     def __init__(self, config: GDriveConfig) -> None:
         self.config = config
         self._service: Any = None
+        self._webapp_url: Optional[str] = None
         self._root_folder_id: Optional[str] = None
         self._folder_cache: Dict[str, str] = {}
 
+    def _webapp_request(self, action: str, remote_path: str = "", data_b64: Optional[str] = None) -> Dict[str, Any]:
+        import urllib.request
+        payload = {
+            "action": action,
+            "root": self.config.root_folder_path,
+            "path": self._normalize_rel_path(remote_path),
+        }
+        if data_b64 is not None:
+            payload["data_b64"] = data_b64
+        req = urllib.request.Request(
+            str(self._webapp_url),
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+            res = json.loads(raw)
+            if not res.get("ok", False):
+                raise SFTPArchivalError(f"Google Drive Web App error ({action} {remote_path}): {res.get('error')}")
+            return res
+
     def connect(self) -> None:
-        """Authenticates with Google Drive API and resolves the root folder hierarchy."""
-        if self._service is not None and self._root_folder_id is not None:
+        """Authenticates with Google Drive (via Web App URL or Drive v3 API) and resolves the root folder hierarchy."""
+        if (self._service is not None and self._root_folder_id is not None) or self._webapp_url is not None:
+            return
+
+        raw_creds = self.config.credentials_json.strip()
+        if raw_creds.startswith("https://script.google.com/"):
+            self._webapp_url = raw_creds
+            logger.info(f"Connected to Google Drive via Apps Script Web App targeting '{self.config.root_folder_path}'.")
             return
 
         try:
@@ -73,7 +105,6 @@ class GoogleDriveStorageClient:
                 "google-api-python-client and google-auth are required for Google Drive storage."
             ) from exc
 
-        raw_creds = self.config.credentials_json.strip()
         if not raw_creds.startswith("{") and len(raw_creds) < 1024 and Path(raw_creds).is_file():
             raw_creds = Path(raw_creds).read_text(encoding="utf-8")
 
@@ -187,9 +218,6 @@ class GoogleDriveStorageClient:
         if not parts:
             return parent_id
 
-        # Check from deepest folder to shallowest (e.g., 'garmin-dash' -> 'health' -> 'Drive')
-        # so that whether the user shared the leaf folder 'garmin-dash' or an ancestor 'Drive'/'health',
-        # we anchor directly onto the user's shared folder hierarchy.
         if parent_id == "root":
             for anchor_idx in range(len(parts) - 1, -1, -1):
                 candidate = self._find_visible_folder_by_name(parts[anchor_idx])
@@ -259,10 +287,18 @@ class GoogleDriveStorageClient:
         rel = self._normalize_rel_path(remote_dir)
         if not rel:
             return
+        if self._webapp_url:
+            self._webapp_request("mkdir", rel)
+            return
         self._resolve_parent_and_name(f"{rel}/_placeholder", create_dirs=True)
 
     def upload_bytes(self, data: bytes, remote_path: str, atomic: bool = True) -> bool:
         self.connect()
+        if self._webapp_url:
+            import base64
+            self._webapp_request("write", remote_path, data_b64=base64.b64encode(data).decode("ascii"))
+            return True
+
         from googleapiclient.http import MediaIoBaseUpload
 
         parent_id, filename = self._resolve_parent_and_name(remote_path, create_dirs=True)
@@ -302,6 +338,13 @@ class GoogleDriveStorageClient:
 
     def download_bytes(self, remote_path: str) -> bytes:
         self.connect()
+        if self._webapp_url:
+            import base64
+            res = self._webapp_request("read", remote_path)
+            if not res.get("found"):
+                raise FileNotFoundError(f"Remote file not found on Google Drive: {remote_path}")
+            return base64.b64decode(res["data_b64"])
+
         from googleapiclient.http import MediaIoBaseDownload
 
         parent_id, filename = self._resolve_parent_and_name(remote_path, create_dirs=False)
@@ -342,6 +385,9 @@ class GoogleDriveStorageClient:
 
     def file_exists(self, remote_path: str) -> bool:
         self.connect()
+        if self._webapp_url:
+            res = self._webapp_request("exists", remote_path)
+            return bool(res.get("exists", False))
         parent_id, filename = self._resolve_parent_and_name(remote_path, create_dirs=False)
         if not parent_id or not filename:
             return False
@@ -349,6 +395,16 @@ class GoogleDriveStorageClient:
 
     def stat(self, remote_path: str) -> SFTPFileStat:
         self.connect()
+        if self._webapp_url:
+            res = self._webapp_request("stat", remote_path)
+            if not res.get("found"):
+                raise FileNotFoundError(f"Remote path not found: {remote_path}")
+            return SFTPFileStat(
+                filename=posixpath.basename(remote_path),
+                size_bytes=int(res.get("size") or 0),
+                mtime=int(time.time()),
+                is_dir=bool(res.get("is_dir", False)),
+            )
         parent_id, filename = self._resolve_parent_and_name(remote_path, create_dirs=False)
         if not parent_id or not filename:
             raise FileNotFoundError(f"Remote path not found: {remote_path}")
@@ -367,6 +423,9 @@ class GoogleDriveStorageClient:
     def listdir(self, remote_dir: str) -> List[str]:
         self.connect()
         rel = self._normalize_rel_path(remote_dir)
+        if self._webapp_url:
+            res = self._webapp_request("listdir", rel)
+            return sorted(str(x) for x in res.get("items", []))
         if not rel:
             folder_id = self._root_folder_id
         else:
@@ -394,6 +453,9 @@ class GoogleDriveStorageClient:
 
     def remove(self, remote_path: str) -> None:
         self.connect()
+        if self._webapp_url:
+            self._webapp_request("remove", remote_path)
+            return
         parent_id, filename = self._resolve_parent_and_name(remote_path, create_dirs=False)
         if not parent_id or not filename:
             return

@@ -155,8 +155,55 @@ class GoogleDriveStorageClient:
         )
         return str(created["id"])
 
+    def _find_visible_folder_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Search all folders visible to the account by name, prioritizing shared folders owned by the user."""
+        escaped = name.replace("'", "\\'")
+        resp = (
+            self._service.files()
+            .list(
+                q=f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false",
+                spaces="drive",
+                fields="files(id, name, parents, shared, owners)",
+                pageSize=20,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        files = resp.get("files", [])
+        if not files:
+            return None
+        # Prioritize folders shared with the service account and owned by the user (not 'me')
+        files.sort(
+            key=lambda f: (
+                not bool(f.get("shared", False)),
+                bool((f.get("owners") or [{}])[0].get("me", False)),
+            )
+        )
+        return files[0]
+
     def _resolve_or_create_path(self, folder_path: str, parent_id: str = "root") -> str:
         parts = [p for p in folder_path.strip("/").split("/") if p and p != "."]
+        if not parts:
+            return parent_id
+
+        # Check from deepest folder to shallowest (e.g., 'garmin-dash' -> 'health' -> 'Drive')
+        # so that whether the user shared the leaf folder 'garmin-dash' or an ancestor 'Drive'/'health',
+        # we anchor directly onto the user's shared folder hierarchy.
+        if parent_id == "root":
+            for anchor_idx in range(len(parts) - 1, -1, -1):
+                candidate = self._find_visible_folder_by_name(parts[anchor_idx])
+                if candidate and (candidate.get("shared") or not (candidate.get("owners") or [{}])[0].get("me", True)):
+                    curr_parent = str(candidate["id"])
+                    for sub_part in parts[anchor_idx + 1 :]:
+                        found_sub = self._find_child(curr_parent, sub_part, is_folder=True)
+                        if found_sub:
+                            curr_parent = str(found_sub["id"])
+                        else:
+                            curr_parent = self._create_folder(curr_parent, sub_part)
+                    self._folder_cache[f"{parent_id}:{'/'.join(parts)}"] = curr_parent
+                    return curr_parent
+
         curr_parent = parent_id
         accum = ""
         for idx, part in enumerate(parts):
@@ -168,23 +215,7 @@ class GoogleDriveStorageClient:
 
             found = self._find_child(curr_parent, part, is_folder=True)
             if not found and parent_id == "root" and idx == 0:
-                # Also search shared folders if the user shared 'garmin-dash' or 'Drive' with a Service Account
-                escaped = part.replace("'", "\\'")
-                resp = (
-                    self._service.files()
-                    .list(
-                        q=f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false",
-                        spaces="drive",
-                        fields="files(id, name)",
-                        pageSize=5,
-                        supportsAllDrives=True,
-                        includeItemsFromAllDrives=True,
-                    )
-                    .execute()
-                )
-                shared = resp.get("files", [])
-                if shared:
-                    found = shared[0]
+                found = self._find_visible_folder_by_name(part)
 
             if found:
                 curr_parent = str(found["id"])
@@ -528,7 +559,12 @@ class CompositeStorageClient:
         self.close()
 
     def mkdir_p(self, remote_dir: str) -> None:
-        self.primary.mkdir_p(remote_dir)
+        try:
+            self.primary.mkdir_p(remote_dir)
+        except Exception as e:
+            logger.warning(f"Primary mkdir_p warning ({remote_dir}): {e}")
+            if not self.backup:
+                raise
         if self.backup:
             try:
                 self.backup.mkdir_p(remote_dir)
@@ -536,10 +572,17 @@ class CompositeStorageClient:
                 logger.warning(f"Backup mkdir_p warning ({remote_dir}): {e}")
 
     def upload_bytes(self, data: bytes, remote_path: str, atomic: bool = True) -> bool:
-        res = self.primary.upload_bytes(data, remote_path, atomic=atomic)
+        res = False
+        try:
+            res = self.primary.upload_bytes(data, remote_path, atomic=atomic)
+        except Exception as e:
+            logger.warning(f"Primary upload_bytes warning ({remote_path}): {e}")
+            if not self.backup:
+                raise
         if self.backup:
             try:
-                self.backup.upload_bytes(data, remote_path, atomic=atomic)
+                b_res = self.backup.upload_bytes(data, remote_path, atomic=atomic)
+                res = res or b_res
             except Exception as e:
                 logger.warning(f"Backup upload_bytes warning ({remote_path}): {e}")
         return res
@@ -548,10 +591,17 @@ class CompositeStorageClient:
         self.upload_bytes(data, remote_path, atomic=True)
 
     def upload_file(self, local_path: Union[Path, str], remote_path: str, atomic: bool = True) -> bool:
-        res = self.primary.upload_file(local_path, remote_path, atomic=atomic)
+        res = False
+        try:
+            res = self.primary.upload_file(local_path, remote_path, atomic=atomic)
+        except Exception as e:
+            logger.warning(f"Primary upload_file warning ({remote_path}): {e}")
+            if not self.backup:
+                raise
         if self.backup:
             try:
-                self.backup.upload_file(local_path, remote_path, atomic=atomic)
+                b_res = self.backup.upload_file(local_path, remote_path, atomic=atomic)
+                res = res or b_res
             except Exception as e:
                 logger.warning(f"Backup upload_file warning ({remote_path}): {e}")
         return res
@@ -581,7 +631,11 @@ class CompositeStorageClient:
         self.download_file(remote_path, local_path)
 
     def read_text(self, remote_path: str) -> Optional[str]:
-        txt = self.primary.read_text(remote_path)
+        txt = None
+        try:
+            txt = self.primary.read_text(remote_path)
+        except Exception:
+            txt = None
         if txt is None and self.backup:
             try:
                 txt = self.backup.read_text(remote_path)
@@ -590,7 +644,12 @@ class CompositeStorageClient:
         return txt
 
     def write_text_atomic(self, remote_path: str, content: str) -> None:
-        self.primary.write_text_atomic(remote_path, content)
+        try:
+            self.primary.write_text_atomic(remote_path, content)
+        except Exception as e:
+            logger.warning(f"Primary write_text_atomic warning ({remote_path}): {e}")
+            if not self.backup:
+                raise
         if self.backup:
             try:
                 self.backup.write_text_atomic(remote_path, content)
@@ -598,8 +657,11 @@ class CompositeStorageClient:
                 logger.warning(f"Backup write_text_atomic warning ({remote_path}): {e}")
 
     def file_exists(self, remote_path: str) -> bool:
-        if self.primary.file_exists(remote_path):
-            return True
+        try:
+            if self.primary.file_exists(remote_path):
+                return True
+        except Exception:
+            pass
         if self.backup:
             try:
                 return self.backup.file_exists(remote_path)
@@ -616,7 +678,11 @@ class CompositeStorageClient:
             raise
 
     def listdir(self, remote_dir: str) -> List[str]:
-        items = set(self.primary.listdir(remote_dir))
+        items: Set[str] = set()
+        try:
+            items.update(self.primary.listdir(remote_dir))
+        except Exception:
+            pass
         if self.backup:
             try:
                 items.update(self.backup.listdir(remote_dir))
@@ -625,7 +691,10 @@ class CompositeStorageClient:
         return sorted(items)
 
     def remove(self, remote_path: str) -> None:
-        self.primary.remove(remote_path)
+        try:
+            self.primary.remove(remote_path)
+        except Exception:
+            pass
         if self.backup:
             try:
                 self.backup.remove(remote_path)
@@ -633,7 +702,10 @@ class CompositeStorageClient:
                 pass
 
     def rename(self, old_path: str, new_path: str) -> None:
-        self.primary.rename(old_path, new_path)
+        try:
+            self.primary.rename(old_path, new_path)
+        except Exception:
+            pass
         if self.backup:
             try:
                 self.backup.rename(old_path, new_path)
@@ -641,7 +713,11 @@ class CompositeStorageClient:
                 pass
 
     def load_oauth_session(self, remote_path: str = "garmin_archive/.session/garmin_oauth.json") -> Optional[Dict[str, Any]]:
-        sess = self.primary.load_oauth_session(remote_path)
+        sess = None
+        try:
+            sess = self.primary.load_oauth_session(remote_path)
+        except Exception:
+            sess = None
         if sess is None and self.backup:
             try:
                 sess = self.backup.load_oauth_session(remote_path)
@@ -650,7 +726,12 @@ class CompositeStorageClient:
         return sess
 
     def save_oauth_session(self, session_data: Union[Dict[str, Any], Any], remote_path: str = "garmin_archive/.session/garmin_oauth.json") -> None:
-        self.primary.save_oauth_session(session_data, remote_path)
+        try:
+            self.primary.save_oauth_session(session_data, remote_path)
+        except Exception as e:
+            logger.warning(f"Primary save_oauth_session warning: {e}")
+            if not self.backup:
+                raise
         if self.backup:
             try:
                 self.backup.save_oauth_session(session_data, remote_path)
@@ -666,17 +747,23 @@ class CompositeStorageClient:
         gpx_bytes: Optional[bytes] = None,
         base_dir: str = "garmin_archive",
     ) -> Dict[str, str]:
-        res = self.primary.archive_activity(
-            activity_id=activity_id,
-            start_time_iso=start_time_iso,
-            summary_json_bytes=summary_json_bytes,
-            fit_bytes=fit_bytes,
-            gpx_bytes=gpx_bytes,
-            base_dir=base_dir,
-        )
+        res: Dict[str, str] = {}
+        try:
+            res = self.primary.archive_activity(
+                activity_id=activity_id,
+                start_time_iso=start_time_iso,
+                summary_json_bytes=summary_json_bytes,
+                fit_bytes=fit_bytes,
+                gpx_bytes=gpx_bytes,
+                base_dir=base_dir,
+            )
+        except Exception as e:
+            logger.warning(f"Primary archive_activity warning ({activity_id}): {e}")
+            if not self.backup:
+                raise
         if self.backup:
             try:
-                self.backup.archive_activity(
+                b_res = self.backup.archive_activity(
                     activity_id=activity_id,
                     start_time_iso=start_time_iso,
                     summary_json_bytes=summary_json_bytes,
@@ -684,6 +771,8 @@ class CompositeStorageClient:
                     gpx_bytes=gpx_bytes,
                     base_dir=base_dir,
                 )
+                if not res:
+                    res = b_res
             except Exception as e:
                 logger.warning(f"Backup archive_activity warning ({activity_id}): {e}")
         return res

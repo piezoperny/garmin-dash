@@ -14,7 +14,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -1158,12 +1158,30 @@ def run_sync_pipeline(
             local_streams_dir = output_rollup_path.parent / "streams"
             local_streams_dir.mkdir(parents=True, exist_ok=True)
 
+            streams_by_year: Dict[str, Dict[str, Any]] = {}
+            dirty_years: Set[str] = set()
+
+            def _get_year_streams(y_str: str) -> Dict[str, Any]:
+                if y_str not in streams_by_year:
+                    bundle_path = f"{REMOTE_STREAMS_DIR}/streams_{y_str}.json"
+                    loaded: Dict[str, Any] = {}
+                    try:
+                        if sftp_client.file_exists(bundle_path):
+                            raw_b = sftp_client.read_text(bundle_path)
+                            if raw_b:
+                                parsed_b = json.loads(raw_b)
+                                if isinstance(parsed_b, dict):
+                                    loaded = parsed_b
+                    except Exception as e:
+                        logger.warning(f"Could not read stream bundle {bundle_path}: {e}")
+                    streams_by_year[y_str] = loaded
+                return streams_by_year[y_str]
+
             for payload in new_activities:
                 norm_act = normalize_garmin_activity(payload)
                 act_id_str = str(norm_act["id"])
                 existing_acts_map[act_id_str] = norm_act
 
-                # Write activity stream shard locally for encryption and remotely to sharded storage
                 shard_obj = {
                     "id": act_id_str,
                     "gps_track": norm_act.get("gps_track"),
@@ -1177,10 +1195,9 @@ def run_sync_pipeline(
 
                 date_str = str(norm_act.get("start_time") or norm_act.get("date") or "")
                 year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
-                try:
-                    sftp_client.write_text_atomic(f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id_str}.json", shard_json)
-                except Exception as e:
-                    logger.warning(f"Could not archive stream shard for {act_id_str}: {e}")
+                y_map = _get_year_streams(year_str)
+                y_map[act_id_str] = shard_obj
+                dirty_years.add(year_str)
 
             canonical_acts = list(existing_acts_map.values())
             canonical_acts = reprocess_canonical_activities(canonical_acts)
@@ -1191,6 +1208,8 @@ def run_sync_pipeline(
                 if not act_id_str:
                     continue
                 local_shard_file = local_streams_dir / f"{act_id_str}.json"
+                date_str = str(act.get("start_time") or act.get("date") or "")
+                year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
                 if not local_shard_file.exists():
                     if act.get("gps_track") or act.get("telemetry_stream"):
                         shard_obj = {
@@ -1201,30 +1220,54 @@ def run_sync_pipeline(
                             "laps": act.get("laps", []),
                             "hr_zones": act.get("hr_zones", {}),
                         }
-                        local_shard_file.write_text(json.dumps(shard_obj, separators=(",", ":")), encoding="utf-8")
+                        shard_json = json.dumps(shard_obj, separators=(",", ":"))
+                        local_shard_file.write_text(shard_json, encoding="utf-8")
+                        y_map = _get_year_streams(year_str)
+                        if act_id_str not in y_map:
+                            y_map[act_id_str] = shard_obj
+                            dirty_years.add(year_str)
                     else:
-                        date_str = str(act.get("start_time") or act.get("date") or "")
-                        year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
-                        remote_shard_path = f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id_str}.json"
-                        try:
-                            if sftp_client.file_exists(remote_shard_path):
-                                raw_shard = sftp_client.read_text(remote_shard_path)
-                                if raw_shard:
-                                    local_shard_file.write_text(raw_shard, encoding="utf-8")
-                        except Exception:
-                            pass
+                        y_map = _get_year_streams(year_str)
+                        if act_id_str in y_map:
+                            local_shard_file.write_text(
+                                json.dumps(y_map[act_id_str], separators=(",", ":")),
+                                encoding="utf-8",
+                            )
+                        else:
+                            remote_shard_path = f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id_str}.json"
+                            try:
+                                if sftp_client.file_exists(remote_shard_path):
+                                    raw_shard = sftp_client.read_text(remote_shard_path)
+                                    if raw_shard:
+                                        local_shard_file.write_text(raw_shard, encoding="utf-8")
+                            except Exception:
+                                pass
+
+            for y_str in sorted(dirty_years):
+                bundle_path = f"{REMOTE_STREAMS_DIR}/streams_{y_str}.json"
+                try:
+                    sftp_client.write_text_atomic(
+                        bundle_path,
+                        json.dumps(streams_by_year[y_str], separators=(",", ":")),
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not save stream bundle {bundle_path}: {e}")
 
             # Save lightweight index (without heavy per-second streams) to REMOTE_INDEX_PATH
             index_acts = []
             for act in canonical_acts:
                 idx_copy = dict(act)
-                has_s = bool(idx_copy.get("gps_track") or idx_copy.get("telemetry_stream") or idx_copy.get("has_streams"))
+                has_s = bool(
+                    idx_copy.get("gps_track")
+                    or idx_copy.get("telemetry_stream")
+                    or idx_copy.get("has_streams")
+                    or (local_streams_dir / f"{idx_copy.get('id')}.json").exists()
+                )
                 idx_copy["has_streams"] = has_s
                 idx_copy.pop("gps_track", None)
                 idx_copy.pop("telemetry_stream", None)
                 index_acts.append(idx_copy)
             sftp_client.write_text_atomic(REMOTE_INDEX_PATH, json.dumps(index_acts, indent=2))
-            sftp_client.write_text_atomic(REMOTE_CANONICAL_PATH, json.dumps(index_acts, indent=2))
 
             # Fetch genuine daily wellness history (zero synthetic estimation)
             wellness_by_date: Dict[str, Dict[str, Any]] = {}

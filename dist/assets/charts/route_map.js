@@ -218,12 +218,26 @@ export function renderRouteMap(activity) {
       attributionControl: true
     });
 
-    // CartoDB Dark Matter (No Labels) tile layer — open, keyless, minimalist obsidian aesthetic
-    const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 20,
-      crossOrigin: true
+    // Inject dark-mode filter for OpenStreetMap tiles so map is permanently keyless & watermark-free
+    if (typeof document !== 'undefined' && document.head && !document.getElementById('osm-dark-tile-style')) {
+      const styleEl = document.createElement('style');
+      styleEl.id = 'osm-dark-tile-style';
+      styleEl.textContent = `
+        .osm-dark-tiles {
+          filter: invert(100%) hue-rotate(180deg) brightness(85%) contrast(90%) grayscale(55%);
+        }
+        #activity-route-map {
+          background-color: #111114;
+        }
+      `;
+      document.head.appendChild(styleEl);
+    }
+
+    // Official OpenStreetMap Foundation tile server — 100% free forever, zero API key, zero watermarks
+    const tileLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 19,
+      className: 'osm-dark-tiles'
     });
     if (typeof tileLayer.on === 'function') {
       tileLayer.on('tileerror', (error) => {

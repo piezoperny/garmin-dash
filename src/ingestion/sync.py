@@ -1210,6 +1210,7 @@ def run_sync_pipeline(
                 local_shard_file = local_streams_dir / f"{act_id_str}.json"
                 date_str = str(act.get("start_time") or act.get("date") or "")
                 year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
+                month_str = date_str[5:7] if len(date_str) >= 7 and date_str[5:7].isdigit() else "01"
                 if not local_shard_file.exists():
                     if act.get("gps_track") or act.get("telemetry_stream"):
                         shard_obj = {
@@ -1235,13 +1236,41 @@ def run_sync_pipeline(
                             )
                         else:
                             remote_shard_path = f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id_str}.json"
+                            recovered = False
                             try:
                                 if sftp_client.file_exists(remote_shard_path):
                                     raw_shard = sftp_client.read_text(remote_shard_path)
                                     if raw_shard:
                                         local_shard_file.write_text(raw_shard, encoding="utf-8")
+                                        y_map[act_id_str] = json.loads(raw_shard)
+                                        dirty_years.add(year_str)
+                                        recovered = True
                             except Exception:
                                 pass
+
+                            # Fallback: recover full GPS & telemetry directly from archived raw *_summary.json
+                            if not recovered and year_str != "unknown":
+                                raw_summary_path = f"garmin_archive/activities/{year_str}/{month_str}/{act_id_str}_summary.json"
+                                try:
+                                    if sftp_client.file_exists(raw_summary_path):
+                                        raw_sum_txt = sftp_client.read_text(raw_summary_path)
+                                        if raw_sum_txt:
+                                            re_norm = normalize_garmin_activity(json.loads(raw_sum_txt))
+                                            shard_obj = {
+                                                "id": act_id_str,
+                                                "gps_track": re_norm.get("gps_track"),
+                                                "telemetry_stream": re_norm.get("telemetry_stream"),
+                                                "splits": re_norm.get("splits", []),
+                                                "laps": re_norm.get("laps", []),
+                                                "hr_zones": re_norm.get("hr_zones", {}),
+                                            }
+                                            shard_json = json.dumps(shard_obj, separators=(",", ":"))
+                                            local_shard_file.write_text(shard_json, encoding="utf-8")
+                                            y_map[act_id_str] = shard_obj
+                                            dirty_years.add(year_str)
+                                            act["has_streams"] = bool(re_norm.get("gps_track") or re_norm.get("telemetry_stream"))
+                                except Exception as e:
+                                    logger.warning(f"Could not recover stream from {raw_summary_path}: {e}")
 
             for y_str in sorted(dirty_years):
                 bundle_path = f"{REMOTE_STREAMS_DIR}/streams_{y_str}.json"

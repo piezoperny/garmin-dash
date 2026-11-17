@@ -630,14 +630,9 @@ export async function initApp() {
     }
   });
 
-  // Check for existing session (Reload bypass)
-  const cachedPayload = getStoredPayload();
+  // Check for existing session (Reload bypass — always fetch fresh data.enc if raw key is cached)
   const cachedKey = getStoredKey();
-
-  if (cachedPayload) {
-    showDashboard(cachedPayload);
-    return;
-  }
+  const cachedPayload = getStoredPayload();
 
   if (cachedKey) {
     try {
@@ -650,6 +645,9 @@ export async function initApp() {
       console.warn('Cached session key invalid or payload modified. Resetting session.', err);
       clearSession();
     }
+  } else if (cachedPayload) {
+    showDashboard(cachedPayload);
+    return;
   }
 
   // Default: present locked password modal

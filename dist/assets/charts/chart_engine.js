@@ -225,11 +225,11 @@ export class Chart {
     let legendHeight = 0;
     if (datasets.length > 1) {
       ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      const items = datasets.map(ds => {
+      const items = datasets.map((ds, dsIndex) => {
         const name = ds.label || 'Series';
         const textWidth = ctx.measureText(name).width;
         const w = textWidth + 24;
-        return { name, w, color: ds.borderColor || ds.backgroundColor || '#38bdf8' };
+        return { name, w, color: ds.borderColor || ds.backgroundColor || '#38bdf8', dsIndex, hidden: Boolean(ds.hidden) };
       });
       const maxLegendW = Math.max(100, this.displayWidth - 30);
       legendRows = this._computeWrappedLegendRows(items, maxLegendW);
@@ -257,6 +257,7 @@ export class Chart {
         let posSum = 0;
         let negSum = 0;
         for (const ds of datasets) {
+          if (ds.hidden) continue;
           if (ds.type === 'line') {
             const v = Number(ds.data?.[i]) || 0;
             if (v > maxY) maxY = v;
@@ -272,6 +273,7 @@ export class Chart {
       }
     } else {
       for (const ds of datasets) {
+        if (ds.hidden) continue;
         for (const val of ds.data || []) {
           const v = Number(val) || 0;
           if (v > maxY) maxY = v;
@@ -306,6 +308,14 @@ export class Chart {
     }
     if (typeof this.options.scales?.y?.max === 'number') {
       maxY = this.options.scales.y.max;
+    }
+
+    // Apply interactive Y pan and scale if active
+    if (this._view && (this._view.yZoom !== 1 || this._view.yPan !== 0)) {
+      const ySpan = (maxY - minY) / Math.max(0.1, this._view.yZoom);
+      const yMid = (maxY + minY) / 2 + (this._view.yPan / Math.max(1, chartH)) * ySpan;
+      minY = yMid - ySpan / 2;
+      maxY = yMid + ySpan / 2;
     }
 
     // Render Background Annotations Bands (e.g. HRV Baseline, Stress Zones)
@@ -445,6 +455,7 @@ export class Chart {
     // Render Data
     if (isLine) {
       for (const ds of datasets) {
+        if (ds.hidden) continue;
         const color = ds.borderColor || ds.backgroundColor || '#38bdf8';
         const pts = [];
 
@@ -533,8 +544,8 @@ export class Chart {
       }
     } else {
       // Bar Datasets
-      const barDatasets = datasets.filter(ds => ds.type !== 'line');
-      const lineDatasets = datasets.filter(ds => ds.type === 'line');
+      const barDatasets = datasets.filter(ds => ds.type !== 'line' && !ds.hidden);
+      const lineDatasets = datasets.filter(ds => ds.type === 'line' && !ds.hidden);
 
       if (isStacked) {
         const stackAccum = new Array(labels.length).fill(0);
@@ -706,8 +717,7 @@ export class Chart {
 
         row.forEach(item => {
           this._legendHitboxes.push({ x: startX - 2, y: currentY - 9, w: item.w, h: 18, dsIndex: item.dsIndex });
-          ctx.save();
-          if (item.hidden) ctx.globalAlpha = 0.35;
+          ctx.globalAlpha = item.hidden ? 0.35 : 1.0;
           ctx.fillStyle = item.color;
           ctx.beginPath();
           if (typeof ctx.roundRect === 'function') {
@@ -731,7 +741,7 @@ export class Chart {
             nameToDraw += '…';
           }
           ctx.fillText(nameToDraw, startX + 11, currentY);
-          ctx.restore();
+          ctx.globalAlpha = 1.0;
           startX += item.w;
         });
         currentY += 16;

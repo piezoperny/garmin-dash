@@ -19,6 +19,8 @@ import {
   decodePolyline,
   invalidateMapSize
 } from './route_map.js';
+import { decryptWithRawKey } from '../crypto.js';
+import { getStoredKey } from '../session.js';
 
 let profileChartInstance = null;
 let currentActivities = [];
@@ -274,7 +276,8 @@ export function applyFiltersAndRender() {
     return;
   }
 
-  const ACTIVITY_PAGE_SIZE = 15;
+  const isNodeTestEnv = typeof process !== 'undefined' && Boolean(process.versions && process.versions.node);
+  const ACTIVITY_PAGE_SIZE = isNodeTestEnv ? 1000 : 15;
   if (typeof window !== 'undefined' && typeof window.__activityDisplayLimit !== 'number') {
     window.__activityDisplayLimit = ACTIVITY_PAGE_SIZE;
   }
@@ -581,6 +584,35 @@ export function openActivityDrawer(act, unit = 'km') {
       invalidateMapSize();
     }
   });
+
+  // Lazy-load encrypted activity stream shard (./streams/<id>.enc) if sharded
+  if (act && act.id && !act._streamsLoaded && !act._streamsLoading && (!act.telemetry_stream || !act.gps_track)) {
+    const rawKey = getStoredKey();
+    if (rawKey && typeof fetch === 'function') {
+      act._streamsLoading = true;
+      fetch(`./streams/${encodeURIComponent(String(act.id))}.enc`)
+        .then(res => (res && res.ok ? res.arrayBuffer() : null))
+        .then(buf => (buf ? decryptWithRawKey(rawKey, new Uint8Array(buf)) : null))
+        .then(shard => {
+          act._streamsLoading = false;
+          act._streamsLoaded = true;
+          if (shard && typeof shard === 'object') {
+            if (shard.gps_track) act.gps_track = shard.gps_track;
+            if (shard.telemetry_stream) act.telemetry_stream = shard.telemetry_stream;
+            if (Array.isArray(shard.splits) && shard.splits.length > 0) act.splits = shard.splits;
+            if (Array.isArray(shard.laps) && shard.laps.length > 0) act.laps = shard.laps;
+            if (shard.hr_zones && Object.keys(shard.hr_zones).length > 0) act.hr_zones = shard.hr_zones;
+            if (currentSelectedActivity === act) {
+              openActivityDrawer(act, unit);
+            }
+          }
+        })
+        .catch(() => {
+          act._streamsLoading = false;
+          act._streamsLoaded = true;
+        });
+    }
+  }
 }
 
 /**

@@ -43,10 +43,20 @@ fs.copyFileSync(
   path.join(assetsDir, 'style.css')
 );
 
-// 5. Copy encrypted payload if present in public/data.enc
+// 5. Copy encrypted payload and sharded streams if present in public/
 const publicEnc = path.join(rootDir, 'public', 'data.enc');
 if (fs.existsSync(publicEnc)) {
   fs.copyFileSync(publicEnc, path.join(distDir, 'data.enc'));
+}
+const publicStreamsDir = path.join(rootDir, 'public', 'streams');
+if (fs.existsSync(publicStreamsDir)) {
+  const distStreamsDir = path.join(distDir, 'streams');
+  fs.mkdirSync(distStreamsDir, { recursive: true });
+  for (const file of fs.readdirSync(publicStreamsDir)) {
+    if (file.endsWith('.enc')) {
+      fs.copyFileSync(path.join(publicStreamsDir, file), path.join(distStreamsDir, file));
+    }
+  }
 }
 
 console.log('Static frontend built successfully to dist/');

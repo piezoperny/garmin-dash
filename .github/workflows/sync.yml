@@ -63,11 +63,13 @@ jobs:
           cd frontend
           npm install
 
-      # Step 6: Ingest Garmin activities & archive to Hetzner SFTP
-      - name: Ingest Garmin activities & archive to Hetzner SFTP
+      # Step 6: Ingest Garmin activities & archive to Google Drive / Hetzner SFTP
+      - name: Ingest Garmin activities & archive to Google Drive / Hetzner SFTP
         env:
           GARMIN_API_KEY: ${{ secrets.GARMIN_API_KEY }}
           GARMIN_CLIENT_SECRET: ${{ secrets.GARMIN_CLIENT_SECRET }}
+          GDRIVE_CREDENTIALS_JSON: ${{ secrets.GDRIVE_CREDENTIALS_JSON }}
+          GDRIVE_ROOT_PATH: Drive/health/garmin-dash
           HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
           HETZNER_USER: ${{ secrets.HETZNER_USER }}
           HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
@@ -76,7 +78,7 @@ jobs:
         run: |
           python -m src.ingestion.sync
 
-      # Step 7: Encrypt rollup to data.enc
+      # Step 7: Encrypt rollup to data.enc and sharded streams/*.enc
       - name: Encrypt rollup to data.enc
         env:
           DASHBOARD_PASSPHRASE: ${{ secrets.DASHBOARD_PASSPHRASE }}
@@ -100,22 +102,14 @@ jobs:
           cd frontend
           npm run build
           cd ..
-          # Ensure encrypted payload is present in dist/ for static hosting
+          # Ensure encrypted payload and stream shards are present in dist/ for static hosting
           if [ -f public/data.enc ] && [ ! -f dist/data.enc ]; then
             cp public/data.enc dist/data.enc
           fi
-
-      # Step 9b: Redundant Google Drive backup (runs when RCLONE_CONFIG_GDRIVE secret is configured)
-      - name: Backup encrypted vault to Google Drive
-        if: ${{ secrets.RCLONE_CONFIG_GDRIVE != '' }}
-        env:
-          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG_GDRIVE }}
-        run: |
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-          mkdir -p ~/.config/rclone
-          printf '%s' "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
-          rclone copy dist/data.enc gdrive:garmin-dash-backup/ --progress
-          rm -f ~/.config/rclone/rclone.conf
+          if [ -d public/streams ]; then
+            mkdir -p dist/streams
+            cp -r public/streams/. dist/streams/
+          fi
 
       # Step 10: Secret hygiene audit & zero-plaintext static verification
       - name: Secret hygiene & zero-plaintext static audit

@@ -391,6 +391,35 @@ def encrypt_payload(
     return salt + iv + ciphertext_and_tag
 
 
+def encrypt_with_key(
+    data: Union[bytes, bytearray, str, Dict[str, Any]],
+    key: bytes,
+    salt: bytes,
+) -> bytes:
+    """
+    Encrypts a payload using an already-derived 32-byte AES key and 16-byte salt,
+    generating a fresh cryptographically random 12-byte IV per shard.
+    Wire layout: [Salt 16B] + [IV 12B] + [Ciphertext + Tag 16B].
+    """
+    if isinstance(data, dict):
+        plaintext = json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    elif isinstance(data, str):
+        plaintext = data.encode("utf-8")
+    elif isinstance(data, (bytes, bytearray)):
+        plaintext = bytes(data)
+    else:
+        raise TypeError(f"Unsupported payload type for encryption: {type(data).__name__}")
+
+    iv = os.urandom(IV_SIZE)
+    if _USE_CRYPTOGRAPHY:
+        aesgcm = AESGCM(key)
+        ciphertext_and_tag = aesgcm.encrypt(iv, plaintext, associated_data=None)
+    else:
+        ciphertext_and_tag = _ctypes_aes_gcm_encrypt(key, iv, plaintext)
+
+    return bytes(salt) + iv + ciphertext_and_tag
+
+
 def decrypt_payload(
     arg1: Optional[Union[str, bytes, bytearray]] = None,
     arg2: Optional[Union[str, bytes, bytearray]] = None,

@@ -664,6 +664,134 @@ class LiveGarminClient:
                 logger.warning(f"Could not fetch HRV data for {cdate}: {e}")
         return None
 
+    def get_daily_wellness(self, cdate: str) -> Optional[Dict[str, Any]]:
+        """Fetch genuine daily wellness metrics (steps, RHR, sleep, stress, body battery, HRV, intensity, calories) for cdate."""
+        if self._personal_garmin is None:
+            return None
+
+        summary: Dict[str, Any] = {}
+        for method_name in ("get_user_summary", "get_stats"):
+            if hasattr(self._personal_garmin, method_name):
+                try:
+                    res = getattr(self._personal_garmin, method_name)(cdate)
+                    if isinstance(res, dict):
+                        summary = res
+                        break
+                except Exception as e:
+                    logger.debug(f"Could not fetch {method_name} for {cdate}: {e}")
+
+        sleep_dto: Dict[str, Any] = {}
+        if hasattr(self._personal_garmin, "get_sleep_data"):
+            try:
+                s_res = self._personal_garmin.get_sleep_data(cdate)
+                if isinstance(s_res, dict):
+                    sleep_dto = s_res.get("dailySleepDTO") or s_res
+            except Exception as e:
+                logger.debug(f"Could not fetch sleep data for {cdate}: {e}")
+
+        hrv_sum: Dict[str, Any] = {}
+        hrv_res = self.get_hrv_data(cdate)
+        if isinstance(hrv_res, dict):
+            hrv_sum = hrv_res.get("hrvSummary") or hrv_res
+
+        if not summary and not sleep_dto and not hrv_sum:
+            return None
+
+        steps = summary.get("totalSteps")
+        steps_goal = summary.get("dailyStepGoal")
+        rhr = summary.get("restingHeartRate") or summary.get("minAvgHeartRate")
+        rhr_7d = summary.get("lastSevenDaysAvgRestingHeartRate")
+
+        sleep_sec = sleep_dto.get("sleepTimeSeconds") or summary.get("sleepingSeconds")
+        sleep_deep = sleep_dto.get("deepSleepSeconds")
+        sleep_light = sleep_dto.get("lightSleepSeconds")
+        sleep_rem = sleep_dto.get("remSleepSeconds")
+        sleep_awake = sleep_dto.get("awakeSleepSeconds")
+        sleep_scores = sleep_dto.get("sleepScores") if isinstance(sleep_dto.get("sleepScores"), dict) else {}
+        overall_sleep = sleep_scores.get("overall") if isinstance(sleep_scores.get("overall"), dict) else {}
+        sleep_score = overall_sleep.get("value") or sleep_dto.get("sleepScore")
+        sleep_quality_raw = overall_sleep.get("qualifierKey") or sleep_dto.get("sleepQualityTypePK")
+        sleep_quality = str(sleep_quality_raw).replace("_", " ").title() if sleep_quality_raw else None
+
+        stress_level = summary.get("averageStressLevel")
+        if isinstance(stress_level, (int, float)) and stress_level < 0:
+            stress_level = None
+        stress_qual_raw = summary.get("stressQualifier")
+        stress_qualifier = str(stress_qual_raw).replace("_", " ").title() if stress_qual_raw else None
+
+        bb_charged = summary.get("bodyBatteryChargedValue")
+        bb_drained = summary.get("bodyBatteryDrainedValue")
+        bb_high = summary.get("bodyBatteryHighestValue")
+        bb_low = summary.get("bodyBatteryLowestValue")
+        bb_curr = summary.get("bodyBatteryMostRecentValue") or bb_high
+
+        hrv_status_raw = hrv_sum.get("status")
+        hrv_status = str(hrv_status_raw).replace("_", " ").title() if hrv_status_raw else None
+        hrv_weekly = hrv_sum.get("weeklyAvg")
+        hrv_night = hrv_sum.get("lastNightAvg")
+        baseline_obj = hrv_sum.get("baseline") if isinstance(hrv_sum.get("baseline"), dict) else {}
+        hrv_baseline = None
+        if baseline_obj.get("balancedLow") is not None and baseline_obj.get("balancedUpper") is not None:
+            hrv_baseline = {"low": baseline_obj.get("balancedLow"), "high": baseline_obj.get("balancedUpper")}
+
+        mod_min = summary.get("moderateIntensityMinutes")
+        vig_min = summary.get("vigorousIntensityMinutes")
+        active_intensity_min = None
+        if mod_min is not None or vig_min is not None:
+            active_intensity_min = int(mod_min or 0) + (int(vig_min or 0) * 2)
+        intensity_goal = summary.get("intensityMinutesGoal")
+
+        daily_cal = summary.get("totalKilocalories")
+        act_cal = summary.get("activeKilocalories")
+        bmr_cal = summary.get("bmrKilocalories")
+
+        return {
+            "date": cdate,
+            "steps": int(steps) if steps is not None else None,
+            "steps_goal": int(steps_goal) if steps_goal is not None else None,
+            "resting_hr": int(rhr) if rhr is not None else None,
+            "resting_heart_rate": int(rhr) if rhr is not None else None,
+            "resting_hr_7d_avg": float(rhr_7d) if rhr_7d is not None else None,
+            "sleep_seconds": int(sleep_sec) if sleep_sec is not None else None,
+            "sleep_score": int(sleep_score) if sleep_score is not None else None,
+            "sleep_quality": sleep_quality,
+            "sleep_deep_seconds": int(sleep_deep) if sleep_deep is not None else None,
+            "sleep_light_seconds": int(sleep_light) if sleep_light is not None else None,
+            "sleep_rem_seconds": int(sleep_rem) if sleep_rem is not None else None,
+            "sleep_awake_seconds": int(sleep_awake) if sleep_awake is not None else None,
+            "sleep_stages": {
+                "deep_seconds": int(sleep_deep) if sleep_deep is not None else None,
+                "light_seconds": int(sleep_light) if sleep_light is not None else None,
+                "rem_seconds": int(sleep_rem) if sleep_rem is not None else None,
+                "awake_seconds": int(sleep_awake) if sleep_awake is not None else None,
+            },
+            "stress_level": int(stress_level) if stress_level is not None else None,
+            "stress_qualifier": stress_qualifier,
+            "stress_status": stress_qualifier,
+            "body_battery": int(bb_curr) if bb_curr is not None else None,
+            "body_battery_charged": int(bb_charged) if bb_charged is not None else None,
+            "body_battery_drained": int(bb_drained) if bb_drained is not None else None,
+            "charged": int(bb_charged) if bb_charged is not None else None,
+            "drained": int(bb_drained) if bb_drained is not None else None,
+            "body_battery_high": int(bb_high) if bb_high is not None else None,
+            "body_battery_low": int(bb_low) if bb_low is not None else None,
+            "hrv_status": hrv_status,
+            "hrv_weekly_avg": hrv_weekly,
+            "hrv_last_night_avg": hrv_night,
+            "hrv_7d_avg": hrv_weekly,
+            "hrv_baseline": hrv_baseline,
+            "active_intensity_minutes": active_intensity_min,
+            "intensity_minutes_goal": int(intensity_goal) if intensity_goal is not None else None,
+            "intensity_minutes_moderate": int(mod_min) if mod_min is not None else None,
+            "intensity_minutes_vigorous": int(vig_min) if vig_min is not None else None,
+            "daily_calories": int(daily_cal) if daily_cal is not None else None,
+            "active_calories": int(act_cal) if act_cal is not None else None,
+            "bmr_calories": int(bmr_cal) if bmr_cal is not None else None,
+            "calories_total": int(daily_cal) if daily_cal is not None else None,
+            "calories_active": int(act_cal) if act_cal is not None else None,
+            "calories_bmr": int(bmr_cal) if bmr_cal is not None else None,
+        }
+
     def download_fit_file(self, activity_id: str) -> Optional[bytes]:
         if self._personal_garmin is not None:
             try:

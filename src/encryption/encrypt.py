@@ -26,13 +26,17 @@ from typing import Any, Dict, List, Optional, Union
 
 from src.encryption.crypto_engine import (
     PBKDF2_ITERATIONS,
+    SALT_SIZE,
     decrypt_payload,
+    derive_key,
     encrypt_payload,
+    encrypt_with_key,
 )
 
 logger = logging.getLogger("src.encryption.encrypt")
 
 DEFAULT_STAGING_ROLLUP = Path(".staging/dashboard_rollup.json")
+DEFAULT_STAGING_STREAMS_DIR = Path(".staging/streams")
 DEFAULT_OUTPUT_ENC = Path("public/data.enc")
 MOCK_DEFAULT_PASSPHRASE = "demo-passphrase-2026!"
 
@@ -48,7 +52,8 @@ def build_and_encrypt_rollup(
     iterations: int = PBKDF2_ITERATIONS,
 ) -> Path:
     """
-    Compiles, encrypts, and packages fitness data rollup into data.enc.
+    Compiles, encrypts, and packages fitness data rollup into data.enc
+    and any sharded activity stream payloads into streams/<id>.enc.
 
     Returns:
         Path to generated data.enc binary artifact.
@@ -124,6 +129,29 @@ def build_and_encrypt_rollup(
                 mirror_path = mirror_dir / "data.enc"
                 shutil.copyfile(target_path, mirror_path)
                 logger.info(f"Mirrored data.enc to {mirror_path}")
+
+    # 4b. Encrypt sharded activity stream files (.staging/streams/*.json -> streams/*.enc)
+    streams_staging = input_path.parent / "streams" if input_file else DEFAULT_STAGING_STREAMS_DIR
+    if streams_staging.exists() and streams_staging.is_dir():
+        salt = wire_bytes[:SALT_SIZE]
+        shared_key = derive_key(resolved_passphrase, salt, iterations=iterations)
+        out_streams_dir = target_path.parent / "streams"
+        out_streams_dir.mkdir(parents=True, exist_ok=True)
+        shard_count = 0
+        for shard_file in streams_staging.glob("*.json"):
+            shard_bytes = shard_file.read_bytes()
+            enc_shard = encrypt_with_key(shard_bytes, key=shared_key, salt=salt)
+            enc_target = out_streams_dir / f"{shard_file.stem}.enc"
+            enc_target.write_bytes(enc_shard)
+            shard_count += 1
+            if output_file is None or target_path == DEFAULT_OUTPUT_ENC:
+                for mirror_dir in [Path("dist"), Path("frontend"), Path("frontend/public")]:
+                    if mirror_dir.exists() and mirror_dir.is_dir() and mirror_dir != target_path.parent:
+                        m_streams = mirror_dir / "streams"
+                        m_streams.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(enc_target, m_streams / f"{shard_file.stem}.enc")
+        if shard_count > 0:
+            logger.info(f"Encrypted {shard_count} activity stream shards to {out_streams_dir}")
 
     # 5. In-Memory Roundtrip Verification
     if verify:

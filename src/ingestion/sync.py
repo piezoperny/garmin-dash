@@ -39,6 +39,10 @@ from src.ingestion.mock_generator import (
     decode_polyline,
     encode_polyline,
 )
+from src.ingestion.gdrive_client import (
+    GDriveConfig,
+    get_storage_client,
+)
 from src.ingestion.sftp_client import (
     HetznerSFTPClient,
     MockSFTPClient,
@@ -52,6 +56,9 @@ logger = logging.getLogger("src.ingestion.sync")
 
 REMOTE_MANIFEST_PATH = "garmin_archive/metadata/sync_manifest.json"
 REMOTE_CANONICAL_PATH = "garmin_archive/metadata/canonical_activities.json"
+REMOTE_INDEX_PATH = "garmin_archive/metadata/activities_index.json"
+REMOTE_WELLNESS_PATH = "garmin_archive/metadata/wellness_history.json"
+REMOTE_STREAMS_DIR = "garmin_archive/streams"
 REMOTE_SESSION_PATH = "garmin_archive/.session/garmin_oauth.json"
 
 
@@ -1083,7 +1090,8 @@ def run_sync_pipeline(
     # Determine execution mode
     credentials = GarminCredentials.from_env()
     sftp_config = SFTPConfig.from_env()
-    is_mock = mock_mode or credentials is None or sftp_config is None
+    gdrive_config = GDriveConfig.from_env()
+    is_mock = mock_mode or credentials is None or (sftp_config is None and gdrive_config is None)
 
     if is_mock:
         logger.info("Operating in MOCK MODE: utilizing synthetic generator and in-memory mock SFTP.")
@@ -1091,14 +1099,17 @@ def run_sync_pipeline(
         token_store = SFTPTokenStore(sftp_client, REMOTE_SESSION_PATH)
         garmin_client = MockGarminClient(seed=42, token_store=token_store)
     else:
-        logger.info("Operating in LIVE MODE: connecting to Hetzner SFTP and Garmin Developer API.")
-        sftp_client = HetznerSFTPClient(sftp_config)
-        sftp_client.connect()
+        logger.info("Operating in LIVE MODE: connecting to storage (Google Drive / Hetzner SFTP) and Garmin API.")
+        sftp_client = get_storage_client(force_mock=False)
         token_store = SFTPTokenStore(sftp_client, REMOTE_SESSION_PATH)
         garmin_client = LiveGarminClient(api_key_or_credentials=credentials, token_store=token_store)
 
     try:
-        manifest = load_remote_manifest(sftp_client)
+        if force_refresh and not is_mock:
+            manifest = SyncManifest()
+        else:
+            manifest = load_remote_manifest(sftp_client)
+
         new_activities, count = execute_incremental_pull(
             garmin_client=garmin_client,
             sftp_client=sftp_client,
@@ -1122,6 +1133,8 @@ def run_sync_pipeline(
 
         # Compile Rollup Payload
         logger.info("Compiling dashboard_rollup.json from ingested dataset...")
+        wellness_payload: Optional[Dict[str, Any]] = None
+
         if is_mock:
             gen = SyntheticDatasetGenerator(seed=42)
             canonical_acts = gen.generate_activities()
@@ -1129,56 +1142,138 @@ def run_sync_pipeline(
                 canonical_acts = reprocess_canonical_activities(canonical_acts)
         else:
             existing_acts_map: Dict[str, Dict[str, Any]] = {}
-            if not force_refresh and sftp_client.file_exists(REMOTE_CANONICAL_PATH):
-                try:
-                    raw_existing = sftp_client.read_text(REMOTE_CANONICAL_PATH)
-                    if raw_existing:
-                        for item in json.loads(raw_existing):
-                            act_key = str(item.get("id"))
-                            splits_curr = item.get("splits") or []
-                            has_broken_splits = not splits_curr or any(
-                                isinstance(s, dict) and not s.get("duration_seconds") for s in splits_curr
-                            )
-                            is_outdoor = item.get("sport") not in ("strength", "weights", "yoga", "cardio")
-                            needs_gps = is_outdoor and not item.get("gps_track")
-                            if has_broken_splits or needs_gps:
-                                try:
-                                    fresh_details = garmin_client.get_activity_details(act_key) or {}
-                                except Exception:
-                                    fresh_details = {}
-                                item = normalize_garmin_activity({"summary": item, "details": fresh_details})
-                            existing_acts_map[act_key] = item
-                except Exception as e:
-                    logger.warning(f"Could not read existing canonical activities: {e}")
+            if not force_refresh:
+                for path_candidate in (REMOTE_INDEX_PATH, REMOTE_CANONICAL_PATH):
+                    if sftp_client.file_exists(path_candidate):
+                        try:
+                            raw_existing = sftp_client.read_text(path_candidate)
+                            if raw_existing:
+                                for item in json.loads(raw_existing):
+                                    act_key = str(item.get("id"))
+                                    existing_acts_map[act_key] = item
+                                break
+                        except Exception as e:
+                            logger.warning(f"Could not read existing activities from {path_candidate}: {e}")
+
+            local_streams_dir = output_rollup_path.parent / "streams"
+            local_streams_dir.mkdir(parents=True, exist_ok=True)
 
             for payload in new_activities:
                 norm_act = normalize_garmin_activity(payload)
-                existing_acts_map[str(norm_act["id"])] = norm_act
+                act_id_str = str(norm_act["id"])
+                existing_acts_map[act_id_str] = norm_act
+
+                # Write activity stream shard locally for encryption and remotely to sharded storage
+                shard_obj = {
+                    "id": act_id_str,
+                    "gps_track": norm_act.get("gps_track"),
+                    "telemetry_stream": norm_act.get("telemetry_stream"),
+                    "splits": norm_act.get("splits", []),
+                    "laps": norm_act.get("laps", []),
+                    "hr_zones": norm_act.get("hr_zones", {}),
+                }
+                shard_json = json.dumps(shard_obj, separators=(",", ":"))
+                (local_streams_dir / f"{act_id_str}.json").write_text(shard_json, encoding="utf-8")
+
+                date_str = str(norm_act.get("start_time") or norm_act.get("date") or "")
+                year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
+                try:
+                    sftp_client.write_text_atomic(f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id_str}.json", shard_json)
+                except Exception as e:
+                    logger.warning(f"Could not archive stream shard for {act_id_str}: {e}")
 
             canonical_acts = list(existing_acts_map.values())
-            # Schema migration and taxonomy normalization pass on all canonical activities
             canonical_acts = reprocess_canonical_activities(canonical_acts)
-            sftp_client.write_text_atomic(REMOTE_CANONICAL_PATH, json.dumps(canonical_acts, indent=2))
 
-        rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest)
+            # Stage any previously archived stream shards so dist/streams/ is complete on static deploy
+            for act in canonical_acts:
+                act_id_str = str(act.get("id") or "")
+                if not act_id_str:
+                    continue
+                local_shard_file = local_streams_dir / f"{act_id_str}.json"
+                if not local_shard_file.exists():
+                    if act.get("gps_track") or act.get("telemetry_stream"):
+                        shard_obj = {
+                            "id": act_id_str,
+                            "gps_track": act.get("gps_track"),
+                            "telemetry_stream": act.get("telemetry_stream"),
+                            "splits": act.get("splits", []),
+                            "laps": act.get("laps", []),
+                            "hr_zones": act.get("hr_zones", {}),
+                        }
+                        local_shard_file.write_text(json.dumps(shard_obj, separators=(",", ":")), encoding="utf-8")
+                    else:
+                        date_str = str(act.get("start_time") or act.get("date") or "")
+                        year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
+                        remote_shard_path = f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id_str}.json"
+                        try:
+                            if sftp_client.file_exists(remote_shard_path):
+                                raw_shard = sftp_client.read_text(remote_shard_path)
+                                if raw_shard:
+                                    local_shard_file.write_text(raw_shard, encoding="utf-8")
+                        except Exception:
+                            pass
 
-        # Fetch live HRV summary from Garmin Connect if available
-        if hasattr(garmin_client, "get_hrv_data"):
+            # Save lightweight index (without heavy per-second streams) to REMOTE_INDEX_PATH
+            index_acts = []
+            for act in canonical_acts:
+                idx_copy = dict(act)
+                has_s = bool(idx_copy.get("gps_track") or idx_copy.get("telemetry_stream") or idx_copy.get("has_streams"))
+                idx_copy["has_streams"] = has_s
+                idx_copy.pop("gps_track", None)
+                idx_copy.pop("telemetry_stream", None)
+                index_acts.append(idx_copy)
+            sftp_client.write_text_atomic(REMOTE_INDEX_PATH, json.dumps(index_acts, indent=2))
+            sftp_client.write_text_atomic(REMOTE_CANONICAL_PATH, json.dumps(index_acts, indent=2))
+
+            # Fetch genuine daily wellness history (zero synthetic estimation)
+            wellness_by_date: Dict[str, Dict[str, Any]] = {}
+            if not force_refresh and sftp_client.file_exists(REMOTE_WELLNESS_PATH):
+                try:
+                    raw_w = sftp_client.read_text(REMOTE_WELLNESS_PATH)
+                    if raw_w:
+                        for w_rec in json.loads(raw_w):
+                            if isinstance(w_rec, dict) and w_rec.get("date"):
+                                wellness_by_date[str(w_rec["date"])] = w_rec
+                except Exception as e:
+                    logger.warning(f"Could not read existing wellness history: {e}")
+
+            if hasattr(garmin_client, "get_daily_wellness"):
+                today_dt = datetime.now(timezone.utc).date()
+                wellness_days = min(max(7, lookback_days), 30) if not force_refresh else min(lookback_days, 90)
+                for d_offset in range(wellness_days):
+                    cdate = (today_dt - timedelta(days=d_offset)).isoformat()
+                    if not force_refresh and cdate in wellness_by_date and d_offset > 2:
+                        continue
+                    try:
+                        w_day = garmin_client.get_daily_wellness(cdate)
+                        if isinstance(w_day, dict):
+                            wellness_by_date[cdate] = w_day
+                    except Exception as e:
+                        logger.warning(f"Failed fetching daily wellness for {cdate}: {e}")
+
+            sorted_wellness = [wellness_by_date[k] for k in sorted(wellness_by_date.keys())]
             try:
-                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                hrv_raw = garmin_client.get_hrv_data(today_str)
-                if isinstance(hrv_raw, dict):
-                    hrv_sum = hrv_raw.get("hrvSummary") or hrv_raw
-                    if isinstance(hrv_sum, dict):
-                        cur = rollup_dict.setdefault("current", {})
-                        if hrv_sum.get("status"):
-                            cur["hrv_status"] = str(hrv_sum["status"]).title()
-                        if hrv_sum.get("weeklyAvg") is not None:
-                            cur["hrv_weekly_avg"] = hrv_sum["weeklyAvg"]
-                        if hrv_sum.get("lastNightAvg") is not None:
-                            cur["hrv_last_night_avg"] = hrv_sum["lastNightAvg"]
+                sftp_client.write_text_atomic(REMOTE_WELLNESS_PATH, json.dumps(sorted_wellness, indent=2))
             except Exception as e:
-                logger.warning(f"Could not fetch/populate HRV data: {e}")
+                logger.warning(f"Could not save wellness history: {e}")
+
+            latest_wellness = sorted_wellness[-1] if sorted_wellness else {}
+            wellness_payload = {
+                "current": latest_wellness,
+                "daily": sorted_wellness,
+            }
+
+        rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
+
+        # In live sharded mode, strip heavy gps_track and telemetry_stream from index rollup_dict["activities"]
+        # since they are encrypted into individual streams/<id>.enc shards
+        if not is_mock:
+            for act_item in rollup_dict.get("activities", []):
+                if isinstance(act_item, dict):
+                    act_item["has_streams"] = True
+                    act_item["gps_track"] = None
+                    act_item["telemetry_stream"] = None
 
         output_rollup_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_rollup_path, "w", encoding="utf-8") as f:

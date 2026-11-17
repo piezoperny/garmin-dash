@@ -299,7 +299,7 @@ function renderCircularRing(pct, radius = 22, strokeWidth = 4, color = '#10b981'
   const size = (radius + strokeWidth) * 2;
   return `
     <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" class="transform -rotate-90 shrink-0">
-      <circle cx="${radius + strokeWidth}" cy="${radius + strokeWidth}" r="${radius}" stroke="#27272a" stroke-width="${strokeWidth}" fill="none"/>
+      <circle cx="${radius + strokeWidth}" cy="${radius + strokeWidth}" r="${radius}" stroke="#3b2b5e" stroke-width="${strokeWidth}" fill="none"/>
       <circle cx="${radius + strokeWidth}" cy="${radius + strokeWidth}" r="${radius}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" fill="none" stroke-dasharray="${circumference}" stroke-dashoffset="${strokeDashoffset}"/>
     </svg>
   `;
@@ -309,16 +309,16 @@ function renderCardControls(metricKey, isHero) {
   const touchClass = isTouchDevice() ? 'opacity-80' : 'opacity-0 group-hover:opacity-100';
   return `
     <div class="flex items-center space-x-1 ${touchClass} transition-opacity">
-      <button type="button" data-wellness-action="prev" data-metric="${metricKey}" title="Move earlier" class="p-1 rounded bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white text-[10px] leading-none transition">
+      <button type="button" data-wellness-action="prev" data-metric="${metricKey}" title="Move earlier" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
         ◀
       </button>
-      <button type="button" data-wellness-action="next" data-metric="${metricKey}" title="Move later" class="p-1 rounded bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white text-[10px] leading-none transition">
+      <button type="button" data-wellness-action="next" data-metric="${metricKey}" title="Move later" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
         ▶
       </button>
-      <button type="button" data-wellness-action="toggle-section" data-metric="${metricKey}" title="${isHero ? 'Move to At a Glance' : 'Promote to In Focus'}" class="p-1 rounded bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white text-[10px] leading-none transition">
+      <button type="button" data-wellness-action="toggle-section" data-metric="${metricKey}" title="${isHero ? 'Move to At a Glance' : 'Promote to In Focus'}" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
         ${isHero ? '▼' : '▲'}
       </button>
-      <button type="button" data-wellness-action="remove" data-metric="${metricKey}" title="Remove card" class="p-1 rounded bg-[#18181b] hover:bg-rose-950/40 text-zinc-400 hover:text-rose-400 text-[10px] leading-none transition">
+      <button type="button" data-wellness-action="remove" data-metric="${metricKey}" title="Remove card" class="p-1 rounded bg-[#1b132e] hover:bg-rose-950/40 text-zinc-400 hover:text-rose-400 text-[10px] leading-none transition">
         ✕
       </button>
     </div>
@@ -337,7 +337,7 @@ function buildStepsCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-steps" ${getDraggableAttr()} data-metric="steps" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-steps" ${getDraggableAttr()} data-metric="steps" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -352,7 +352,7 @@ function buildStepsCard(c, daily, isHero) {
             ${renderCircularRing(pct, 24, 4, '#10b981')}
           </div>
         </div>
-        <div class="pt-4 mt-3 border-t border-[#1f1f24] flex items-center justify-between">
+        <div class="pt-4 mt-3 border-t border-[#2d2147] flex items-center justify-between">
           <span class="text-[11px] text-zinc-500">7-Day Daily Steps</span>
           ${renderMiniBarSparkline(stepsHistory, '#10b981', 22, 90)}
         </div>
@@ -361,7 +361,7 @@ function buildStepsCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-steps" ${getDraggableAttr()} data-metric="steps" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-steps" ${getDraggableAttr()} data-metric="steps" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Steps</span>
         ${renderCardControls('steps', false)}
@@ -384,7 +384,7 @@ function buildRhrCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-rhr" ${getDraggableAttr()} data-metric="resting_hr" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-rhr" ${getDraggableAttr()} data-metric="resting_hr" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -399,7 +399,7 @@ function buildRhrCard(c, daily, isHero) {
             <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getStatusBadgeColor('Optimal')}">Optimal</span>
           </div>
         </div>
-        <div class="pt-4 mt-3 border-t border-[#1f1f24] flex items-center justify-between">
+        <div class="pt-4 mt-3 border-t border-[#2d2147] flex items-center justify-between">
           <span class="text-[11px] text-zinc-500">7-Day Trend</span>
           ${renderMiniLineSparkline(rhrHistory, '#f43f5e', 22, 90)}
         </div>
@@ -408,7 +408,7 @@ function buildRhrCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-rhr" ${getDraggableAttr()} data-metric="resting_hr" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-rhr" ${getDraggableAttr()} data-metric="resting_hr" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Resting HR</span>
         ${renderCardControls('resting_hr', false)}
@@ -439,7 +439,7 @@ function buildSleepCard(c, daily, isHero) {
     const awakePct = ((awake / totalStages) * 100).toFixed(1);
 
     return `
-      <div id="card-wellness-sleep" ${getDraggableAttr()} data-metric="sleep" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-sleep" ${getDraggableAttr()} data-metric="sleep" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -455,7 +455,7 @@ function buildSleepCard(c, daily, isHero) {
           </div>
         </div>
 
-        <div class="pt-4 mt-3 border-t border-[#1f1f24] space-y-2">
+        <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-2">
           <div class="flex items-center justify-between text-[11px] text-zinc-400">
             <span>Sleep Stages</span>
             <span class="text-zinc-500 font-mono text-[10px]">Deep ${formatSleepDuration(deep)} • REM ${formatSleepDuration(rem)}</span>
@@ -472,7 +472,7 @@ function buildSleepCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-sleep" ${getDraggableAttr()} data-metric="sleep" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-sleep" ${getDraggableAttr()} data-metric="sleep" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Sleep</span>
         ${renderCardControls('sleep', false)}
@@ -492,7 +492,7 @@ function buildStressCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-stress" ${getDraggableAttr()} data-metric="stress" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-stress" ${getDraggableAttr()} data-metric="stress" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -508,7 +508,7 @@ function buildStressCard(c, daily, isHero) {
           </div>
         </div>
 
-        <div class="pt-4 mt-3 border-t border-[#1f1f24] space-y-1.5">
+        <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">
             <span>Rest (0-25)</span>
             <span>Low (26-50)</span>
@@ -528,7 +528,7 @@ function buildStressCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-stress" ${getDraggableAttr()} data-metric="stress" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-stress" ${getDraggableAttr()} data-metric="stress" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Stress</span>
         ${renderCardControls('stress', false)}
@@ -549,7 +549,7 @@ function buildBodyBatteryCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-body-battery" ${getDraggableAttr()} data-metric="body_battery" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-body-battery" ${getDraggableAttr()} data-metric="body_battery" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -565,7 +565,7 @@ function buildBodyBatteryCard(c, daily, isHero) {
           </div>
         </div>
 
-        <div class="pt-4 mt-3 border-t border-[#1f1f24] space-y-1.5">
+        <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
             <span>Battery Level</span>
             <span class="font-mono text-[10px] text-cyan-400">${current}%</span>
@@ -579,7 +579,7 @@ function buildBodyBatteryCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-body-battery" ${getDraggableAttr()} data-metric="body_battery" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-body-battery" ${getDraggableAttr()} data-metric="body_battery" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Body Battery</span>
         ${renderCardControls('body_battery', false)}
@@ -602,7 +602,7 @@ function buildHrvCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-hrv" ${getDraggableAttr()} data-metric="hrv" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-hrv" ${getDraggableAttr()} data-metric="hrv" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -618,7 +618,7 @@ function buildHrvCard(c, daily, isHero) {
           </div>
         </div>
 
-        <div class="pt-4 mt-3 border-t border-[#1f1f24] space-y-1.5">
+        <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
             <span>Baseline Status</span>
             <span class="text-teal-400 text-[10px] font-semibold">${status}</span>
@@ -635,7 +635,7 @@ function buildHrvCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-hrv" ${getDraggableAttr()} data-metric="hrv" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-hrv" ${getDraggableAttr()} data-metric="hrv" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">HRV Status</span>
         ${renderCardControls('hrv', false)}
@@ -658,7 +658,7 @@ function buildIntensityCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-intensity" ${getDraggableAttr()} data-metric="intensity_minutes" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-intensity" ${getDraggableAttr()} data-metric="intensity_minutes" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -674,7 +674,7 @@ function buildIntensityCard(c, daily, isHero) {
           </div>
         </div>
 
-        <div class="pt-4 mt-3 border-t border-[#1f1f24] space-y-1.5">
+        <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
             <span>Moderate (${mod}m) • Vigorous (${vig}m)</span>
             <span class="text-lime-400 font-mono text-[10px]">${pct}%</span>
@@ -688,7 +688,7 @@ function buildIntensityCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-intensity" ${getDraggableAttr()} data-metric="intensity_minutes" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-intensity" ${getDraggableAttr()} data-metric="intensity_minutes" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Intensity Min</span>
         ${renderCardControls('intensity_minutes', false)}
@@ -712,7 +712,7 @@ function buildCaloriesCard(c, daily, isHero) {
 
   if (isHero) {
     return `
-      <div id="card-wellness-calories" ${getDraggableAttr()} data-metric="calories" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+      <div id="card-wellness-calories" ${getDraggableAttr()} data-metric="calories" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
@@ -728,7 +728,7 @@ function buildCaloriesCard(c, daily, isHero) {
           </div>
         </div>
 
-        <div class="pt-4 mt-3 border-t border-[#1f1f24] space-y-1.5">
+        <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
             <span>Calorie Burn Split</span>
             <span class="font-mono text-[10px] text-orange-400">${active} Active / ${bmr} BMR</span>
@@ -743,7 +743,7 @@ function buildCaloriesCard(c, daily, isHero) {
   }
 
   return `
-    <div id="card-wellness-calories" ${getDraggableAttr()} data-metric="calories" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    <div id="card-wellness-calories" ${getDraggableAttr()} data-metric="calories" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Calories</span>
         ${renderCardControls('calories', false)}
@@ -810,9 +810,9 @@ export function renderWellnessDashboard(rollup, containerId = 'wellness-dashboar
       if (!emptyNotice) {
         emptyNotice = document.createElement('div');
         emptyNotice.id = emptyNoticeId;
-        emptyNotice.className = 'border border-dashed border-[#1f1f24] rounded-xl p-8 text-center flex flex-col items-center justify-center space-y-3';
+        emptyNotice.className = 'border border-dashed border-[#2d2147] rounded-xl p-8 text-center flex flex-col items-center justify-center space-y-3';
         emptyNotice.innerHTML = `
-          <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#1f1f24] flex items-center justify-center mb-1">
+          <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#2d2147] flex items-center justify-center mb-1">
             <svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
@@ -846,7 +846,7 @@ export function renderWellnessDashboard(rollup, containerId = 'wellness-dashboar
   if (inFocusContainer) {
     if (layout.in_focus.length === 0) {
       inFocusContainer.innerHTML = `
-        <div class="col-span-full border border-dashed border-[#1f1f24] rounded-xl p-6 text-center text-zinc-500 text-xs">
+        <div class="col-span-full border border-dashed border-[#2d2147] rounded-xl p-6 text-center text-zinc-500 text-xs">
           No cards currently In Focus. Click "Edit Cards" or use the quick action buttons to promote priority metrics.
         </div>
       `;
@@ -860,7 +860,7 @@ export function renderWellnessDashboard(rollup, containerId = 'wellness-dashboar
   if (atAGlanceContainer) {
     if (layout.at_a_glance.length === 0) {
       atAGlanceContainer.innerHTML = `
-        <div class="col-span-full border border-dashed border-[#1f1f24] rounded-xl p-4 text-center text-zinc-500 text-xs">
+        <div class="col-span-full border border-dashed border-[#2d2147] rounded-xl p-4 text-center text-zinc-500 text-xs">
           No cards in At a Glance.
         </div>
       `;

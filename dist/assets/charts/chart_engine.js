@@ -26,10 +26,48 @@ function colorWithAlpha(color, alpha) {
   return `rgba(56, 189, 248, ${alpha})`;
 }
 
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function isoWeekToUTCDate(year, week) {
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const dayOfWeek = jan4.getUTCDay() || 7; // 1=Mon .. 7=Sun
+  const week1Monday = new Date(jan4.getTime() - (dayOfWeek - 1) * 86400000);
+  return new Date(week1Monday.getTime() + (week - 1) * 7 * 86400000);
+}
+
+function formatAxisDateLabel(rawLabel, spansMultipleYears, prevYearRef) {
+  const s = String(rawLabel || '').trim();
+  const weekMatch = s.match(/^(\d{4})-W(\d{2})$/);
+  if (weekMatch) {
+    const yr = parseInt(weekMatch[1], 10);
+    const wk = parseInt(weekMatch[2], 10);
+    const dt = isoWeekToUTCDate(yr, wk);
+    const mName = SHORT_MONTHS[dt.getUTCMonth()];
+    const dayNum = dt.getUTCDate();
+    const dtYr = dt.getUTCFullYear();
+    const showYr = spansMultipleYears && (prevYearRef.year !== dtYr || dt.getUTCMonth() === 0);
+    prevYearRef.year = dtYr;
+    return showYr ? `${mName} ${dayNum} '${String(dtYr).slice(-2)}` : `${mName} ${dayNum}`;
+  }
+
+  const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const yr = parseInt(isoMatch[1], 10);
+    const mo = parseInt(isoMatch[2], 10) - 1;
+    const dy = parseInt(isoMatch[3], 10);
+    const mName = SHORT_MONTHS[mo] || isoMatch[2];
+    const showYr = spansMultipleYears && (prevYearRef.year !== yr || mo === 0);
+    prevYearRef.year = yr;
+    return showYr ? `${mName} ${dy} '${String(yr).slice(-2)}` : `${mName} ${dy}`;
+  }
+
+  return null;
+}
+
 export class Chart {
   static defaults = {
-    color: '#a1a1aa',
-    borderColor: '#1f1f24',
+    color: '#c4b5fd',
+    borderColor: '#2d2147',
     font: {
       family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
       size: 10
@@ -40,11 +78,11 @@ export class Chart {
       },
       tooltip: {
         enabled: true,
-        backgroundColor: '#111114',
-        borderColor: '#1f1f24',
+        backgroundColor: '#130d21',
+        borderColor: '#433269',
         borderWidth: 1,
-        titleColor: '#f4f4f5',
-        bodyColor: '#d4d4d8'
+        titleColor: '#f5f3ff',
+        bodyColor: '#c4b5fd'
       }
     }
   };
@@ -291,6 +329,16 @@ export class Chart {
         }
         if (typeof ann.yMax === 'number' && ann.yMax > maxY) maxY = ann.yMax;
         if (typeof ann.yMin === 'number' && ann.yMin < minY) minY = ann.yMin;
+        if (Array.isArray(ann.yMaxSeries)) {
+          for (const v of ann.yMaxSeries) {
+            if (typeof v === 'number' && !isNaN(v) && v > maxY) maxY = v;
+          }
+        }
+        if (Array.isArray(ann.yMinSeries)) {
+          for (const v of ann.yMinSeries) {
+            if (typeof v === 'number' && !isNaN(v) && v < minY) minY = v;
+          }
+        }
       }
     }
 
@@ -318,31 +366,14 @@ export class Chart {
       maxY = yMid + ySpan / 2;
     }
 
-    // Render Background Annotations Bands (e.g. HRV Baseline, Stress Zones)
-    if (this.options.annotations && Array.isArray(this.options.annotations)) {
-      for (const ann of this.options.annotations) {
-        if (ann.type === 'band' && typeof ann.yMin === 'number' && typeof ann.yMax === 'number') {
-          const normTop = (maxY - ann.yMax) / (maxY - minY);
-          const normBottom = (maxY - ann.yMin) / (maxY - minY);
-          const yTop = Math.max(padding.top, padding.top + normTop * chartH);
-          const yBottom = Math.min(padding.top + chartH, padding.top + normBottom * chartH);
-          const h = yBottom - yTop;
-          if (h > 0) {
-            ctx.save();
-            ctx.fillStyle = ann.color || 'rgba(16, 185, 129, 0.12)';
-            ctx.fillRect(padding.left, yTop, chartW, h);
-            if (ann.label) {
-              ctx.fillStyle = ann.labelColor || '#71717a';
-              ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-              ctx.textAlign = 'left';
-              ctx.textBaseline = 'top';
-              ctx.fillText(ann.label, padding.left + 6, yTop + 4);
-            }
-            ctx.restore();
-          }
-        }
-      }
-    }
+    // Apply interactive X pan and scale if active
+    const xZoom = Math.max(0.25, Math.min(10, this._view?.xZoom || 1));
+    const xPan = this._view?.xPan || 0;
+    const baseStep = chartW / Math.max(1, labels.length);
+    const xStep = baseStep * xZoom;
+    const totalZoomedW = xStep * labels.length;
+    const xOrigin = padding.left + (chartW - totalZoomedW) / 2 + xPan;
+    const getX = (idx) => xOrigin + (idx + 0.5) * xStep;
 
     // Y Gridlines and Ticks
     const steps = 4;
@@ -355,14 +386,14 @@ export class Chart {
       const yVal = minY + (maxY - minY) * (1 - norm);
       const y = padding.top + norm * chartH;
 
-      ctx.strokeStyle = '#1f1f24';
+      ctx.strokeStyle = '#2d2147';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(padding.left, y);
       ctx.lineTo(padding.left + chartW, y);
       ctx.stroke();
 
-      ctx.fillStyle = '#71717a';
+      ctx.fillStyle = '#a79bc2';
       const labelText = Math.abs(yVal) >= 100 ? Math.round(yVal) : yVal.toFixed(1);
       ctx.fillText(labelText, padding.left - 8, y);
     }
@@ -371,7 +402,7 @@ export class Chart {
     if (minY < 0 && maxY > 0) {
       const zeroNorm = (maxY - 0) / (maxY - minY);
       const zeroY = padding.top + zeroNorm * chartH;
-      ctx.strokeStyle = '#27272a';
+      ctx.strokeStyle = '#433269';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(padding.left, zeroY);
@@ -379,11 +410,9 @@ export class Chart {
       ctx.stroke();
     }
 
-    // X Axis Ticks and Labels (Collision Avoidance & Concise Labels)
+    // X Axis Ticks and Labels (Collision Avoidance, Year-Aware Formatting, & X-Pan Clipping)
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    const xStep = chartW / Math.max(1, labels.length);
-
     this.dataPoints = [];
 
     const conciseZoneMap = {
@@ -402,28 +431,50 @@ export class Chart {
       neuromuscular: 'Neuro'
     };
 
+    const labelYears = new Set();
+    for (const lbl of labels) {
+      const m = String(lbl || '').match(/^(\d{4})-/);
+      if (m) labelYears.add(m[1]);
+    }
+    const spansMultipleYears = labelYears.size > 1;
+    const prevYearRef = { year: null };
+
+    if (typeof ctx.save === 'function') ctx.save();
+    if (typeof ctx.rect === 'function' && typeof ctx.clip === 'function') {
+      ctx.beginPath();
+      ctx.rect(padding.left - 12, padding.top + chartH, chartW + 24, padding.bottom);
+      ctx.clip();
+    }
+
     let prevLabelRight = -Infinity;
 
     labels.forEach((lbl, idx) => {
-      const xCenter = padding.left + (idx + 0.5) * xStep;
+      const xCenter = getX(idx);
       let displayLbl = String(lbl);
 
-      const lower = displayLbl.toLowerCase();
-      if (conciseZoneMap[lower]) {
-        displayLbl = conciseZoneMap[lower];
+      const formattedDate = formatAxisDateLabel(displayLbl, spansMultipleYears, prevYearRef);
+      if (formattedDate) {
+        displayLbl = formattedDate;
       } else {
-        const sortedKeys = Object.keys(conciseZoneMap).sort((a, b) => b.length - a.length);
-        for (const key of sortedKeys) {
-          if (lower.includes(key)) {
-            displayLbl = conciseZoneMap[key];
-            break;
+        const lower = displayLbl.toLowerCase();
+        if (conciseZoneMap[lower]) {
+          displayLbl = conciseZoneMap[lower];
+        } else {
+          const sortedKeys = Object.keys(conciseZoneMap).sort((a, b) => b.length - a.length);
+          for (const key of sortedKeys) {
+            if (lower.includes(key)) {
+              displayLbl = conciseZoneMap[key];
+              break;
+            }
           }
         }
+        if (displayLbl.length > 8) {
+          displayLbl = displayLbl.slice(-5);
+        }
       }
-      if (/^\d{4}-W\d{2}$/.test(displayLbl)) {
-        displayLbl = displayLbl.slice(5);
-      } else if (displayLbl.length > 8) {
-        displayLbl = displayLbl.slice(-5);
+
+      if (xCenter < padding.left - 30 || xCenter > padding.left + chartW + 30) {
+        return;
       }
 
       ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -447,10 +498,95 @@ export class Chart {
         return;
       }
 
-      ctx.fillStyle = '#71717a';
+      ctx.fillStyle = '#a79bc2';
       ctx.fillText(displayLbl, drawX, padding.top + chartH + 8);
       prevLabelRight = labelRight;
     });
+    if (typeof ctx.restore === 'function') ctx.restore();
+
+    // Clip plot area for bands, lines, bars, and reference lines during X/Y pan & zoom
+    if (typeof ctx.save === 'function') ctx.save();
+    if (typeof ctx.rect === 'function' && typeof ctx.clip === 'function') {
+      ctx.beginPath();
+      ctx.rect(padding.left, padding.top, chartW, chartH);
+      ctx.clip();
+    }
+
+    // Render Background Annotations Bands (static yMin/yMax or dynamic yMinSeries/yMaxSeries)
+    if (this.options.annotations && Array.isArray(this.options.annotations)) {
+      for (const ann of this.options.annotations) {
+        if (ann.type === 'band' && Array.isArray(ann.yMinSeries) && Array.isArray(ann.yMaxSeries) && labels.length > 0) {
+          if (typeof ctx.save === 'function') ctx.save();
+          ctx.beginPath();
+          for (let i = 0; i < labels.length; i++) {
+            const x = getX(i);
+            const vMax = Number(ann.yMaxSeries[i]);
+            const yTop = padding.top + ((maxY - vMax) / (maxY - minY)) * chartH;
+            if (i === 0) ctx.moveTo(x, yTop);
+            else ctx.lineTo(x, yTop);
+          }
+          for (let i = labels.length - 1; i >= 0; i--) {
+            const x = getX(i);
+            const vMin = Number(ann.yMinSeries[i]);
+            const yBot = padding.top + ((maxY - vMin) / (maxY - minY)) * chartH;
+            ctx.lineTo(x, yBot);
+          }
+          if (typeof ctx.closePath === 'function') ctx.closePath();
+          ctx.fillStyle = ann.color || 'rgba(168, 85, 247, 0.16)';
+          ctx.fill();
+
+          if (ann.borderColor) {
+            ctx.strokeStyle = ann.borderColor;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+
+          if (Array.isArray(ann.meanSeries) && ann.meanSeries.length > 0) {
+            ctx.beginPath();
+            for (let i = 0; i < labels.length; i++) {
+              const x = getX(i);
+              const vMean = Number(ann.meanSeries[i]);
+              const yMean = padding.top + ((maxY - vMean) / (maxY - minY)) * chartH;
+              if (i === 0) ctx.moveTo(x, yMean);
+              else ctx.lineTo(x, yMean);
+            }
+            ctx.strokeStyle = ann.meanColor || 'rgba(196, 181, 253, 0.65)';
+            ctx.lineWidth = 1.25;
+            if (typeof ctx.setLineDash === 'function') ctx.setLineDash([4, 4]);
+            ctx.stroke();
+            if (typeof ctx.setLineDash === 'function') ctx.setLineDash([]);
+          }
+
+          if (ann.label) {
+            ctx.fillStyle = ann.labelColor || '#c4b5fd';
+            ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(ann.label, padding.left + 6, padding.top + 4);
+          }
+          if (typeof ctx.restore === 'function') ctx.restore();
+        } else if (ann.type === 'band' && typeof ann.yMin === 'number' && typeof ann.yMax === 'number') {
+          const normTop = (maxY - ann.yMax) / (maxY - minY);
+          const normBottom = (maxY - ann.yMin) / (maxY - minY);
+          const yTop = Math.max(padding.top, padding.top + normTop * chartH);
+          const yBottom = Math.min(padding.top + chartH, padding.top + normBottom * chartH);
+          const h = yBottom - yTop;
+          if (h > 0) {
+            if (typeof ctx.save === 'function') ctx.save();
+            ctx.fillStyle = ann.color || 'rgba(168, 85, 247, 0.14)';
+            ctx.fillRect(padding.left, yTop, chartW, h);
+            if (ann.label) {
+              ctx.fillStyle = ann.labelColor || '#c4b5fd';
+              ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+              ctx.textAlign = 'left';
+              ctx.textBaseline = 'top';
+              ctx.fillText(ann.label, padding.left + 6, yTop + 4);
+            }
+            if (typeof ctx.restore === 'function') ctx.restore();
+          }
+        }
+      }
+    }
 
     // Render Data
     if (isLine) {
@@ -461,10 +597,11 @@ export class Chart {
 
         for (let i = 0; i < labels.length; i++) {
           const val = Number(ds.data?.[i]) ?? 0;
-          const x = padding.left + (i + 0.5) * xStep;
+          const x = getX(i);
           const normY = (maxY - val) / (maxY - minY);
           const y = padding.top + normY * chartH;
-          pts.push({ x, y, val, label: labels[i], datasetName: ds.label, color });
+          const ptColor = Array.isArray(ds.pointColors) && ds.pointColors[i] ? ds.pointColors[i] : color;
+          pts.push({ x, y, val, label: labels[i], datasetName: ds.label, color: ptColor });
         }
 
         if (pts.length === 0) continue;
@@ -534,10 +671,11 @@ export class Chart {
         ctx.stroke();
 
         // Draw point dots
+        const ptRadius = typeof ds.pointRadius === 'number' ? ds.pointRadius : 2.5;
         pts.forEach(p => {
           ctx.beginPath();
-          ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
-          ctx.fillStyle = color;
+          ctx.arc(p.x, p.y, ptRadius, 0, Math.PI * 2);
+          ctx.fillStyle = p.color || color;
           ctx.fill();
           this.dataPoints.push({ ...p, radius: 8 });
         });
@@ -561,7 +699,7 @@ export class Chart {
             const topVal = bottomVal + val;
             stackAccum[i] = topVal;
 
-            const x = padding.left + (i + 0.5) * xStep - barWidth / 2;
+            const x = getX(i) - barWidth / 2;
             const normTop = (maxY - topVal) / (maxY - minY);
             const normBottom = (maxY - bottomVal) / (maxY - minY);
             const yTop = padding.top + normTop * chartH;
@@ -599,7 +737,7 @@ export class Chart {
           const color = ds.backgroundColor || '#38bdf8';
           for (let i = 0; i < labels.length; i++) {
             const val = Number(ds.data?.[i]) || 0;
-            const groupStartX = padding.left + (i + 0.5) * xStep - totalBarGroupWidth / 2;
+            const groupStartX = getX(i) - totalBarGroupWidth / 2;
             const x = groupStartX + dsIdx * singleBarWidth;
             const normVal = (maxY - val) / (maxY - minY);
             const y = padding.top + normVal * chartH;
@@ -634,7 +772,7 @@ export class Chart {
 
         for (let i = 0; i < labels.length; i++) {
           const val = Number(ds.data?.[i]) ?? 0;
-          const x = padding.left + (i + 0.5) * xStep;
+          const x = getX(i);
           const normY = (maxY - val) / (maxY - minY);
           const y = padding.top + normY * chartH;
           pts.push({ x, y, val, label: labels[i], datasetName: ds.label, color });
@@ -684,7 +822,7 @@ export class Chart {
           const normY = (maxY - ann.y) / (maxY - minY);
           const y = padding.top + normY * chartH;
           if (y >= padding.top - 2 && y <= padding.top + chartH + 2) {
-            ctx.save();
+            if (typeof ctx.save === 'function') ctx.save();
             ctx.strokeStyle = ann.color || '#10b981';
             ctx.lineWidth = ann.lineWidth || 1.5;
             if (ann.borderDash && typeof ctx.setLineDash === 'function') {
@@ -701,11 +839,14 @@ export class Chart {
               ctx.textBaseline = 'bottom';
               ctx.fillText(ann.label, padding.left + chartW - 4, y - 2);
             }
-            ctx.restore();
+            if (typeof ctx.restore === 'function') ctx.restore();
           }
         }
       }
     }
+
+    // Restore plot area clip
+    if (typeof ctx.restore === 'function') ctx.restore();
 
     // Render wrapped legend rows at top
     this._legendHitboxes = [];
@@ -727,7 +868,7 @@ export class Chart {
           }
           ctx.fill();
 
-          ctx.fillStyle = '#a1a1aa';
+          ctx.fillStyle = '#c4b5fd';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'middle';
 
@@ -808,7 +949,7 @@ export class Chart {
       ctx.fill();
 
       // Hairline separation border
-      ctx.strokeStyle = '#09090b';
+      ctx.strokeStyle = '#0b0714';
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
@@ -817,7 +958,7 @@ export class Chart {
 
     // Center Summary Text (rendered if hole is sufficiently sized for 78px text)
     if (innerRadius >= 36) {
-      ctx.fillStyle = '#f4f4f5';
+      ctx.fillStyle = '#f5f3ff';
       ctx.font = 'bold 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -971,8 +1112,8 @@ export class Chart {
     if (bx + boxW > this.displayWidth - 8) bx = this.displayWidth - boxW - 8;
     if (by < 8) by = pt.y + 10;
 
-    ctx.fillStyle = '#111114';
-    ctx.strokeStyle = '#1f1f24';
+    ctx.fillStyle = '#130d21';
+    ctx.strokeStyle = '#433269';
     ctx.lineWidth = 1;
     ctx.beginPath();
     if (typeof ctx.roundRect === 'function') {
@@ -983,18 +1124,18 @@ export class Chart {
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = pt.color || '#38bdf8';
+    ctx.fillStyle = pt.color || '#a855f7';
     ctx.beginPath();
     ctx.arc(bx + 11, by + 14, 3.5, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = '#f4f4f5';
+    ctx.fillStyle = '#f5f3ff';
     ctx.font = 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(title, bx + 20, by + 14);
 
-    ctx.fillStyle = '#a1a1aa';
+    ctx.fillStyle = '#c4b5fd';
     ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
     ctx.fillText(valText, bx + 20, by + 28);
   }

@@ -18,16 +18,16 @@
         extend: {
           colors: {
             obsidian: {
-              DEFAULT: '#09090b',
-              surface: '#111114',
-              subtle: '#18181b',
-              border: '#1f1f24',
-              hover: '#27272a'
+              DEFAULT: '#0b0714',
+              surface: '#130d21',
+              subtle: '#1b132e',
+              border: '#2d2147',
+              hover: '#3b2b5e'
             },
             zinc: {
               850: '#151518',
-              900: '#111114',
-              950: '#09090b'
+              900: '#130d21',
+              950: '#0b0714'
             }
           }
         }
@@ -35,16 +35,16 @@
     }
   </script>
 </head>
-<body class="bg-[#09090b] text-[#f4f4f5] min-h-screen flex flex-col font-sans antialiased selection:bg-zinc-800 selection:text-white">
+<body class="bg-[#0b0714] text-[#f5f3ff] min-h-screen flex flex-col font-sans antialiased selection:bg-zinc-800 selection:text-white">
 
   <!-- ========================================================================= -->
   <!-- PASSPHRASE AUTHENTICATION MODAL (Initial Locked State)                     -->
   <!-- ========================================================================= -->
-  <div id="passphrase-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#09090b]/90 backdrop-blur-md transition-opacity duration-300">
-    <div class="modal-card bg-[#111114] border border-[#1f1f24] rounded-2xl p-8 max-w-md w-full shadow-2xl relative overflow-hidden">
+  <div id="passphrase-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0b0714]/90 backdrop-blur-md transition-opacity duration-300">
+    <div class="modal-card bg-[#130d21] border border-[#2d2147] rounded-2xl p-8 max-w-md w-full shadow-2xl relative overflow-hidden">
       
       <div class="text-center mb-6">
-        <div class="w-12 h-12 bg-[#18181b] border border-[#1f1f24] rounded-xl mx-auto flex items-center justify-center mb-4">
+        <div class="w-12 h-12 bg-[#1b132e] border border-[#2d2147] rounded-xl mx-auto flex items-center justify-center mb-4">
           <svg class="w-6 h-6 text-zinc-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
           </svg>
@@ -67,7 +67,7 @@
               type="password"
               placeholder="Enter master passphrase..."
               autocomplete="current-password"
-              class="w-full bg-[#09090b] border border-[#1f1f24] rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition"
+              class="w-full bg-[#0b0714] border border-[#2d2147] rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition"
               required
             />
           </div>
@@ -82,7 +82,7 @@
         </button>
       </form>
 
-      <div class="mt-6 pt-4 border-t border-[#1f1f24] text-center text-[11px] text-zinc-500">
+      <div class="mt-6 pt-4 border-t border-[#2d2147] text-center text-[11px] text-zinc-500">
         In-memory decryption via <span class="font-mono text-zinc-400">crypto.subtle</span> • AES-256-GCM
       </div>
     </div>
@@ -94,11 +94,11 @@
   <div id="dashboard-content" class="hidden flex-1 flex flex-col" aria-hidden="true">
     
     <!-- Minimalist Navigation Bar -->
-    <header class="bg-[#09090b]/90 border-b border-[#1f1f24] sticky top-0 z-30 backdrop-blur-md">
+    <header class="bg-[#0b0714]/90 border-b border-[#2d2147] sticky top-0 z-30 backdrop-blur-md">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         
         <div class="flex items-center space-x-3">
-          <div class="w-8 h-8 rounded-lg bg-[#18181b] border border-[#1f1f24] flex items-center justify-center">
+          <div class="w-8 h-8 rounded-lg bg-[#1b132e] border border-[#2d2147] flex items-center justify-center">
             <svg class="w-4 h-4 text-zinc-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
@@ -118,7 +118,7 @@
           <button
             id="btn-customize-dashboard"
             type="button"
-            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#111114] hover:bg-[#18181b] text-zinc-300 hover:text-white border border-[#1f1f24] text-xs font-semibold transition"
+            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#130d21] hover:bg-[#1b132e] text-zinc-300 hover:text-white border border-[#2d2147] text-xs font-semibold transition"
           >
             <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
@@ -127,8 +127,8 @@
           </button>
 
           <!-- Distance Unit Toggle -->
-          <div class="flex items-center bg-[#111114] border border-[#1f1f24] rounded-lg p-0.5">
-            <button id="unit-toggle-btn" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-[#1f1f24] text-white">
+          <div class="flex items-center bg-[#130d21] border border-[#2d2147] rounded-lg p-0.5">
+            <button id="unit-toggle-btn" class="px-2.5 py-1 text-xs font-semibold rounded-md bg-[#2d2147] text-white">
               KM
             </button>
           </div>
@@ -138,7 +138,7 @@
             id="btn-header-reprocess"
             type="button"
             title="Reprocess activities & recompute weekly duration/load"
-            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#111114] hover:bg-[#18181b] text-zinc-300 hover:text-emerald-400 border border-[#1f1f24] hover:border-emerald-500/50 text-xs font-semibold transition"
+            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#130d21] hover:bg-[#1b132e] text-zinc-300 hover:text-emerald-400 border border-[#2d2147] hover:border-emerald-500/50 text-xs font-semibold transition"
           >
             <span>↻</span>
             <span>Reprocess</span>
@@ -147,7 +147,7 @@
           <!-- Lock Dashboard Button -->
           <button
             id="btn-lock-dashboard"
-            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#111114] hover:bg-[#18181b] text-zinc-300 hover:text-white border border-[#1f1f24] text-xs font-semibold transition"
+            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#130d21] hover:bg-[#1b132e] text-zinc-300 hover:text-white border border-[#2d2147] text-xs font-semibold transition"
           >
             <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
@@ -163,12 +163,19 @@
     <main id="dashboard-main" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 flex-1 w-full">
       
       <!-- ===================================================================== -->
+      <!-- TODAY'S / LATEST ACTIVITY HERO CARD (Garmin Connect Style)            -->
+      <!-- ===================================================================== -->
+      <section id="today-activity-section" class="hidden">
+        <!-- Dynamically populated by activities.js -->
+      </section>
+
+      <!-- ===================================================================== -->
       <!-- HEALTH & FITNESS DASHBOARD (Garmin Connect Web Layout)                -->
       <!-- ===================================================================== -->
       <section id="health-fitness-dashboard" class="space-y-6">
         <div id="wellness-dashboard" class="space-y-6">
           <!-- Dashboard Header & Controls -->
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#1f1f24]">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#2d2147]">
             <div>
               <div class="flex items-center space-x-2.5">
                 <h2 class="text-base font-semibold text-white tracking-tight">Health & Fitness</h2>
@@ -183,7 +190,7 @@
               <button
                 id="btn-edit-home"
                 type="button"
-                class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#111114] hover:bg-[#18181b] text-zinc-300 hover:text-white border border-[#1f1f24] text-xs font-semibold transition"
+                class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#130d21] hover:bg-[#1b132e] text-zinc-300 hover:text-white border border-[#2d2147] text-xs font-semibold transition"
               >
                 <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -194,8 +201,8 @@
           </div>
 
           <!-- Empty State Notice (shown when wellness telemetry is missing/unsynced) -->
-          <div id="wellness-empty-notice" class="hidden border border-dashed border-[#1f1f24] rounded-xl p-8 text-center flex flex-col items-center justify-center space-y-3">
-            <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#1f1f24] flex items-center justify-center mb-1">
+          <div id="wellness-empty-notice" class="hidden border border-dashed border-[#2d2147] rounded-xl p-8 text-center flex flex-col items-center justify-center space-y-3">
+            <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#2d2147] flex items-center justify-center mb-1">
               <svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
               </svg>
@@ -235,28 +242,28 @@
       <!-- Top KPI Summary Cards -->
       <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <!-- KPI 1: Distance -->
-        <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5">
+        <div class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5">
           <div class="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Total Distance</div>
           <div id="kpi-total-distance" class="text-2xl font-bold font-mono text-white mt-1 tabular-nums">-</div>
           <div class="text-[11px] text-zinc-500 mt-0.5">Cumulative mileage</div>
         </div>
 
         <!-- KPI 2: Moving Time -->
-        <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5">
+        <div class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5">
           <div class="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Moving Time</div>
           <div id="kpi-total-time" class="text-2xl font-bold font-mono text-zinc-200 mt-1 tabular-nums">-</div>
           <div class="text-[11px] text-zinc-500 mt-0.5">Active endurance hours</div>
         </div>
 
         <!-- KPI 3: Weekly Training Load -->
-        <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5">
+        <div class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5">
           <div class="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Weekly Load</div>
           <div id="kpi-weekly-load" class="text-2xl font-bold font-mono text-emerald-400 mt-1 tabular-nums">-</div>
           <div class="text-[11px] text-zinc-500 mt-0.5">Average weekly TSS</div>
         </div>
 
         <!-- KPI 4: Training Status -->
-        <div class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col justify-between">
+        <div class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between">
           <div>
             <div class="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Training Status</div>
             <div class="mt-2">
@@ -280,8 +287,8 @@
           </div>
 
           <!-- Sport Filter Pills (All · Cycling · Running · Walking · Hiking · Weights + Dynamic Sports) -->
-          <div id="sport-filter-bar" class="flex flex-wrap items-center gap-1 bg-[#111114] border border-[#1f1f24] rounded-xl p-1">
-            <button id="filter-btn-all" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white">All</button>
+          <div id="sport-filter-bar" class="flex flex-wrap items-center gap-1 bg-[#130d21] border border-[#2d2147] rounded-xl p-1">
+            <button id="filter-btn-all" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#2d2147] text-white">All</button>
             <button id="filter-btn-cycling" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Cycling</button>
             <button id="filter-btn-running" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Running</button>
             <button id="filter-btn-walking" class="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Walking</button>
@@ -294,7 +301,7 @@
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <!-- Stacked Weekly Volume Chart Card -->
-          <div id="card-weekly-volume" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-weekly-volume" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col">
             <div class="flex items-center justify-between mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Stacked Weekly Duration</h3>
               <span class="text-[11px] font-mono text-zinc-400">Cycling • Running • Walking • Hiking • Weights</span>
@@ -305,7 +312,7 @@
           </div>
 
           <!-- Continuous Training Load Curves Card -->
-          <div id="card-training-load" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-training-load" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col">
             <div class="flex items-center justify-between mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Continuous Training Load Curves</h3>
               <span class="text-[11px] font-mono text-zinc-400">CTL (Fitness) • ATL (Fatigue) • TSB (Form)</span>
@@ -328,7 +335,7 @@
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <!-- 5-Zone HR Distribution -->
-          <div id="card-hr-zone" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-hr-zone" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col">
             <div class="mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Heart Rate Zones</h3>
               <p id="hr-zone-subtitle" class="text-[11px] text-zinc-400">5-Zone Model (Z1 - Z5)</p>
@@ -339,7 +346,7 @@
           </div>
 
           <!-- Coggan 7-Zone Power Distribution -->
-          <div id="card-power-zone" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-power-zone" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col">
             <div class="mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Cycling Power Zones</h3>
               <p id="power-zone-subtitle" class="text-[11px] text-zinc-400">Cycling Power Only • Coggan 7-Zone</p>
@@ -350,7 +357,7 @@
           </div>
 
           <!-- Pace / Grade Zones -->
-          <div id="card-pace-zone" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-pace-zone" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col">
             <div class="mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Hiking Pace & Grade Zones</h3>
               <p class="text-[11px] text-zinc-400">Speed & Vertical Distribution</p>
@@ -361,7 +368,7 @@
           </div>
 
           <!-- Threshold Progression Trends -->
-          <div id="card-threshold-trends" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 flex flex-col">
+          <div id="card-threshold-trends" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col">
             <div class="mb-3">
               <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Threshold Performance Trends</h3>
               <p class="text-[11px] text-zinc-400">VO2max • Cycling FTP • LTHR Progression</p>
@@ -390,12 +397,12 @@
                 id="activity-search"
                 type="text"
                 placeholder="Search activities..."
-                class="bg-[#111114] border border-[#1f1f24] rounded-lg px-3.5 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500 w-48 sm:w-64"
+                class="bg-[#130d21] border border-[#2d2147] rounded-lg px-3.5 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500 w-48 sm:w-64"
               />
             </div>
             <select
               id="activity-sort"
-              class="bg-[#111114] border border-[#1f1f24] rounded-lg px-3 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-zinc-500"
+              class="bg-[#130d21] border border-[#2d2147] rounded-lg px-3 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-zinc-500"
             >
               <option value="date-desc">Newest First</option>
               <option value="date-asc">Oldest First</option>
@@ -406,7 +413,7 @@
               id="btn-reprocess-activities"
               type="button"
               title="Re-analyze all activities using the latest telemetry & metric algorithms"
-              class="bg-[#111114] hover:bg-[#18181b] border border-[#1f1f24] hover:border-emerald-500/50 rounded-lg px-3 py-1.5 text-xs text-zinc-300 hover:text-emerald-400 transition-colors flex items-center gap-1.5"
+              class="bg-[#130d21] hover:bg-[#1b132e] border border-[#2d2147] hover:border-emerald-500/50 rounded-lg px-3 py-1.5 text-xs text-zinc-300 hover:text-emerald-400 transition-colors flex items-center gap-1.5"
             >
               <span>↻</span>
               <span>Reprocess</span>
@@ -415,10 +422,10 @@
         </div>
 
         <!-- Activity Table Card -->
-        <div class="bg-[#111114] border border-[#1f1f24] rounded-xl overflow-hidden">
+        <div class="bg-[#130d21] border border-[#2d2147] rounded-xl overflow-hidden">
           <div class="overflow-x-auto">
             <table id="activity-table" class="w-full text-left text-xs">
-              <thead class="bg-[#18181b]/80 text-zinc-400 uppercase text-[11px] font-medium tracking-wider border-b border-[#1f1f24]">
+              <thead class="bg-[#1b132e]/80 text-zinc-400 uppercase text-[11px] font-medium tracking-wider border-b border-[#2d2147]">
                 <tr>
                   <th class="py-3 px-4">Date</th>
                   <th class="py-3 px-4">Sport</th>
@@ -430,7 +437,7 @@
                   <th class="py-3 px-4 text-right">Load</th>
                 </tr>
               </thead>
-              <tbody id="activities-table-body" class="divide-y divide-[#1f1f24]/70 font-sans">
+              <tbody id="activities-table-body" class="divide-y divide-[#2d2147]/70 font-sans">
                 <!-- Dynamically populated rows -->
               </tbody>
             </table>
@@ -442,8 +449,8 @@
       <!-- HETZNER MULTI-YEAR BACKUP VAULT EXPLORER                              -->
       <!-- ===================================================================== -->
       <section id="card-backup-vault" class="space-y-4">
-        <div id="backup-vault-explorer" class="bg-[#111114] border border-[#1f1f24] rounded-xl p-5 space-y-4">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#1f1f24]">
+        <div id="backup-vault-explorer" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#2d2147]">
             <div>
               <div class="flex items-center space-x-2.5">
                 <h2 class="text-base font-semibold text-white tracking-tight">Hetzner Multi-Year Backup Vault</h2>
@@ -468,9 +475,9 @@
               <div>
                 <div class="text-[10px] uppercase tracking-wider text-zinc-500">Raw Formats</div>
                 <div id="vault-formats-list" class="flex items-center space-x-1 mt-0.5">
-                  <span class="px-2 py-0.5 rounded bg-[#18181b] border border-[#1f1f24] text-[10px] font-mono text-zinc-300">.fit</span>
-                  <span class="px-2 py-0.5 rounded bg-[#18181b] border border-[#1f1f24] text-[10px] font-mono text-zinc-300">.gpx</span>
-                  <span class="px-2 py-0.5 rounded bg-[#18181b] border border-[#1f1f24] text-[10px] font-mono text-zinc-300">.json</span>
+                  <span class="px-2 py-0.5 rounded bg-[#1b132e] border border-[#2d2147] text-[10px] font-mono text-zinc-300">.fit</span>
+                  <span class="px-2 py-0.5 rounded bg-[#1b132e] border border-[#2d2147] text-[10px] font-mono text-zinc-300">.gpx</span>
+                  <span class="px-2 py-0.5 rounded bg-[#1b132e] border border-[#2d2147] text-[10px] font-mono text-zinc-300">.json</span>
                 </div>
               </div>
             </div>
@@ -492,7 +499,7 @@
     </main>
 
     <!-- Minimalist Footer -->
-    <footer class="bg-[#09090b] border-t border-[#1f1f24] py-4 mt-auto">
+    <footer class="bg-[#0b0714] border-t border-[#2d2147] py-4 mt-auto">
       <div class="max-w-7xl mx-auto px-4 text-center text-xs text-zinc-500">
         Garmin Encrypted Vault • Zero-Knowledge Static Single Page Application • In-Memory PBKDF2/AES-GCM
       </div>
@@ -508,10 +515,10 @@
     <div id="drawer-backdrop" class="fixed inset-0 drawer-backdrop transition-opacity"></div>
 
     <!-- Drawer Panel -->
-    <div id="drawer-panel" class="relative w-full max-w-2xl bg-[#111114] border-l border-[#1f1f24] h-full p-6 shadow-2xl flex flex-col overflow-y-auto z-10">
+    <div id="drawer-panel" class="relative w-full max-w-2xl bg-[#130d21] border-l border-[#2d2147] h-full p-6 shadow-2xl flex flex-col overflow-y-auto z-10">
       
       <!-- Drawer Header -->
-      <div class="flex items-start justify-between pb-4 border-b border-[#1f1f24]">
+      <div class="flex items-start justify-between pb-4 border-b border-[#2d2147]">
         <div>
           <h3 id="drawer-activity-title" class="text-base font-semibold text-white">Workout Details</h3>
           <p id="drawer-activity-date" class="text-xs text-zinc-400 mt-0.5">Date & Sport</p>
@@ -520,7 +527,7 @@
           <button
             id="btn-expand-drawer"
             type="button"
-            class="p-2 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition"
+            class="p-2 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white transition"
             title="Expand to Full Screen"
             aria-label="Expand to Full Screen"
           >
@@ -535,7 +542,7 @@
           </button>
           <button
             id="btn-close-drawer"
-            class="p-2 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition"
+            class="p-2 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white transition"
             title="Close Drawer"
             aria-label="Close Drawer"
           >
@@ -548,46 +555,46 @@
 
       <!-- Telemetry KPI Summary -->
       <div class="grid grid-cols-3 gap-3 my-4">
-        <div class="bg-[#18181b]/50 border border-[#1f1f24] p-3 rounded-lg">
+        <div class="bg-[#1b132e]/50 border border-[#2d2147] p-3 rounded-lg">
           <div class="text-[10px] text-zinc-400 uppercase font-medium">Distance</div>
           <div id="drawer-kpi-dist" class="text-base font-bold font-mono text-white mt-0.5 tabular-nums">-</div>
         </div>
-        <div class="bg-[#18181b]/50 border border-[#1f1f24] p-3 rounded-lg">
+        <div class="bg-[#1b132e]/50 border border-[#2d2147] p-3 rounded-lg">
           <div class="text-[10px] text-zinc-400 uppercase font-medium">Moving Time</div>
           <div id="drawer-kpi-duration" class="text-base font-bold font-mono text-zinc-200 mt-0.5 tabular-nums">-</div>
         </div>
-        <div class="bg-[#18181b]/50 border border-[#1f1f24] p-3 rounded-lg">
+        <div class="bg-[#1b132e]/50 border border-[#2d2147] p-3 rounded-lg">
           <div class="text-[10px] text-zinc-400 uppercase font-medium">Heart Rate</div>
           <div id="drawer-kpi-hr" class="text-base font-bold font-mono text-rose-400 mt-0.5 tabular-nums">-</div>
         </div>
-        <div class="bg-[#18181b]/50 border border-[#1f1f24] p-3 rounded-lg">
+        <div class="bg-[#1b132e]/50 border border-[#2d2147] p-3 rounded-lg">
           <div class="text-[10px] text-zinc-400 uppercase font-medium">Avg Cadence</div>
           <div id="drawer-kpi-cadence" class="text-base font-bold font-mono text-indigo-300 mt-0.5 tabular-nums">-</div>
         </div>
-        <div class="bg-[#18181b]/50 border border-[#1f1f24] p-3 rounded-lg">
+        <div class="bg-[#1b132e]/50 border border-[#2d2147] p-3 rounded-lg">
           <div class="text-[10px] text-zinc-400 uppercase font-medium">Elevation Gain</div>
           <div id="drawer-kpi-elevation" class="text-base font-bold font-mono text-zinc-200 mt-0.5 tabular-nums">-</div>
         </div>
-        <div class="bg-[#18181b]/50 border border-[#1f1f24] p-3 rounded-lg">
+        <div class="bg-[#1b132e]/50 border border-[#2d2147] p-3 rounded-lg">
           <div class="text-[10px] text-zinc-400 uppercase font-medium">Calories</div>
           <div id="drawer-kpi-calories" class="text-base font-bold font-mono text-amber-300 mt-0.5 tabular-nums">-</div>
         </div>
       </div>
 
       <!-- GPS Route Map Card -->
-      <div id="drawer-map-card" class="bg-[#18181b]/40 border border-[#1f1f24] rounded-xl p-4 mb-5">
+      <div id="drawer-map-card" class="bg-[#1b132e]/40 border border-[#2d2147] rounded-xl p-4 mb-5">
         <div class="flex items-center justify-between mb-2">
           <h4 class="text-xs font-semibold text-zinc-300">GPS Route Map</h4>
           <span id="drawer-map-meta" class="text-[10px] text-zinc-400 font-mono"></span>
         </div>
-        <div id="activity-route-map" class="h-60 w-full rounded-lg overflow-hidden bg-[#09090b] relative z-0"></div>
-        <div id="drawer-map-fallback" class="hidden h-24 flex items-center justify-center text-xs text-zinc-500 bg-[#09090b]/50 rounded-lg border border-[#1f1f24]/50">
+        <div id="activity-route-map" class="h-60 w-full rounded-lg overflow-hidden bg-[#0b0714] relative z-0"></div>
+        <div id="drawer-map-fallback" class="hidden h-24 flex items-center justify-center text-xs text-zinc-500 bg-[#0b0714]/50 rounded-lg border border-[#2d2147]/50">
           <span>No GPS track recorded for this workout (indoor / strength session).</span>
         </div>
       </div>
 
       <!-- Route Profile (Elevation & Heart Rate) -->
-      <div id="drawer-telemetry-container" class="bg-[#18181b]/40 border border-[#1f1f24] rounded-xl p-4 mb-5">
+      <div id="drawer-telemetry-container" class="bg-[#1b132e]/40 border border-[#2d2147] rounded-xl p-4 mb-5">
         <div class="flex items-center justify-between mb-2">
           <h4 class="text-xs font-semibold text-zinc-300">Route Profile (Elevation & Heart Rate)</h4>
           <!-- Live Scrub Telemetry Readout -->
@@ -648,9 +655,9 @@
       <!-- Per-KM / Per-Mile Splits Breakdown Table -->
       <div class="flex-1">
         <h4 class="text-xs font-semibold text-zinc-300 mb-2">Per-Split Breakdown</h4>
-        <div class="border border-[#1f1f24] rounded-lg overflow-hidden">
+        <div class="border border-[#2d2147] rounded-lg overflow-hidden">
           <table class="w-full text-left text-xs">
-            <thead class="bg-[#18181b] text-zinc-400 uppercase text-[11px] font-medium">
+            <thead class="bg-[#1b132e] text-zinc-400 uppercase text-[11px] font-medium">
               <tr>
                 <th class="py-2 px-3">Split</th>
                 <th class="py-2 px-3">Distance</th>
@@ -661,7 +668,7 @@
                 <th class="py-2 px-3">Cadence</th>
               </tr>
             </thead>
-            <tbody id="drawer-splits-tbody" class="divide-y divide-[#1f1f24]">
+            <tbody id="drawer-splits-tbody" class="divide-y divide-[#2d2147]">
               <!-- Dynamically populated splits -->
             </tbody>
           </table>
@@ -674,14 +681,14 @@
   <!-- ========================================================================= -->
   <!-- DASHBOARD CUSTOMIZATION & THRESHOLDS MODAL                                -->
   <!-- ========================================================================= -->
-  <div id="customize-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#09090b]/80 backdrop-blur-sm hidden">
-    <div class="bg-[#111114] border border-[#1f1f24] rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5">
-      <div class="flex items-start justify-between border-b border-[#1f1f24] pb-3">
+  <div id="customize-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0b0714]/80 backdrop-blur-sm hidden">
+    <div class="bg-[#130d21] border border-[#2d2147] rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5">
+      <div class="flex items-start justify-between border-b border-[#2d2147] pb-3">
         <div>
           <h3 class="text-base font-semibold text-white">Customize Dashboard & Thresholds</h3>
           <p class="text-xs text-zinc-400 mt-0.5">Show/hide sport cards (e.g. off-season cycling) and set personal HR / Power thresholds</p>
         </div>
-        <button id="btn-close-customize" type="button" class="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition">
+        <button id="btn-close-customize" type="button" class="p-1.5 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white transition">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
           </svg>
@@ -692,31 +699,31 @@
       <div class="space-y-2.5">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Visible Dashboard Widgets</div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147] cursor-pointer">
             <input type="checkbox" data-card-target="card-weekly-volume" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
             <span class="text-zinc-200">Stacked Weekly Duration</span>
           </label>
-          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147] cursor-pointer">
             <input type="checkbox" data-card-target="card-training-load" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
             <span class="text-zinc-200">Training Load (CTL/ATL/TSB)</span>
           </label>
-          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147] cursor-pointer">
             <input type="checkbox" data-card-target="card-hr-zone" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
             <span class="text-zinc-200">Heart Rate Zones (5-Zone)</span>
           </label>
-          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147] cursor-pointer">
             <input type="checkbox" data-card-target="card-power-zone" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
             <span class="text-zinc-200">Cycling Power Zones (FTP)</span>
           </label>
-          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147] cursor-pointer">
             <input type="checkbox" data-card-target="card-pace-zone" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
             <span class="text-zinc-200">Hiking Pace & Grade Zones</span>
           </label>
-          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer">
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147] cursor-pointer">
             <input type="checkbox" data-card-target="card-threshold-trends" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
             <span class="text-zinc-200">Threshold Trends</span>
           </label>
-          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24] cursor-pointer sm:col-span-2">
+          <label class="flex items-center space-x-2.5 p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147] cursor-pointer sm:col-span-2">
             <input type="checkbox" data-card-target="card-backup-vault" checked class="rounded border-zinc-700 bg-zinc-900 text-emerald-500" />
             <span class="text-zinc-200">Hetzner Multi-Year Backup Vault Explorer</span>
           </label>
@@ -724,71 +731,71 @@
       </div>
 
       <!-- Health & Wellness Cards Layout Customization -->
-      <div class="space-y-2.5 pt-2 border-t border-[#1f1f24]">
+      <div class="space-y-2.5 pt-2 border-t border-[#2d2147]">
         <div class="flex items-center justify-between">
           <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Health & Wellness Cards Layout</div>
           <span class="text-[10px] text-zinc-500">In Focus / At a Glance / Hidden</span>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs" id="wellness-modal-cards-grid">
-          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]">
             <span class="text-zinc-200">Daily Steps</span>
-            <select data-wellness-select="steps" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+            <select data-wellness-select="steps" class="bg-[#130d21] border border-[#3b2b5e] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
               <option value="in_focus">In Focus</option>
               <option value="at_a_glance">At a Glance</option>
               <option value="hidden">Hidden</option>
             </select>
           </div>
-          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]">
             <span class="text-zinc-200">Resting Heart Rate</span>
-            <select data-wellness-select="resting_hr" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+            <select data-wellness-select="resting_hr" class="bg-[#130d21] border border-[#3b2b5e] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
               <option value="in_focus">In Focus</option>
               <option value="at_a_glance">At a Glance</option>
               <option value="hidden">Hidden</option>
             </select>
           </div>
-          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]">
             <span class="text-zinc-200">Sleep</span>
-            <select data-wellness-select="sleep" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+            <select data-wellness-select="sleep" class="bg-[#130d21] border border-[#3b2b5e] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
               <option value="in_focus">In Focus</option>
               <option value="at_a_glance">At a Glance</option>
               <option value="hidden">Hidden</option>
             </select>
           </div>
-          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]">
             <span class="text-zinc-200">Stress</span>
-            <select data-wellness-select="stress" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+            <select data-wellness-select="stress" class="bg-[#130d21] border border-[#3b2b5e] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
               <option value="in_focus">In Focus</option>
               <option value="at_a_glance">At a Glance</option>
               <option value="hidden">Hidden</option>
             </select>
           </div>
-          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]">
             <span class="text-zinc-200">Body Battery</span>
-            <select data-wellness-select="body_battery" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+            <select data-wellness-select="body_battery" class="bg-[#130d21] border border-[#3b2b5e] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
               <option value="in_focus">In Focus</option>
               <option value="at_a_glance">At a Glance</option>
               <option value="hidden">Hidden</option>
             </select>
           </div>
-          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]">
             <span class="text-zinc-200">HRV Status</span>
-            <select data-wellness-select="hrv" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+            <select data-wellness-select="hrv" class="bg-[#130d21] border border-[#3b2b5e] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
               <option value="in_focus">In Focus</option>
               <option value="at_a_glance">At a Glance</option>
               <option value="hidden">Hidden</option>
             </select>
           </div>
-          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]">
             <span class="text-zinc-200">Active Intensity Minutes</span>
-            <select data-wellness-select="intensity_minutes" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+            <select data-wellness-select="intensity_minutes" class="bg-[#130d21] border border-[#3b2b5e] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
               <option value="in_focus">In Focus</option>
               <option value="at_a_glance">At a Glance</option>
               <option value="hidden">Hidden</option>
             </select>
           </div>
-          <div class="flex items-center justify-between p-2 rounded-lg bg-[#18181b]/60 border border-[#1f1f24]">
+          <div class="flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]">
             <span class="text-zinc-200">Daily Calories</span>
-            <select data-wellness-select="calories" class="bg-[#111114] border border-[#27272a] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
+            <select data-wellness-select="calories" class="bg-[#130d21] border border-[#3b2b5e] rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none">
               <option value="in_focus">In Focus</option>
               <option value="at_a_glance">At a Glance</option>
               <option value="hidden">Hidden</option>
@@ -798,7 +805,7 @@
       </div>
 
       <!-- Custom Physiological Thresholds -->
-      <div class="space-y-2.5 pt-2 border-t border-[#1f1f24]">
+      <div class="space-y-2.5 pt-2 border-t border-[#2d2147]">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Personal Physiological Thresholds</div>
         <p class="text-[11px] text-zinc-500">
           FTP is strictly a <span class="text-zinc-300 font-medium">Cycling Power (Watts)</span> metric (Coggan 7-Zone). Leave blank to use your synced Garmin profile defaults.
@@ -806,21 +813,21 @@
         <div class="grid grid-cols-3 gap-3">
           <div>
             <label for="input-custom-max-hr" class="block text-[10px] uppercase text-zinc-400 mb-1">Max HR (bpm)</label>
-            <input id="input-custom-max-hr" type="number" min="120" max="230" placeholder="190" class="w-full bg-[#09090b] border border-[#1f1f24] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
+            <input id="input-custom-max-hr" type="number" min="120" max="230" placeholder="190" class="w-full bg-[#0b0714] border border-[#2d2147] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
           </div>
           <div>
             <label for="input-custom-lthr" class="block text-[10px] uppercase text-zinc-400 mb-1">LTHR (bpm)</label>
-            <input id="input-custom-lthr" type="number" min="100" max="210" placeholder="168" class="w-full bg-[#09090b] border border-[#1f1f24] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
+            <input id="input-custom-lthr" type="number" min="100" max="210" placeholder="168" class="w-full bg-[#0b0714] border border-[#2d2147] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
           </div>
           <div>
             <label for="input-custom-ftp" class="block text-[10px] uppercase text-zinc-400 mb-1">Cycling FTP (W)</label>
-            <input id="input-custom-ftp" type="number" min="50" max="600" placeholder="280" class="w-full bg-[#09090b] border border-[#1f1f24] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
+            <input id="input-custom-ftp" type="number" min="50" max="600" placeholder="280" class="w-full bg-[#0b0714] border border-[#2d2147] rounded-lg px-3 py-1.5 text-xs font-mono text-white" />
           </div>
         </div>
       </div>
 
-      <div class="flex items-center justify-between pt-3 border-t border-[#1f1f24]">
-        <button id="btn-reset-customize" type="button" class="px-3 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white text-xs font-medium transition">
+      <div class="flex items-center justify-between pt-3 border-t border-[#2d2147]">
+        <button id="btn-reset-customize" type="button" class="px-3 py-1.5 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-xs font-medium transition">
           Reset Defaults
         </button>
         <button id="btn-save-customize" type="button" class="px-4 py-1.5 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold transition">
@@ -835,17 +842,17 @@
   <!-- ========================================================================= -->
   <div id="metric-trend-modal" class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 hidden" aria-hidden="true">
     <!-- Backdrop -->
-    <div id="trend-modal-backdrop" class="fixed inset-0 bg-[#09090b]/80 backdrop-blur-md transition-opacity"></div>
+    <div id="trend-modal-backdrop" class="fixed inset-0 bg-[#0b0714]/80 backdrop-blur-md transition-opacity"></div>
 
     <!-- Modal Card Panel -->
-    <div id="trend-modal-panel" class="relative w-full max-w-4xl bg-[#111114] border border-[#1f1f24] rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden z-10 transition-all">
+    <div id="trend-modal-panel" class="relative w-full max-w-4xl bg-[#130d21] border border-[#2d2147] rounded-2xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden z-10 transition-all">
       
       <!-- Modal Header: Metric Identity & Time Selectors -->
-      <div class="px-6 py-4 border-b border-[#1f1f24] flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#111114]">
+      <div class="px-6 py-4 border-b border-[#2d2147] flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#130d21]">
         
         <!-- Metric Title & Badge -->
         <div class="flex items-center space-x-3">
-          <div id="trend-metric-icon" class="w-9 h-9 rounded-xl bg-[#18181b] border border-[#1f1f24] flex items-center justify-center text-zinc-300">
+          <div id="trend-metric-icon" class="w-9 h-9 rounded-xl bg-[#1b132e] border border-[#2d2147] flex items-center justify-center text-zinc-300">
             <!-- Icon injected dynamically -->
           </div>
           <div>
@@ -861,21 +868,21 @@
 
         <!-- Time Interval Selector Bar (1D · 7D · 1M · 1Y · Custom) & Window Actions -->
         <div class="flex items-center space-x-2">
-          <div id="trend-range-selector" class="flex items-center bg-[#09090b] border border-[#1f1f24] rounded-xl p-1">
+          <div id="trend-range-selector" class="flex items-center bg-[#0b0714] border border-[#2d2147] rounded-xl p-1">
             <button type="button" data-trend-range="1d" class="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">1D</button>
-            <button type="button" data-trend-range="7d" class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white shadow-sm transition">7D</button>
+            <button type="button" data-trend-range="7d" class="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#2d2147] text-white shadow-sm transition">7D</button>
             <button type="button" data-trend-range="1m" class="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">1M</button>
             <button type="button" data-trend-range="1y" class="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">1Y</button>
             <button type="button" data-trend-range="custom" class="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition">Custom</button>
           </div>
 
           <!-- Window Action Buttons (Expand & Close) -->
-          <button id="btn-expand-trend-modal" type="button" class="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition" title="Toggle Fullscreen" aria-label="Toggle Fullscreen">
+          <button id="btn-expand-trend-modal" type="button" class="p-1.5 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white transition" title="Toggle Fullscreen" aria-label="Toggle Fullscreen">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
             </svg>
           </button>
-          <button id="btn-close-trend-modal" type="button" class="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition" title="Close Window" aria-label="Close Window">
+          <button id="btn-close-trend-modal" type="button" class="p-1.5 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white transition" title="Close Window" aria-label="Close Window">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
             </svg>
@@ -885,14 +892,14 @@
       </div>
 
       <!-- Date Navigator & Custom Range Bar -->
-      <div class="px-6 py-2.5 bg-[#09090b]/60 border-b border-[#1f1f24] flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div class="px-6 py-2.5 bg-[#0b0714]/60 border-b border-[#2d2147] flex flex-wrap items-center justify-between gap-3 text-xs">
         <!-- Chronological Pagination Controls -->
         <div class="flex items-center space-x-2">
-          <button id="trend-nav-prev" type="button" class="p-1 px-2 rounded bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition text-xs font-mono" title="Previous period">
+          <button id="trend-nav-prev" type="button" class="p-1 px-2 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white transition text-xs font-mono" title="Previous period">
             ◀
           </button>
           <span id="trend-date-label" class="font-mono text-zinc-200 font-medium tracking-tight">Oct 20, 2026 – Oct 26, 2026</span>
-          <button id="trend-nav-next" type="button" class="p-1 px-2 rounded bg-[#18181b] hover:bg-[#27272a] text-zinc-400 hover:text-white transition text-xs font-mono" title="Next period">
+          <button id="trend-nav-next" type="button" class="p-1 px-2 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white transition text-xs font-mono" title="Next period">
             ▶
           </button>
         </div>
@@ -900,9 +907,9 @@
         <!-- Custom Date Range Inputs (hidden unless 'custom' is active) -->
         <div id="trend-custom-date-container" class="hidden flex items-center space-x-2">
           <span class="text-zinc-500 text-[11px] uppercase tracking-wider">From:</span>
-          <input id="trend-input-start-date" type="date" class="bg-[#111114] border border-[#1f1f24] rounded px-2 py-1 text-[11px] text-white font-mono" />
+          <input id="trend-input-start-date" type="date" class="bg-[#130d21] border border-[#2d2147] rounded px-2 py-1 text-[11px] text-white font-mono" />
           <span class="text-zinc-500 text-[11px] uppercase tracking-wider">To:</span>
-          <input id="trend-input-end-date" type="date" class="bg-[#111114] border border-[#1f1f24] rounded px-2 py-1 text-[11px] text-white font-mono" />
+          <input id="trend-input-end-date" type="date" class="bg-[#130d21] border border-[#2d2147] rounded px-2 py-1 text-[11px] text-white font-mono" />
           <button id="trend-btn-apply-custom" type="button" class="px-2.5 py-1 rounded bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-[11px] transition">Apply</button>
           <span id="trend-custom-error" class="hidden text-rose-400 text-[11px] font-sans"></span>
         </div>
@@ -917,14 +924,14 @@
         </div>
 
         <!-- Main Canvas Chart Container -->
-        <div class="bg-[#09090b] border border-[#1f1f24] rounded-xl p-4 flex flex-col relative">
+        <div class="bg-[#0b0714] border border-[#2d2147] rounded-xl p-4 flex flex-col relative">
           <div class="flex items-center justify-between mb-2">
             <span id="trend-chart-legend-label" class="text-[11px] uppercase tracking-wider font-semibold text-zinc-400">Time-Series Trend</span>
             <span id="trend-chart-meta" class="text-[10px] font-mono text-zinc-500">Interactive Canvas 2D Engine</span>
           </div>
           <div class="h-64 sm:h-72 w-full relative">
             <canvas id="metric-trend-chart" class="w-full h-full block"></canvas>
-            <div id="trend-chart-empty" class="hidden absolute inset-0 flex items-center justify-center bg-[#09090b]/90 text-zinc-500 text-xs font-sans">
+            <div id="trend-chart-empty" class="hidden absolute inset-0 flex items-center justify-center bg-[#0b0714]/90 text-zinc-500 text-xs font-sans">
               No wellness telemetry recorded for this date range.
             </div>
           </div>
@@ -936,15 +943,15 @@
             <h4 class="text-xs font-semibold text-zinc-300 uppercase tracking-wider">Historical Log Breakdown</h4>
             <span id="trend-table-count" class="text-[10px] font-mono text-zinc-500">7 records</span>
           </div>
-          <div class="border border-[#1f1f24] rounded-xl overflow-hidden">
+          <div class="border border-[#2d2147] rounded-xl overflow-hidden">
             <div class="overflow-x-auto max-h-52">
               <table class="w-full text-left text-xs">
-                <thead class="bg-[#18181b] text-zinc-400 uppercase text-[10px] font-medium tracking-wider sticky top-0 border-b border-[#1f1f24]">
+                <thead class="bg-[#1b132e] text-zinc-400 uppercase text-[10px] font-medium tracking-wider sticky top-0 border-b border-[#2d2147]">
                   <tr id="trend-table-header-row">
                     <!-- Dynamic table columns -->
                   </tr>
                 </thead>
-                <tbody id="trend-table-body" class="divide-y divide-[#1f1f24]/70 font-mono text-zinc-300">
+                <tbody id="trend-table-body" class="divide-y divide-[#2d2147]/70 font-mono text-zinc-300">
                   <!-- Dynamically populated rows -->
                 </tbody>
               </table>
@@ -954,6 +961,69 @@
 
       </div>
 
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- GARMIN SYNC MODAL (GitHub Actions Dispatch + Live Reload)                 -->
+  <!-- ========================================================================= -->
+  <div id="garmin-sync-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 drawer-backdrop" aria-hidden="true">
+    <div class="bg-[#130d21] border border-[#2d2147] rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
+      <div class="flex items-center justify-between border-b border-[#2d2147] pb-3">
+        <div class="flex items-center space-x-2.5">
+          <span class="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-300 font-bold">↻</span>
+          <div>
+            <h3 class="text-sm font-semibold text-white">Sync from Garmin Connect</h3>
+            <p class="text-[11px] text-zinc-400">Triggers GitHub Actions ingestion & reloads encrypted vault</p>
+          </div>
+        </div>
+        <button id="btn-close-sync-modal" type="button" class="p-1.5 rounded-lg bg-[#1b132e] hover:bg-[#2d2147] text-zinc-400 hover:text-white transition text-xs">✕</button>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <label for="input-gh-sync-token" class="block text-[11px] font-medium uppercase tracking-wider text-zinc-400 mb-1.5">
+            GitHub Token <span class="normal-case text-zinc-500">(saved locally in browser)</span>
+          </label>
+          <input
+            id="input-gh-sync-token"
+            type="password"
+            placeholder="ghp_... or github_pat_... (Actions: write)"
+            class="w-full bg-[#0b0714] border border-[#2d2147] rounded-xl px-3.5 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-purple-400 transition font-mono"
+          />
+          <p class="text-[10px] text-zinc-500 mt-1">
+            Fine-grained PAT with <span class="font-mono text-zinc-400">Actions: Read &amp; Write</span> on <span class="font-mono text-zinc-400">piezoperny/garmin-dash</span>.
+          </p>
+        </div>
+
+        <label class="flex items-center space-x-2.5 text-xs text-zinc-300 cursor-pointer select-none">
+          <input id="checkbox-sync-force" type="checkbox" class="rounded bg-[#0b0714] border-[#2d2147] text-purple-500 focus:ring-purple-500" />
+          <span>Force full refresh (bypass high-water mark)</span>
+        </label>
+
+        <div id="garmin-sync-status" class="hidden rounded-xl p-3 text-xs border border-[#2d2147] bg-[#1b132e] text-purple-200 font-mono">
+          Ready.
+        </div>
+      </div>
+
+      <div class="flex flex-col sm:flex-row gap-2 pt-2 border-t border-[#2d2147]">
+        <button id="btn-trigger-garmin-sync" type="button" class="flex-1 bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-xl text-xs transition flex items-center justify-center space-x-1.5">
+          <span>↻</span>
+          <span>Sync Now</span>
+        </button>
+        <button id="btn-reload-vault-data" type="button" class="px-3.5 py-2 rounded-xl bg-[#1b132e] hover:bg-[#2d2147] text-zinc-200 border border-[#2d2147] text-xs font-semibold transition" title="Re-fetch data.enc without triggering a new workflow">
+          Reload Vault
+        </button>
+      </div>
+
+      <div class="flex items-center justify-between text-[11px] text-zinc-500">
+        <a href="https://github.com/piezoperny/garmin-dash/actions/workflows/sync.yml" target="_blank" rel="noopener noreferrer" class="text-purple-400 hover:text-purple-300 underline underline-offset-2">
+          Open GitHub Actions ↗
+        </a>
+        <button id="btn-clear-gh-token" type="button" class="text-zinc-500 hover:text-rose-400 transition">
+          Clear saved token
+        </button>
+      </div>
     </div>
   </div>
 

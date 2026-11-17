@@ -5,7 +5,7 @@
  * 
  * Features:
  * - Clickable metric cards (Sleep, HRV, Resting HR, Steps, Body Battery, Stress, Intensity Minutes, Calories, Thresholds)
- * - Obsidian Dark / Zinc theme (#09090b, #111114, #1f1f24, #18181b, tabular-nums)
+ * - Obsidian Dark / Zinc theme (#0b0714, #130d21, #2d2147, #1b132e, tabular-nums)
  * - Time range selection: 1D, 7D, 1M, 1Y, and Custom date range
  * - Chronological navigation (◀ / ▶) with automatic boundary clamping
  * - High-DPI Canvas 2D trend charts with goal lines, baseline bands, and stacked stages
@@ -222,7 +222,7 @@ export function getFilteredTelemetryData(metricKey, range, anchorDate, rollup, c
       endDate,
       startIso,
       endIso,
-      records: filtered.length > 0 ? filtered : (range === '1y' || range === '1m' ? rawTrends : filtered),
+      records: filtered.length > 0 ? filtered : (range === '1y' ? rawTrends : filtered),
       totalAvailable: rawTrends.length
     };
   }
@@ -358,7 +358,7 @@ export function renderModalState() {
   rangeButtons.forEach(btn => {
     const r = btn.getAttribute('data-trend-range');
     if (r === state.activeRange) {
-      btn.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white shadow-sm transition';
+      btn.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#2d2147] text-white shadow-sm transition';
     } else {
       btn.className = 'px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition';
     }
@@ -533,25 +533,25 @@ function renderKPICards(metric, records, cfg) {
 
   if (!records || records.length === 0) {
     grid.innerHTML = `
-      <div class="bg-[#18181b] border border-[#1f1f24] rounded-xl p-3 flex flex-col justify-between">
-        <div class="text-[10px] uppercase font-semibold text-zinc-400">Average</div>
-        <div class="text-lg font-bold font-mono text-zinc-500 tabular-nums my-1">—</div>
-        <div class="text-[10px] text-zinc-500">No data</div>
+      <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
+        <div class="text-[10px] uppercase font-semibold text-purple-300/75">Average</div>
+        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">—</div>
+        <div class="text-[10px] text-purple-300/50">No data</div>
       </div>
-      <div class="bg-[#18181b] border border-[#1f1f24] rounded-xl p-3 flex flex-col justify-between">
-        <div class="text-[10px] uppercase font-semibold text-zinc-400">Minimum</div>
-        <div class="text-lg font-bold font-mono text-zinc-500 tabular-nums my-1">—</div>
-        <div class="text-[10px] text-zinc-500">No data</div>
+      <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
+        <div class="text-[10px] uppercase font-semibold text-purple-300/75">Minimum</div>
+        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">—</div>
+        <div class="text-[10px] text-purple-300/50">No data</div>
       </div>
-      <div class="bg-[#18181b] border border-[#1f1f24] rounded-xl p-3 flex flex-col justify-between">
-        <div class="text-[10px] uppercase font-semibold text-zinc-400">Maximum</div>
-        <div class="text-lg font-bold font-mono text-zinc-500 tabular-nums my-1">—</div>
-        <div class="text-[10px] text-zinc-500">No data</div>
+      <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
+        <div class="text-[10px] uppercase font-semibold text-purple-300/75">Maximum</div>
+        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">—</div>
+        <div class="text-[10px] text-purple-300/50">No data</div>
       </div>
-      <div class="bg-[#18181b] border border-[#1f1f24] rounded-xl p-3 flex flex-col justify-between">
-        <div class="text-[10px] uppercase font-semibold text-zinc-400">Period Total</div>
-        <div class="text-lg font-bold font-mono text-zinc-500 tabular-nums my-1">—</div>
-        <div class="text-[10px] text-zinc-500">No data</div>
+      <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
+        <div class="text-[10px] uppercase font-semibold text-purple-300/75">Period Total</div>
+        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">—</div>
+        <div class="text-[10px] text-purple-300/50">No data</div>
       </div>
     `;
     return;
@@ -576,26 +576,32 @@ function renderKPICards(metric, records, cfg) {
     kpi4 = { label: 'Avg Sleep Score', val: `${avgScore} / 100`, sub: avgScore >= 80 ? 'Optimal' : 'Fair' };
   } else if (metric === 'hrv') {
     const vals = records.map(r => r.hrv_last_night_avg || 54);
-    const avg = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+    const variance = vals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / vals.length;
+    const sd = Math.max(3, Math.sqrt(variance));
+    const avg = Math.round(mean);
     const min = Math.min(...vals);
     const max = Math.max(...vals);
     const latest = vals[vals.length - 1];
 
-    kpi1 = { label: '7D Avg HRV', val: `${avg} ms`, sub: 'Rolling baseline' };
+    kpi1 = { label: 'Avg HRV (±SD)', val: `${avg} ± ${Math.round(sd)} ms`, sub: 'Period mean & 1 SD' };
     kpi2 = { label: 'Min HRV', val: `${min} ms`, sub: 'Lowest night' };
     kpi3 = { label: 'Max HRV', val: `${max} ms`, sub: 'Peak vagal tone' };
-    kpi4 = { label: 'Latest Night', val: `${latest} ms`, sub: 'Baseline 48–62 ms' };
+    kpi4 = { label: 'Latest Night', val: `${latest} ms`, sub: `Target ${Math.round(mean - sd)}–${Math.round(mean + sd)} ms` };
   } else if (metric === 'resting_hr') {
     const vals = records.map(r => r.resting_hr || 48);
-    const avg = Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 10) / 10;
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+    const variance = vals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / vals.length;
+    const sd = Math.max(1.5, Math.sqrt(variance));
+    const avg = Math.round(mean * 10) / 10;
     const min = Math.min(...vals);
     const max = Math.max(...vals);
     const latest = vals[vals.length - 1];
 
-    kpi1 = { label: 'Period Avg RHR', val: `${avg} bpm`, sub: 'Mean resting pulse' };
+    kpi1 = { label: 'Avg RHR (±SD)', val: `${avg} ± ${sd.toFixed(1)} bpm`, sub: 'Mean & 1 SD zone' };
     kpi2 = { label: 'Lowest RHR', val: `${min} bpm`, sub: 'Deep rest floor' };
     kpi3 = { label: 'Highest RHR', val: `${max} bpm`, sub: 'Fatigue / stress peak' };
-    kpi4 = { label: 'Latest Day', val: `${latest} bpm`, sub: 'Optimal aerobic recovery' };
+    kpi4 = { label: 'Latest Day', val: `${latest} bpm`, sub: `Target ${Math.round(mean - sd)}–${Math.round(mean + sd)} bpm` };
   } else if (metric === 'steps') {
     const recordedRecs = records.filter(r => !r.unrecorded && (r.steps || 0) > 0);
     const effectiveRecs = recordedRecs.length > 0 ? recordedRecs : records;
@@ -680,27 +686,77 @@ function renderKPICards(metric, records, cfg) {
   }
 
   grid.innerHTML = `
-    <div class="bg-[#18181b] border border-[#1f1f24] rounded-xl p-3 flex flex-col justify-between">
-      <div class="text-[10px] uppercase font-semibold text-zinc-400">${kpi1.label}</div>
-      <div class="text-base sm:text-lg font-bold font-mono text-white tabular-nums my-1">${kpi1.val}</div>
-      <div class="text-[10px] text-zinc-500 font-mono">${kpi1.sub}</div>
+    <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
+      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${kpi1.label}</div>
+      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${kpi1.val}</div>
+      <div class="text-[10px] text-purple-300/60 font-mono">${kpi1.sub}</div>
     </div>
-    <div class="bg-[#18181b] border border-[#1f1f24] rounded-xl p-3 flex flex-col justify-between">
-      <div class="text-[10px] uppercase font-semibold text-zinc-400">${kpi2.label}</div>
-      <div class="text-base sm:text-lg font-bold font-mono text-white tabular-nums my-1">${kpi2.val}</div>
-      <div class="text-[10px] text-zinc-500 font-mono">${kpi2.sub}</div>
+    <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
+      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${kpi2.label}</div>
+      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${kpi2.val}</div>
+      <div class="text-[10px] text-purple-300/60 font-mono">${kpi2.sub}</div>
     </div>
-    <div class="bg-[#18181b] border border-[#1f1f24] rounded-xl p-3 flex flex-col justify-between">
-      <div class="text-[10px] uppercase font-semibold text-zinc-400">${kpi3.label}</div>
-      <div class="text-base sm:text-lg font-bold font-mono text-white tabular-nums my-1">${kpi3.val}</div>
-      <div class="text-[10px] text-zinc-500 font-mono">${kpi3.sub}</div>
+    <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
+      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${kpi3.label}</div>
+      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${kpi3.val}</div>
+      <div class="text-[10px] text-purple-300/60 font-mono">${kpi3.sub}</div>
     </div>
-    <div class="bg-[#18181b] border border-[#1f1f24] rounded-xl p-3 flex flex-col justify-between">
-      <div class="text-[10px] uppercase font-semibold text-zinc-400">${kpi4.label}</div>
+    <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
+      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${kpi4.label}</div>
       <div class="text-base sm:text-lg font-bold font-mono text-emerald-400 tabular-nums my-1">${kpi4.val}</div>
-      <div class="text-[10px] text-zinc-500 font-mono">${kpi4.sub}</div>
+      <div class="text-[10px] text-purple-300/60 font-mono">${kpi4.sub}</div>
     </div>
   `;
+}
+
+/**
+ * Computes rolling Mean ± 1 Standard Deviation baseline band for HRV & Resting HR.
+ */
+function computeRollingBaselineBand(records, valueGetter, minSd = 3, windowSize = 14) {
+  const allDaily = getSortedDailyRecords(state.activeRollup);
+  const source = allDaily.length >= records.length ? allDaily : records;
+  const dateIndexMap = new Map();
+  source.forEach((r, idx) => {
+    if (r?.date) dateIndexMap.set(r.date, idx);
+  });
+
+  const periodVals = records.map(valueGetter).filter(v => typeof v === 'number' && !isNaN(v));
+  const periodMean = periodVals.length > 0 ? periodVals.reduce((s, v) => s + v, 0) / periodVals.length : 0;
+  const periodVar = periodVals.length > 0
+    ? periodVals.reduce((s, v) => s + Math.pow(v - periodMean, 2), 0) / periodVals.length
+    : 0;
+  const periodSd = Math.max(minSd, Math.sqrt(periodVar));
+
+  const yMinSeries = [];
+  const yMaxSeries = [];
+  const meanSeries = [];
+
+  records.forEach((rec, i) => {
+    const srcIdx = rec?.date && dateIndexMap.has(rec.date) ? dateIndexMap.get(rec.date) : -1;
+    let windowVals = [];
+    if (srcIdx >= 0) {
+      const start = Math.max(0, srcIdx - windowSize + 1);
+      windowVals = source.slice(start, srcIdx + 1).map(valueGetter).filter(v => typeof v === 'number' && !isNaN(v));
+    } else {
+      const start = Math.max(0, i - windowSize + 1);
+      windowVals = records.slice(start, i + 1).map(valueGetter).filter(v => typeof v === 'number' && !isNaN(v));
+    }
+
+    if (windowVals.length < 3) {
+      meanSeries.push(periodMean);
+      yMinSeries.push(periodMean - periodSd);
+      yMaxSeries.push(periodMean + periodSd);
+    } else {
+      const m = windowVals.reduce((s, v) => s + v, 0) / windowVals.length;
+      const v = windowVals.reduce((s, val) => s + Math.pow(val - m, 2), 0) / windowVals.length;
+      const sd = Math.max(minSd, Math.sqrt(v));
+      meanSeries.push(m);
+      yMinSeries.push(m - sd);
+      yMaxSeries.push(m + sd);
+    }
+  });
+
+  return { yMinSeries, yMaxSeries, meanSeries, periodMean, periodSd };
 }
 
 /**
@@ -764,37 +820,18 @@ function renderMetricChart(metric, records, startDate, endDate) {
   } else if (metric === 'hrv') {
     const nightly = records.map(r => r.hrv_last_night_avg || 54);
     const weekly = records.map(r => r.hrv_weekly_avg || 53);
+    const band = computeRollingBaselineBand(records, r => r.hrv_last_night_avg || 54, 3, 14);
+    const pointColors = nightly.map((v, i) =>
+      v >= band.yMinSeries[i] && v <= band.yMaxSeries[i] ? '#10b981' : '#f59e0b'
+    );
 
     chartConfig = {
       type: 'line',
       data: {
         labels,
         datasets: [
-          { label: 'Nightly HRV (ms)', data: nightly, borderColor: '#10b981', borderWidth: 2, fill: true },
-          { label: '7D Rolling Avg', data: weekly, borderColor: '#34d399', borderWidth: 1.5 }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: false },
-          y: { stacked: false, min: 30, max: 85 }
-        },
-        annotations: [
-          { type: 'band', yMin: 48, yMax: 62, color: 'rgba(16, 185, 129, 0.12)', label: 'Baseline (48–62 ms)' }
-        ]
-      }
-    };
-  } else if (metric === 'resting_hr') {
-    const rhr = records.map(r => r.resting_hr || 48);
-    const rhrAvg = records.map(r => r.resting_hr_7d_avg || 48);
-
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Daily RHR (bpm)', data: rhr, borderColor: '#f43f5e', borderWidth: 2, fill: true },
-          { label: '7D Avg (bpm)', data: rhrAvg, borderColor: '#fb7185', borderWidth: 1.5 }
+          { label: 'Nightly HRV (ms)', data: nightly, borderColor: '#10b981', borderWidth: 2, fill: false, pointColors, pointRadius: 3.5 },
+          { label: '7D Rolling Avg', data: weekly, borderColor: '#c084fc', borderWidth: 1.5, pointRadius: 1.5 }
         ]
       },
       options: {
@@ -803,7 +840,52 @@ function renderMetricChart(metric, records, startDate, endDate) {
           y: { stacked: false }
         },
         annotations: [
-          { type: 'band', yMin: 44, yMax: 54, color: 'rgba(244, 63, 94, 0.08)', label: 'Normal Range (44-54 bpm)' }
+          {
+            type: 'band',
+            yMinSeries: band.yMinSeries,
+            yMaxSeries: band.yMaxSeries,
+            meanSeries: band.meanSeries,
+            color: 'rgba(168, 85, 247, 0.16)',
+            borderColor: 'rgba(192, 132, 252, 0.25)',
+            meanColor: 'rgba(216, 180, 254, 0.65)',
+            label: `Baseline Zone (Avg ${Math.round(band.periodMean)} ± ${Math.round(band.periodSd)} ms)`
+          }
+        ]
+      }
+    };
+  } else if (metric === 'resting_hr') {
+    const rhr = records.map(r => r.resting_hr || 48);
+    const rhrAvg = records.map(r => r.resting_hr_7d_avg || 48);
+    const band = computeRollingBaselineBand(records, r => r.resting_hr || 48, 1.5, 14);
+    const pointColors = rhr.map((v, i) =>
+      v >= band.yMinSeries[i] && v <= band.yMaxSeries[i] ? '#10b981' : '#f43f5e'
+    );
+
+    chartConfig = {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Daily RHR (bpm)', data: rhr, borderColor: '#f43f5e', borderWidth: 2, fill: false, pointColors, pointRadius: 3.5 },
+          { label: '7D Avg (bpm)', data: rhrAvg, borderColor: '#c084fc', borderWidth: 1.5, pointRadius: 1.5 }
+        ]
+      },
+      options: {
+        scales: {
+          x: { stacked: false },
+          y: { stacked: false }
+        },
+        annotations: [
+          {
+            type: 'band',
+            yMinSeries: band.yMinSeries,
+            yMaxSeries: band.yMaxSeries,
+            meanSeries: band.meanSeries,
+            color: 'rgba(168, 85, 247, 0.16)',
+            borderColor: 'rgba(192, 132, 252, 0.25)',
+            meanColor: 'rgba(216, 180, 254, 0.65)',
+            label: `Target Zone (Avg ${band.periodMean.toFixed(1)} ± ${band.periodSd.toFixed(1)} bpm)`
+          }
         ]
       }
     };
@@ -994,7 +1076,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const remH = (((r.sleep_rem_seconds || 0) / 3600)).toFixed(1);
       const qual = r.sleep_quality || (score >= 80 ? 'Good' : 'Fair');
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-white font-mono">${Math.floor(h)}h ${Math.round((h % 1) * 60)}m</td>
           <td class="py-2 px-3 text-right text-amber-400 font-mono">${score}</td>
@@ -1019,7 +1101,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const wk = r.hrv_weekly_avg || 53;
       const st = r.hrv_status || 'Balanced';
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${ln} ms</td>
           <td class="py-2 px-3 text-right text-zinc-400 font-mono">${wk} ms</td>
@@ -1046,7 +1128,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const isUnrecorded = Boolean(r.unrecorded || ((r.steps === 0 || r.steps === null) && records.some(x => x.unrecorded)));
       if (isUnrecorded && (r.steps === 0 || r.steps === null)) {
         return `
-          <tr class="hover:bg-[#18181b]/50 transition opacity-60">
+          <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
             <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
             <td class="py-2 px-3 text-right text-zinc-500 font-mono italic">Unrecorded</td>
             <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
@@ -1059,7 +1141,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const delta = s - avg;
       const deltaStr = `${delta >= 0 ? '+' : ''}${delta.toLocaleString()}`;
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-white font-mono font-bold">${s.toLocaleString()}</td>
           <td class="py-2 px-3 text-right ${pct >= 100 ? 'text-emerald-400' : 'text-zinc-400'} font-mono">${pct}%</td>
@@ -1080,7 +1162,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const r7 = r.resting_hr_7d_avg || val;
       const delta = Math.round((val - avg) * 10) / 10;
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-rose-400 font-mono font-bold">${val} bpm</td>
           <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r7} bpm</td>
@@ -1098,7 +1180,7 @@ function renderBreakdownTable(metric, records, cfg) {
     `;
     tbody.innerHTML = displayRecords.map(r => {
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${r.body_battery_high ?? 90}</td>
           <td class="py-2 px-3 text-right text-rose-400 font-mono">${r.body_battery_low ?? 25}</td>
@@ -1118,7 +1200,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const sc = (typeof r.stress_level === 'number' && !isNaN(r.stress_level)) ? r.stress_level : 24;
       const q = r.stress_qualifier || (sc < 25 ? 'Rest' : 'Low');
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-amber-400 font-mono font-bold">${sc}</td>
           <td class="py-2 px-3 text-right text-zinc-300 font-mono">${q}</td>
@@ -1142,7 +1224,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const v = r.intensity_minutes_vigorous || 0;
       const tot = m + v * 2;
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-sky-400 font-mono">${m} min</td>
           <td class="py-2 px-3 text-right text-indigo-400 font-mono">${v} min</td>
@@ -1162,7 +1244,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const bmr = (typeof r.bmr_calories === 'number' && !isNaN(r.bmr_calories)) ? r.bmr_calories : 1730;
       const tot = (typeof r.daily_calories === 'number' && !isNaN(r.daily_calories)) ? r.daily_calories : (act + bmr);
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-orange-400 font-mono">${act.toLocaleString()} kcal</td>
           <td class="py-2 px-3 text-right text-zinc-400 font-mono">${bmr.toLocaleString()} kcal</td>
@@ -1182,7 +1264,7 @@ function renderBreakdownTable(metric, records, cfg) {
       const vo2 = (typeof r.vo2max === 'number' && !isNaN(r.vo2max)) ? r.vo2max : 54;
       const lthr = (typeof r.lthr === 'number' && !isNaN(r.lthr)) ? r.lthr : 168;
       return `
-        <tr class="hover:bg-[#18181b]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-purple-400 font-mono font-bold">${ftp} W</td>
           <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${vo2} ml/kg</td>

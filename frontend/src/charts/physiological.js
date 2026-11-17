@@ -232,7 +232,7 @@ export function renderPowerZoneChart(rollup, customThresholds = null) {
         emptyEl.id = emptyNoticeId;
         emptyEl.className = 'flex flex-col items-center justify-center h-full min-h-[260px] text-center p-4';
         emptyEl.innerHTML = `
-          <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#1f1f24] flex items-center justify-center mb-3">
+          <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#2d2147] flex items-center justify-center mb-3">
             <svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>

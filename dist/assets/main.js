@@ -33,6 +33,7 @@ import {
 } from './charts/physiological.js';
 import {
   renderActivityTable,
+  renderTodayActivityBanner,
   setupActivityEventListeners,
   setActivitySportFilter
 } from './charts/activities.js';
@@ -397,9 +398,9 @@ function updateSportFilter(sport) {
       return;
     }
     if (match.includes(normalized)) {
-      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white shadow-sm';
+      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#2d2147] text-white border border-purple-500/40 shadow-sm';
     } else {
-      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition-colors';
+      btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-purple-300/75 hover:text-white transition-colors';
     }
   });
 
@@ -408,9 +409,9 @@ function updateSportFilter(sport) {
     filterBar.querySelectorAll('[data-dynamic-sport]').forEach(btn => {
       const sp = btn.getAttribute('data-dynamic-sport');
       if (sp === normalized) {
-        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#1f1f24] text-white shadow-sm';
+        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#2d2147] text-white border border-purple-500/40 shadow-sm';
       } else {
-        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition-colors';
+        btn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-purple-300/75 hover:text-white transition-colors';
       }
     });
   }
@@ -594,21 +595,171 @@ export async function initApp() {
     unitBtn.addEventListener('click', toggleDistanceUnit);
   }
 
-  // Attach Header Reprocess listener
-  const headerReprocessBtn = document.getElementById('btn-header-reprocess');
-  if (headerReprocessBtn) {
-    headerReprocessBtn.addEventListener('click', () => {
-      const count = reprocessAllActivities();
-      if (activeRollup) {
-        renderDashboard(activeRollup);
+  // Attach Header Garmin Sync Modal & Workflow Dispatch
+  const GH_TOKEN_STORAGE_KEY = 'garmin_dash_gh_pat';
+  const headerSyncBtn = document.getElementById('btn-header-sync');
+  const syncModal = document.getElementById('garmin-sync-modal');
+  const closeSyncBtn = document.getElementById('btn-close-sync-modal');
+  const triggerSyncBtn = document.getElementById('btn-trigger-garmin-sync');
+  const reloadVaultBtn = document.getElementById('btn-reload-vault-data');
+  const clearTokenBtn = document.getElementById('btn-clear-gh-token');
+  const tokenInput = document.getElementById('input-gh-sync-token');
+  const forceCheck = document.getElementById('checkbox-sync-force');
+  const syncStatusEl = document.getElementById('garmin-sync-status');
+
+  const setSyncStatus = (msg, tone = 'info') => {
+    if (!syncStatusEl) return;
+    syncStatusEl.classList.remove('hidden');
+    syncStatusEl.textContent = msg;
+    syncStatusEl.className = `rounded-xl p-3 text-xs border font-mono ${
+      tone === 'error'
+        ? 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+        : tone === 'success'
+        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+        : 'border-[#2d2147] bg-[#1b132e] text-purple-200'
+    }`;
+  };
+
+  const reloadEncryptedVault = async () => {
+    const cachedKey = getStoredKey();
+    if (!cachedKey) {
+      setSyncStatus('Session key missing. Please unlock the vault again.', 'error');
+      return false;
+    }
+    const wireData = await fetchEncryptedData();
+    const payload = await decryptWithRawKey(cachedKey, wireData);
+    saveSession(cachedKey, payload);
+    showDashboard(payload);
+    return true;
+  };
+
+  if (headerSyncBtn && syncModal) {
+    headerSyncBtn.addEventListener('click', () => {
+      try {
+        const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(GH_TOKEN_STORAGE_KEY) : '';
+        if (tokenInput && saved) tokenInput.value = saved;
+      } catch {}
+      syncModal.classList.remove('hidden');
+      syncModal.setAttribute('aria-hidden', 'false');
+    });
+  }
+
+  if (closeSyncBtn && syncModal) {
+    closeSyncBtn.addEventListener('click', () => {
+      syncModal.classList.add('hidden');
+      syncModal.setAttribute('aria-hidden', 'true');
+    });
+  }
+
+  if (clearTokenBtn && tokenInput) {
+    clearTokenBtn.addEventListener('click', () => {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.removeItem(GH_TOKEN_STORAGE_KEY);
+      } catch {}
+      tokenInput.value = '';
+      setSyncStatus('Saved GitHub token cleared.', 'info');
+    });
+  }
+
+  if (reloadVaultBtn) {
+    reloadVaultBtn.addEventListener('click', async () => {
+      reloadVaultBtn.disabled = true;
+      setSyncStatus('Fetching latest encrypted vault (data.enc)...', 'info');
+      try {
+        const ok = await reloadEncryptedVault();
+        if (ok) {
+          setSyncStatus('✓ Vault reloaded with latest data.', 'success');
+        }
+      } catch (err) {
+        setSyncStatus(`Reload failed: ${err?.message || err}`, 'error');
+      } finally {
+        reloadVaultBtn.disabled = false;
       }
-      const origHtml = headerReprocessBtn.innerHTML;
-      headerReprocessBtn.innerHTML = `<span class="text-emerald-400">✓ Reprocessed ${count}</span>`;
-      headerReprocessBtn.disabled = true;
-      setTimeout(() => {
-        headerReprocessBtn.innerHTML = origHtml;
-        headerReprocessBtn.disabled = false;
-      }, 2500);
+    });
+  }
+
+  if (triggerSyncBtn) {
+    triggerSyncBtn.addEventListener('click', async () => {
+      const token = (tokenInput?.value || '').trim();
+      if (!token) {
+        setSyncStatus('Enter a GitHub PAT (Actions: Read & Write) to dispatch sync.', 'error');
+        return;
+      }
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(GH_TOKEN_STORAGE_KEY, token);
+      } catch {}
+
+      const forceRefresh = Boolean(forceCheck?.checked);
+      triggerSyncBtn.disabled = true;
+      setSyncStatus('Dispatching Garmin Sync & Deploy workflow...', 'info');
+
+      try {
+        const dispatchAt = Date.now();
+        const dispResp = await fetch(
+          'https://api.github.com/repos/piezoperny/garmin-dash/actions/workflows/sync.yml/dispatches',
+          {
+            method: 'POST',
+            headers: {
+              Accept: 'application/vnd.github+json',
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              ref: 'main',
+              inputs: { force_refresh: forceRefresh, mock_mode: false }
+            })
+          }
+        );
+
+        if (!dispResp.ok) {
+          const errText = await dispResp.text().catch(() => '');
+          throw new Error(`GitHub API ${dispResp.status}: ${errText || dispResp.statusText}`);
+        }
+
+        setSyncStatus('Workflow queued on GitHub Actions. Waiting for runner...', 'info');
+
+        // Poll up to ~4 minutes (48 * 5s)
+        let completed = false;
+        for (let attempt = 0; attempt < 48; attempt++) {
+          await new Promise(r => setTimeout(r, 5000));
+          const runsResp = await fetch(
+            'https://api.github.com/repos/piezoperny/garmin-dash/actions/workflows/sync.yml/runs?event=workflow_dispatch&per_page=3',
+            {
+              headers: {
+                Accept: 'application/vnd.github+json',
+                Authorization: `Bearer ${token}`
+              }
+            }
+          );
+          if (!runsResp.ok) continue;
+          const runsJson = await runsResp.json();
+          const run = (runsJson.workflow_runs || []).find(
+            r => new Date(r.created_at).getTime() >= dispatchAt - 15000
+          ) || runsJson.workflow_runs?.[0];
+
+          if (!run) continue;
+          if (run.status === 'completed') {
+            if (run.conclusion === 'success') {
+              setSyncStatus('Sync & deploy succeeded! Reloading encrypted vault...', 'info');
+              await new Promise(r => setTimeout(r, 2500));
+              await reloadEncryptedVault();
+              setSyncStatus('✓ Garmin sync complete & dashboard updated.', 'success');
+              completed = true;
+              break;
+            }
+            throw new Error(`Workflow finished with status: ${run.conclusion}`);
+          }
+          setSyncStatus(`Syncing Garmin data (${run.status.replace(/_/g, ' ')})...`, 'info');
+        }
+
+        if (!completed) {
+          setSyncStatus('Sync is still running on GitHub Actions. Click "Reload Vault" once it finishes.', 'info');
+        }
+      } catch (err) {
+        setSyncStatus(`Sync error: ${err?.message || err}`, 'error');
+      } finally {
+        triggerSyncBtn.disabled = false;
+      }
     });
   }
 

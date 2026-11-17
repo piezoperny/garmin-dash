@@ -94,7 +94,7 @@ export function renderBackupVaultExplorer(rollup, onSelectYear = null) {
     formatsEl.innerHTML = '';
     vault.formats.forEach(fmt => {
       const badge = document.createElement('span');
-      badge.className = 'px-2 py-0.5 rounded bg-[#18181b] border border-[#1f1f24] text-[10px] font-mono text-zinc-300';
+      badge.className = 'px-2 py-0.5 rounded bg-[#1b132e] border border-[#2d2147] text-[10px] font-mono text-zinc-300';
       badge.textContent = `.${String(fmt).toLowerCase()}`;
       formatsEl.appendChild(badge);
     });
@@ -111,14 +111,14 @@ export function renderBackupVaultExplorer(rollup, onSelectYear = null) {
       const pct = Math.min(100, Math.max(8, Math.round((count / maxCount) * 100)));
 
       const card = document.createElement('div');
-      card.className = 'bg-[#18181b]/60 hover:bg-[#1f1f24]/80 border border-[#1f1f24] rounded-lg p-3 transition cursor-pointer';
+      card.className = 'bg-[#1b132e]/60 hover:bg-[#2d2147]/80 border border-[#2d2147] rounded-lg p-3 transition cursor-pointer';
       card.setAttribute('data-archive-year', yr);
       card.innerHTML = `
         <div class="flex items-center justify-between mb-1.5">
           <span class="text-xs font-semibold font-mono text-white">${yr} Archive</span>
           <span class="text-[11px] font-mono text-emerald-400 tabular-nums">${count} files</span>
         </div>
-        <div class="w-full h-1.5 bg-[#09090b] rounded-full overflow-hidden">
+        <div class="w-full h-1.5 bg-[#0b0714] rounded-full overflow-hidden">
           <div class="h-full bg-emerald-400/80 rounded-full" style="width: ${pct}%"></div>
         </div>
         <div class="mt-1.5 flex items-center justify-between text-[10px] text-zinc-500 font-mono">

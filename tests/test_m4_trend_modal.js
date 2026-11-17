@@ -484,19 +484,19 @@ async function runMilestone4TestSuite() {
 
   await test('M4-LOGIC-03: Time range selector switches to 1D view and renders single day', () => {
     trendsModal.setTimeRange('1d');
-    assert.strictEqual(r1d.classList.contains('bg-[#1f1f24]'), true);
+    assert.strictEqual(r1d.classList.contains('bg-[#2d2147]'), true);
     assert.strictEqual(tableCountEl.textContent, '1 records');
   });
 
   await test('M4-LOGIC-04: Time range selector switches to 1M (30 days) and filters correctly', () => {
     trendsModal.setTimeRange('1m');
-    assert.strictEqual(r1m.classList.contains('bg-[#1f1f24]'), true);
+    assert.strictEqual(r1m.classList.contains('bg-[#2d2147]'), true);
     assert.strictEqual(tableCountEl.textContent, '30 records');
   });
 
   await test('M4-LOGIC-05: Time range selector switches to 1Y and gracefully handles available history', () => {
     trendsModal.setTimeRange('1y');
-    assert.strictEqual(r1y.classList.contains('bg-[#1f1f24]'), true);
+    assert.strictEqual(r1y.classList.contains('bg-[#2d2147]'), true);
     assert.strictEqual(tableCountEl.textContent, '56 records');
     assert.ok(dateLabelEl.textContent.includes('days recorded'));
   });

@@ -4,21 +4,22 @@
 
 :root {
   color-scheme: dark;
-  --bg-obsidian: #09090b;
-  --bg-surface: #111114;
-  --border-hairline: #1f1f24;
-  --border-subtle: #27272a;
-  --text-main: #f4f4f5;
-  --text-muted: #a1a1aa;
-  --text-dim: #71717a;
+  --bg-obsidian: #0b0714;
+  --bg-surface: #130d21;
+  --bg-subtle: #1b132e;
+  --border-hairline: #2d2147;
+  --border-subtle: #433269;
+  --text-main: #f5f3ff;
+  --text-muted: #c4b5fd;
+  --text-dim: #8b7fa8;
 }
 
 body {
   margin: 0;
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  background-color: #09090b;
-  color: #f4f4f5;
+  background-color: #0b0714;
+  color: #f5f3ff;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -55,14 +56,14 @@ table,
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #09090b;
+  background: #0b0714;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1f1f24;
+  background: #2d2147;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #27272a;
+  background: #433269;
 }
 
 /* Smooth minimal card hover */
@@ -70,45 +71,45 @@ table,
   transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 .transition-card:hover {
-  border-color: #27272a;
+  border-color: #5b4394;
 }
 
 /* Minimalist Sport Badges */
 .badge-cycling {
-  background-color: rgba(56, 189, 248, 0.08);
+  background-color: rgba(56, 189, 248, 0.12);
   color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.28);
 }
 .badge-hiking {
-  background-color: rgba(52, 211, 153, 0.08);
+  background-color: rgba(52, 211, 153, 0.12);
   color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.2);
+  border: 1px solid rgba(52, 211, 153, 0.28);
 }
 .badge-running {
-  background-color: rgba(52, 211, 153, 0.08);
+  background-color: rgba(52, 211, 153, 0.12);
   color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.2);
+  border: 1px solid rgba(52, 211, 153, 0.28);
 }
 .badge-walking {
-  background-color: rgba(16, 185, 129, 0.08);
+  background-color: rgba(16, 185, 129, 0.12);
   color: #10b981;
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.28);
 }
 .badge-strength,
 .badge-weights {
-  background-color: rgba(251, 191, 36, 0.08);
+  background-color: rgba(251, 191, 36, 0.12);
   color: #fbbf24;
-  border: 1px solid rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.28);
 }
 .badge-other {
-  background-color: rgba(161, 161, 170, 0.08);
-  color: #a1a1aa;
-  border: 1px solid rgba(161, 161, 170, 0.2);
+  background-color: rgba(196, 181, 253, 0.12);
+  color: #c4b5fd;
+  border: 1px solid rgba(196, 181, 253, 0.25);
 }
 
 /* Drawer Backdrop */
 .drawer-backdrop {
-  background: rgba(9, 9, 11, 0.82);
+  background: rgba(11, 7, 20, 0.85);
   backdrop-filter: blur(10px);
 }
 

@@ -288,7 +288,7 @@ export function applyFiltersAndRender() {
 
   visibleActivities.forEach(act => {
     const row = document.createElement('tr');
-    row.className = 'hover:bg-[#18181b]/60 cursor-pointer border-b border-[#1f1f24] transition-colors duration-150';
+    row.className = 'hover:bg-[#1b132e]/60 cursor-pointer border-b border-[#2d2147] transition-colors duration-150';
 
     const sport = (act.sport || '').toLowerCase();
     const isStrength = sport === 'strength' || sport === 'weights';
@@ -345,15 +345,15 @@ export function applyFiltersAndRender() {
 
   if (filtered.length > visibleActivities.length) {
     const footerRow = document.createElement('tr');
-    footerRow.className = 'border-t border-[#1f1f24] bg-[#0d0d10]';
+    footerRow.className = 'border-t border-[#2d2147] bg-[#0d0d10]';
     footerRow.innerHTML = `
       <td colspan="8" class="py-3 px-4 text-center">
         <div class="flex items-center justify-center gap-3 text-xs text-zinc-400">
           <span>Showing ${visibleActivities.length} of ${filtered.length} activities</span>
-          <button type="button" id="btn-show-more-activities" class="px-3 py-1 rounded-md bg-[#18181b] hover:bg-[#27272a] text-zinc-200 border border-[#27272a] transition-colors">
+          <button type="button" id="btn-show-more-activities" class="px-3 py-1 rounded-md bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-200 border border-[#3b2b5e] transition-colors">
             Show more (+${ACTIVITY_PAGE_SIZE})
           </button>
-          <button type="button" id="btn-show-all-activities" class="px-3 py-1 rounded-md bg-[#18181b] hover:bg-[#27272a] text-emerald-400 border border-[#27272a] transition-colors">
+          <button type="button" id="btn-show-all-activities" class="px-3 py-1 rounded-md bg-[#1b132e] hover:bg-[#3b2b5e] text-emerald-400 border border-[#3b2b5e] transition-colors">
             Show all
           </button>
         </div>
@@ -546,7 +546,7 @@ export function openActivityDrawer(act, unit = 'km') {
         }
 
         const tr = document.createElement('tr');
-        tr.className = 'border-b border-[#1f1f24] text-xs font-mono text-zinc-300 tabular-nums';
+        tr.className = 'border-b border-[#2d2147] text-xs font-mono text-zinc-300 tabular-nums';
         tr.innerHTML = `
           <td class="py-2 px-3 text-zinc-400">#${splitNum}</td>
           <td class="py-2 px-3 text-white font-semibold">${splitDist}</td>
@@ -935,7 +935,7 @@ function renderFallbackProfile(ctx, act, width, height, isStrength, unit) {
   const splits = (act && Array.isArray(act.splits)) ? act.splits : [];
   if (splits.length === 0) {
     if (typeof ctx.fillRect === 'function') {
-      ctx.fillStyle = '#111114';
+      ctx.fillStyle = '#130d21';
       ctx.fillRect(0, 0, width, height);
     }
     ctx.fillStyle = '#71717a';
@@ -971,7 +971,7 @@ function renderFallbackProfile(ctx, act, width, height, isStrength, unit) {
   const getY = (val) => padTop + (1 - (val - minHR) / Math.max(1, maxHR - minHR)) * plotH;
 
   // Gridlines & Right Y-Axis Heart Rate labels
-  ctx.strokeStyle = '#1f1f24';
+  ctx.strokeStyle = '#2d2147';
   ctx.lineWidth = 1;
   for (let s = 0; s <= 4; s++) {
     const y = padTop + (s / 4) * plotH;
@@ -1233,7 +1233,7 @@ export function renderActivityProfileChart(act, unit = 'km') {
     }
 
     // 1. Gridlines & Dynamic Y-Axes labels
-    ctx.strokeStyle = '#1f1f24';
+    ctx.strokeStyle = '#2d2147';
     ctx.lineWidth = 1;
     for (let step = 0; step <= 4; step++) {
       const y = padTop + (step / 4) * plotH;
@@ -1685,3 +1685,178 @@ export function setActivitySportFilter(sport) {
   currentFilter = sport;
   applyFiltersAndRender();
 }
+
+function renderMiniRouteSvg(act) {
+  let coords = [];
+  const poly = act?.summary_polyline || act?.polyline || act?.gps_track?.encoded_polyline;
+  if (typeof poly === 'string' && poly.length > 0) {
+    coords = decodePolyline(poly);
+  } else if (Array.isArray(act?.gps_track?.points) && act.gps_track.points.length > 1) {
+    coords = act.gps_track.points.map(p => [p[0], p[1]]);
+  }
+  if (!coords || coords.length < 2) return '';
+
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const [lat, lng] of coords) {
+    if (typeof lat !== 'number' || typeof lng !== 'number' || isNaN(lat) || isNaN(lng)) continue;
+    if (Math.abs(lat) < 1e-4 && Math.abs(lng) < 1e-4) continue;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+  }
+  if (!isFinite(minLat) || !isFinite(maxLat)) return '';
+
+  const w = 140;
+  const h = 64;
+  const pad = 6;
+  const latSpan = Math.max(maxLat - minLat, 1e-5);
+  const lngSpan = Math.max(maxLng - minLng, 1e-5);
+  const scale = Math.min((w - pad * 2) / lngSpan, (h - pad * 2) / latSpan);
+  const xOff = (w - lngSpan * scale) / 2;
+  const yOff = (h - latSpan * scale) / 2;
+
+  const step = Math.max(1, Math.floor(coords.length / 80));
+  const pts = [];
+  for (let i = 0; i < coords.length; i += step) {
+    const [lat, lng] = coords[i];
+    if (Math.abs(lat) < 1e-4 && Math.abs(lng) < 1e-4) continue;
+    const x = (xOff + (lng - minLng) * scale).toFixed(1);
+    const y = (h - (yOff + (lat - minLat) * scale)).toFixed(1);
+    pts.push(`${x},${y}`);
+  }
+  if (pts.length < 2) return '';
+  const startPt = pts[0].split(',');
+  const endPt = pts[pts.length - 1].split(',');
+
+  return `
+    <div class="hidden sm:flex items-center justify-center bg-[#0b0714]/80 border border-[#2d2147] rounded-xl px-3 py-2 shrink-0">
+      <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" class="overflow-visible">
+        <polyline fill="none" stroke="#a855f7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" points="${pts.join(' ')}" />
+        <circle cx="${startPt[0]}" cy="${startPt[1]}" r="3" fill="#10b981" />
+        <circle cx="${endPt[0]}" cy="${endPt[1]}" r="3" fill="#f43f5e" />
+      </svg>
+    </div>
+  `;
+}
+
+/**
+ * Renders Today's (or Latest) Activity minimalistic hero card at the top of the homepage.
+ * @param {Array} activities
+ * @param {string} unit - 'km' or 'mi'
+ */
+export function renderTodayActivityBanner(activities, unit = 'km') {
+  const container = document.getElementById('today-activity-section');
+  if (!container) return;
+
+  if (!Array.isArray(activities) || activities.length === 0) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+
+  const sorted = [...activities].sort((a, b) => {
+    const da = String(a?.date || a?.start_time || '');
+    const db = String(b?.date || b?.start_time || '');
+    return db.localeCompare(da);
+  });
+  const act = sorted[0];
+  if (!act) {
+    container.classList.add('hidden');
+    return;
+  }
+
+  const rawDate = String(act.start_time || act.date || '');
+  const actDateOnly = rawDate.slice(0, 10);
+  const now = new Date();
+  const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const isToday = actDateOnly === todayIso;
+
+  let timeLabel = formatDate(rawDate);
+  const timeMatch = rawDate.match(/T(\d{2}:\d{2})/);
+  if (isToday) {
+    timeLabel = timeMatch ? `Today @ ${timeMatch[1]}` : 'Today';
+  } else if (timeMatch) {
+    timeLabel = `${formatDate(rawDate)} @ ${timeMatch[1]}`;
+  }
+
+  const sport = String(act.sport || 'other').toLowerCase();
+  const sportLabel = sport.charAt(0).toUpperCase() + sport.slice(1).replace(/_/g, ' ');
+  const isStrength = sport === 'strength' || sport === 'weights';
+  const distM = Number(act.distance_meters || 0);
+  const durSec = Number(act.duration_seconds || 0);
+  const elevM = Number(act.elevation_gain_meters || 0);
+  const calories = Number(act.calories || 0);
+  const avgHr = Number(act.avg_hr || 0);
+
+  const metrics = [];
+  if (!isStrength && distM > 0) {
+    metrics.push({ label: 'Distance', value: formatDistance(distM, unit) });
+  }
+  if (durSec > 0) {
+    metrics.push({ label: 'Time', value: formatSplitDuration(durSec) });
+  }
+  if (!isStrength && sport === 'cycling' && distM > 0 && durSec > 0) {
+    metrics.push({ label: 'Avg Speed', value: formatSpeed(distM / durSec, unit) });
+  } else if (!isStrength && act.avg_pace_sec_km > 0) {
+    metrics.push({ label: 'Avg Pace', value: formatPace(act.avg_pace_sec_km, unit) });
+  }
+  if (!isStrength && elevM > 0) {
+    metrics.push({ label: 'Total Ascent', value: formatElevation(elevM, unit) });
+  }
+  if (calories > 0) {
+    metrics.push({ label: 'Calories', value: `${calories.toLocaleString()} kcal` });
+  }
+  if (avgHr > 0 && metrics.length < 5) {
+    metrics.push({ label: 'Avg HR', value: `${avgHr} bpm` });
+  }
+
+  const metricsHtml = metrics.slice(0, 5).map(m => `
+    <div>
+      <div class="text-lg sm:text-xl font-bold font-mono text-purple-50 tabular-nums leading-tight">${m.value}</div>
+      <div class="text-[11px] text-purple-300/65 mt-0.5">${m.label}</div>
+    </div>
+  `).join('');
+
+  const routeSvg = renderMiniRouteSvg(act);
+
+  container.classList.remove('hidden');
+  container.innerHTML = `
+    <div id="today-activity-card" role="button" tabindex="0" class="bg-[#130d21] border border-[#2d2147] hover:border-purple-500/60 rounded-2xl p-5 transition-card cursor-pointer shadow-lg shadow-purple-950/20">
+      <div class="flex items-center justify-between gap-4">
+        <div class="min-w-0 flex-1 space-y-3">
+          <div class="flex flex-wrap items-center gap-2 text-xs text-purple-300/80">
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${isToday ? 'text-emerald-300 border-emerald-500/35 bg-emerald-500/15' : 'text-purple-300 border-purple-500/35 bg-purple-500/15'}">
+              ${isToday ? 'TODAY' : 'LATEST ACTIVITY'}
+            </span>
+            <span class="font-medium text-purple-200">${sportLabel}</span>
+            <span class="text-purple-400/60">•</span>
+            <span class="font-mono text-[11px] text-purple-300/70">${timeLabel}</span>
+          </div>
+
+          <div class="text-lg sm:text-xl font-semibold text-white tracking-tight truncate">
+            ${act.title || `${sportLabel} Session`}
+          </div>
+
+          <div class="flex flex-wrap items-center gap-x-7 gap-y-2 pt-1">
+            ${metricsHtml}
+          </div>
+        </div>
+
+        ${routeSvg}
+      </div>
+    </div>
+  `;
+
+  const card = document.getElementById('today-activity-card');
+  if (card) {
+    card.addEventListener('click', () => openActivityDrawer(act, unit));
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openActivityDrawer(act, unit);
+      }
+    });
+  }
+}
+

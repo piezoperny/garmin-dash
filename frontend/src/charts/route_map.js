@@ -227,7 +227,7 @@ export function renderRouteMap(activity) {
           filter: invert(100%) hue-rotate(180deg) brightness(85%) contrast(90%) grayscale(55%);
         }
         #activity-route-map {
-          background-color: #111114;
+          background-color: #130d21;
         }
       `;
       document.head.appendChild(styleEl);

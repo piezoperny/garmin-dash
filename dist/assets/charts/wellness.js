@@ -596,9 +596,9 @@ function buildBodyBatteryCard(c, daily, isHero) {
 }
 
 function buildHrvCard(c, daily, isHero) {
-  const status = c.hrv_status || 'Balanced';
-  const weeklyAvg = c.hrv_weekly_avg || 58;
-  const lastNight = c.hrv_last_night_avg || 62;
+  const status = c.hrv_status ?? '—';
+  const weeklyAvg = c.hrv_weekly_avg ?? '—';
+  const lastNight = c.hrv_last_night_avg ?? '—';
 
   if (isHero) {
     return `

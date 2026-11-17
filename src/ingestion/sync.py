@@ -1129,7 +1129,7 @@ def run_sync_pipeline(
                 canonical_acts = reprocess_canonical_activities(canonical_acts)
         else:
             existing_acts_map: Dict[str, Dict[str, Any]] = {}
-            if sftp_client.file_exists(REMOTE_CANONICAL_PATH):
+            if not force_refresh and sftp_client.file_exists(REMOTE_CANONICAL_PATH):
                 try:
                     raw_existing = sftp_client.read_text(REMOTE_CANONICAL_PATH)
                     if raw_existing:

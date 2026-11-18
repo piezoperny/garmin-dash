@@ -163,8 +163,8 @@ def calculate_continuous_training_load(
         # Accumulate sport-specific distance and duration from day activities
         for a in day_acts:
             sport = str(a.get("sport", "other")).lower()
-            dist_km = float(a.get("distance_meters", 0.0)) / 1000.0
-            dur_hours = float(a.get("duration_seconds", 0.0)) / 3600.0
+            dist_km = float(a.get("distance_meters") or 0.0) / 1000.0
+            dur_hours = float(a.get("duration_seconds") or 0.0) / 3600.0
 
             if sport in ("running", "run"):
                 w_entry["run_km"] = round(w_entry["run_km"] + dist_km, 1)

@@ -18,7 +18,8 @@ fs.mkdirSync(chartsOutDir, { recursive: true });
 const indexSrc = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 const indexDist = indexSrc
   .replace('./src/main.js', './assets/main.js')
-  .replace('./src/styles/style.css', './assets/style.css');
+  .replace('./src/styles/style.css', './assets/style.css')
+  .replace('../public/icon.svg', './icon.svg');
 fs.writeFileSync(path.join(distDir, 'index.html'), indexDist, 'utf8');
 
 // 2. Copy core ES modules
@@ -43,7 +44,11 @@ fs.copyFileSync(
   path.join(assetsDir, 'style.css')
 );
 
-// 5. Copy encrypted payload and sharded streams if present in public/
+// 5. Copy icon, encrypted payload, and sharded streams if present in public/
+const publicIcon = path.join(rootDir, 'public', 'icon.svg');
+if (fs.existsSync(publicIcon)) {
+  fs.copyFileSync(publicIcon, path.join(distDir, 'icon.svg'));
+}
 const publicEnc = path.join(rootDir, 'public', 'data.enc');
 if (fs.existsSync(publicEnc)) {
   fs.copyFileSync(publicEnc, path.join(distDir, 'data.enc'));

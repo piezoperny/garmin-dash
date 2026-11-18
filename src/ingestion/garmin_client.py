@@ -10,6 +10,7 @@ import base64
 import io
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -82,11 +83,15 @@ class OAuthSessionState(BaseModel):
         return time.time() + buffer_seconds >= self.expires_at
 
     def to_json(self) -> str:
-        return self.model_dump_json(indent=2)
+        if hasattr(self, "model_dump_json"):
+            return self.model_dump_json(indent=2)
+        return self.json(indent=2)
 
     @classmethod
     def from_json(cls, data: str) -> OAuthSessionState:
-        return cls.model_validate_json(data)
+        if hasattr(cls, "model_validate_json"):
+            return cls.model_validate_json(data)
+        return cls.parse_raw(data)
 
     def __getitem__(self, item: str) -> Any:
         return getattr(self, item)
@@ -256,6 +261,669 @@ class GarminClientProtocol(Protocol):
     def get_session_state(self) -> Optional[OAuthSessionState]:
         """Return the current active session state."""
         ...
+
+
+# ---------------------------------------------------------------------------
+# Pure Daily Wellness Normalization Helpers
+# ---------------------------------------------------------------------------
+
+INTRADAY_DOWNSAMPLE_MS = 900_000  # ~15 minutes
+
+
+def _first_not_none(*vals: Any) -> Any:
+    """Return the first argument that is not None (zero-preserving)."""
+    for v in vals:
+        if v is not None:
+            return v
+    return None
+
+
+def _safe_num(
+    val: Any,
+    min_val: Optional[float] = None,
+    max_val: Optional[float] = None,
+) -> Optional[float]:
+    """Convert val to float safely, rejecting bool/None/NaN/Inf and out-of-bounds values."""
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(num) or math.isinf(num):
+        return None
+    if min_val is not None and num < min_val:
+        return None
+    if max_val is not None and num > max_val:
+        return None
+    return num
+
+
+def _safe_int_num(
+    val: Any,
+    min_val: Optional[float] = None,
+    max_val: Optional[float] = None,
+) -> Optional[int]:
+    """Convert val to int safely, preserving 0 when within bounds."""
+    num = _safe_num(val, min_val=min_val, max_val=max_val)
+    if num is None:
+        return None
+    return int(round(num))
+
+
+def _as_dict(val: Any) -> Dict[str, Any]:
+    return val if isinstance(val, dict) else {}
+
+
+def _first_dict(val: Any) -> Dict[str, Any]:
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, list):
+        for item in val:
+            if isinstance(item, dict):
+                return item
+    return {}
+
+
+def _parse_epoch_ms(ts_raw: Any) -> Optional[int]:
+    if ts_raw is None or isinstance(ts_raw, bool):
+        return None
+    if isinstance(ts_raw, str):
+        s = ts_raw.strip()
+        if not s:
+            return None
+        num = _safe_num(s, min_val=0)
+        if num is None:
+            try:
+                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return int(dt.timestamp() * 1000)
+            except Exception:
+                return None
+    else:
+        num = _safe_num(ts_raw, min_val=0)
+        if num is None:
+            return None
+    ts_int = int(num)
+    if ts_int < 10_000_000_000:
+        ts_int *= 1000
+    return ts_int
+
+
+def _extract_intraday_series(
+    raw_items: Any,
+    interval_ms: int = INTRADAY_DOWNSAMPLE_MS,
+    is_body_battery: bool = False,
+) -> Tuple[List[List[int]], List[List[int]]]:
+    """
+    Parse Garmin intraday stress or body battery points (2-element, 4-element, or dicts),
+    filter out negative sentinel values, sort ascending by epoch ms, and return:
+      (all_valid_sorted_points, downsampled_15min_points)
+    """
+    if not isinstance(raw_items, list) or not raw_items:
+        return [], []
+
+    parsed: List[List[int]] = []
+    for pt in raw_items:
+        ts: Optional[int] = None
+        val_raw: Any = None
+        if isinstance(pt, (list, tuple)):
+            if len(pt) < 2:
+                continue
+            ts = _parse_epoch_ms(pt[0])
+            if is_body_battery:
+                if len(pt) >= 3 and (isinstance(pt[1], str) or pt[1] is None):
+                    val_raw = pt[2]
+                else:
+                    val_raw = pt[1]
+            else:
+                val_raw = pt[1]
+        elif isinstance(pt, dict):
+            ts = _parse_epoch_ms(
+                _first_not_none(
+                    pt.get("timestamp"),
+                    pt.get("timestampGMT"),
+                    pt.get("startTimestampGMT"),
+                    pt.get("date"),
+                    pt.get("ts"),
+                )
+            )
+            if is_body_battery:
+                val_raw = _first_not_none(
+                    pt.get("level"),
+                    pt.get("bodyBatteryLevel"),
+                    pt.get("value"),
+                    pt.get("charged"),
+                )
+            else:
+                val_raw = _first_not_none(
+                    pt.get("stressLevel"),
+                    pt.get("stress"),
+                    pt.get("value"),
+                )
+        else:
+            continue
+
+        if ts is None:
+            continue
+        val = _safe_int_num(val_raw, min_val=0, max_val=100)
+        if val is None:
+            continue
+        parsed.append([ts, val])
+
+    if not parsed:
+        return [], []
+
+    parsed.sort(key=lambda item: item[0])
+
+    downsampled: List[List[int]] = []
+    last_ts: Optional[int] = None
+    for ts, val in parsed:
+        if last_ts is None or (ts - last_ts) >= interval_ms:
+            downsampled.append([ts, val])
+            last_ts = ts
+
+    return parsed, downsampled
+
+
+def normalize_daily_wellness(cdate: str, raw_bundle: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Pure function converting a full raw daily wellness bundle into the canonical
+    daily wellness record consumed by the dashboard and stored in wellness_history.json.
+    Zero-preserving across all numeric metrics.
+    """
+    bundle = _as_dict(raw_bundle)
+
+    user_summary = _as_dict(bundle.get("user_summary"))
+    sleep_raw = _as_dict(bundle.get("sleep"))
+    sleep_dto = (
+        sleep_raw["dailySleepDTO"]
+        if isinstance(sleep_raw.get("dailySleepDTO"), dict) and sleep_raw["dailySleepDTO"]
+        else sleep_raw
+    )
+    hrv_raw = _as_dict(bundle.get("hrv"))
+    hrv_sum = (
+        hrv_raw["hrvSummary"]
+        if isinstance(hrv_raw.get("hrvSummary"), dict) and hrv_raw["hrvSummary"]
+        else hrv_raw
+    )
+    stress_raw = _as_dict(bundle.get("stress"))
+
+    bb_raw = bundle.get("body_battery")
+    bb_entry: Dict[str, Any] = {}
+    if isinstance(bb_raw, list):
+        for item in bb_raw:
+            if isinstance(item, dict) and str(item.get("date") or "") == cdate:
+                bb_entry = item
+                break
+        if not bb_entry:
+            bb_entry = _first_dict(bb_raw)
+    elif isinstance(bb_raw, dict):
+        bb_entry = bb_raw
+
+    heart_rates = _as_dict(bundle.get("heart_rates"))
+    steps_data = bundle.get("steps_data")
+    respiration = _as_dict(bundle.get("respiration"))
+    spo2 = _as_dict(bundle.get("spo2"))
+    tr_raw = bundle.get("training_readiness")
+    training_status = _as_dict(bundle.get("training_status"))
+    max_metrics_raw = bundle.get("max_metrics")
+    body_comp_raw = _as_dict(bundle.get("body_composition"))
+    hydration = _as_dict(bundle.get("hydration"))
+    floors = _as_dict(bundle.get("floors"))
+
+    # --- Steps ---
+    steps = _safe_int_num(user_summary.get("totalSteps"), min_val=0)
+    if steps is None and isinstance(steps_data, list):
+        step_items = [
+            _safe_int_num(item.get("steps"), min_val=0)
+            for item in steps_data
+            if isinstance(item, dict) and item.get("steps") is not None
+        ]
+        valid_step_items = [s for s in step_items if s is not None]
+        if valid_step_items:
+            steps = sum(valid_step_items)
+    steps_goal = _safe_int_num(user_summary.get("dailyStepGoal"), min_val=0)
+
+    # --- Resting HR ---
+    rhr = _first_not_none(
+        _safe_int_num(user_summary.get("restingHeartRate"), min_val=1),
+        _safe_int_num(user_summary.get("minAvgHeartRate"), min_val=1),
+        _safe_int_num(heart_rates.get("restingHeartRate"), min_val=1),
+        _safe_int_num(sleep_raw.get("restingHeartRate"), min_val=1),
+        _safe_int_num(sleep_dto.get("restingHeartRate"), min_val=1),
+    )
+    rhr_7d = _first_not_none(
+        _safe_num(user_summary.get("lastSevenDaysAvgRestingHeartRate"), min_val=1),
+        _safe_num(heart_rates.get("lastSevenDaysAvgRestingHeartRate"), min_val=1),
+    )
+
+    # --- Sleep ---
+    sleep_sec = _first_not_none(
+        _safe_int_num(sleep_dto.get("sleepTimeSeconds"), min_val=0),
+        _safe_int_num(user_summary.get("sleepingSeconds"), min_val=0),
+    )
+    sleep_deep = _safe_int_num(sleep_dto.get("deepSleepSeconds"), min_val=0)
+    sleep_light = _safe_int_num(sleep_dto.get("lightSleepSeconds"), min_val=0)
+    sleep_rem = _safe_int_num(sleep_dto.get("remSleepSeconds"), min_val=0)
+    sleep_awake = _safe_int_num(sleep_dto.get("awakeSleepSeconds"), min_val=0)
+    sleep_scores = _as_dict(sleep_dto.get("sleepScores"))
+    overall_sleep = _as_dict(sleep_scores.get("overall"))
+    sleep_score = _first_not_none(
+        _safe_int_num(overall_sleep.get("value"), min_val=0),
+        _safe_int_num(sleep_dto.get("sleepScore"), min_val=0),
+    )
+    sleep_quality_raw = _first_not_none(
+        overall_sleep.get("qualifierKey"),
+        sleep_dto.get("sleepQualityTypePK"),
+    )
+    sleep_quality = str(sleep_quality_raw).replace("_", " ").title() if sleep_quality_raw else None
+
+    # --- Intraday Body Battery & Stress (downsampled ~15m) ---
+    bb_array_raw = stress_raw.get("bodyBatteryValuesArray")
+    if not (isinstance(bb_array_raw, list) and bb_array_raw):
+        bb_array_raw = bb_entry.get("bodyBatteryValuesArray")
+    all_bb_pts, intraday_body_battery = _extract_intraday_series(
+        bb_array_raw, interval_ms=INTRADAY_DOWNSAMPLE_MS, is_body_battery=True
+    )
+
+    stress_array_raw = stress_raw.get("stressValuesArray")
+    all_stress_pts, intraday_stress = _extract_intraday_series(
+        stress_array_raw, interval_ms=INTRADAY_DOWNSAMPLE_MS, is_body_battery=False
+    )
+
+    # --- Stress ---
+    stress_level = _first_not_none(
+        _safe_int_num(user_summary.get("averageStressLevel"), min_val=0),
+        _safe_int_num(stress_raw.get("avgStressLevel"), min_val=0),
+        _safe_int_num(stress_raw.get("averageStressLevel"), min_val=0),
+    )
+    if stress_level is None and all_stress_pts:
+        stress_level = int(round(sum(pt[1] for pt in all_stress_pts) / len(all_stress_pts)))
+
+    stress_max = _first_not_none(
+        _safe_int_num(user_summary.get("maxStressLevel"), min_val=0),
+        _safe_int_num(stress_raw.get("maxStressLevel"), min_val=0),
+    )
+    if stress_max is None and all_stress_pts:
+        stress_max = max(pt[1] for pt in all_stress_pts)
+
+    stress_qual_raw = _first_not_none(
+        user_summary.get("stressQualifier"),
+        stress_raw.get("stressQualifier"),
+    )
+    stress_qualifier = str(stress_qual_raw).replace("_", " ").title() if stress_qual_raw else None
+    if stress_qualifier is None and stress_level is not None:
+        if stress_level <= 25:
+            stress_qualifier = "Rest"
+        elif stress_level <= 50:
+            stress_qualifier = "Low"
+        elif stress_level <= 75:
+            stress_qualifier = "Medium"
+        else:
+            stress_qualifier = "High"
+
+    stress_rest_sec = _first_not_none(
+        _safe_int_num(user_summary.get("restStressDuration"), min_val=0),
+        _safe_int_num(stress_raw.get("restStressDuration"), min_val=0),
+    )
+    stress_low_sec = _first_not_none(
+        _safe_int_num(user_summary.get("lowStressDuration"), min_val=0),
+        _safe_int_num(stress_raw.get("lowStressDuration"), min_val=0),
+    )
+    stress_med_sec = _first_not_none(
+        _safe_int_num(user_summary.get("mediumStressDuration"), min_val=0),
+        _safe_int_num(stress_raw.get("mediumStressDuration"), min_val=0),
+    )
+    stress_high_sec = _first_not_none(
+        _safe_int_num(user_summary.get("highStressDuration"), min_val=0),
+        _safe_int_num(stress_raw.get("highStressDuration"), min_val=0),
+    )
+    stress_total_sec = _first_not_none(
+        _safe_int_num(user_summary.get("stressDuration"), min_val=0),
+        _safe_int_num(user_summary.get("totalStressDuration"), min_val=0),
+        _safe_int_num(stress_raw.get("stressDuration"), min_val=0),
+        _safe_int_num(stress_raw.get("totalStressDuration"), min_val=0),
+    )
+    if stress_total_sec is None:
+        zone_secs = [s for s in (stress_rest_sec, stress_low_sec, stress_med_sec, stress_high_sec) if s is not None]
+        if zone_secs:
+            stress_total_sec = sum(zone_secs)
+
+    # --- Body Battery ---
+    bb_charged = _first_not_none(
+        _safe_int_num(user_summary.get("bodyBatteryChargedValue"), min_val=0),
+        _safe_int_num(bb_entry.get("charged"), min_val=0),
+        _safe_int_num(bb_entry.get("bodyBatteryChargedValue"), min_val=0),
+    )
+    bb_drained = _first_not_none(
+        _safe_int_num(user_summary.get("bodyBatteryDrainedValue"), min_val=0),
+        _safe_int_num(bb_entry.get("drained"), min_val=0),
+        _safe_int_num(bb_entry.get("bodyBatteryDrainedValue"), min_val=0),
+    )
+    bb_high = _first_not_none(
+        _safe_int_num(user_summary.get("bodyBatteryHighestValue"), min_val=0),
+        _safe_int_num(bb_entry.get("bodyBatteryHighestValue"), min_val=0),
+        _safe_int_num(bb_entry.get("highestValue"), min_val=0),
+    )
+    if bb_high is None and all_bb_pts:
+        bb_high = max(pt[1] for pt in all_bb_pts)
+
+    bb_low = _first_not_none(
+        _safe_int_num(user_summary.get("bodyBatteryLowestValue"), min_val=0),
+        _safe_int_num(bb_entry.get("bodyBatteryLowestValue"), min_val=0),
+        _safe_int_num(bb_entry.get("lowestValue"), min_val=0),
+    )
+    if bb_low is None and all_bb_pts:
+        bb_low = min(pt[1] for pt in all_bb_pts)
+
+    bb_curr = _first_not_none(
+        _safe_int_num(user_summary.get("bodyBatteryMostRecentValue"), min_val=0),
+        _safe_int_num(bb_entry.get("bodyBatteryMostRecentValue"), min_val=0),
+        _safe_int_num(bb_entry.get("mostRecentValue"), min_val=0),
+        all_bb_pts[-1][1] if all_bb_pts else None,
+        bb_high,
+    )
+    bb_at_wake = _first_not_none(
+        _safe_int_num(user_summary.get("bodyBatteryAtWakeTime"), min_val=0),
+        _safe_int_num(bb_entry.get("bodyBatteryAtWakeTime"), min_val=0),
+        _safe_int_num(bb_entry.get("atWakeTime"), min_val=0),
+    )
+
+    # --- HRV ---
+    hrv_status_raw = hrv_sum.get("status")
+    hrv_status = str(hrv_status_raw).replace("_", " ").title() if hrv_status_raw else None
+    hrv_weekly = hrv_sum.get("weeklyAvg") if _safe_num(hrv_sum.get("weeklyAvg"), min_val=0) is not None else None
+    hrv_night = hrv_sum.get("lastNightAvg") if _safe_num(hrv_sum.get("lastNightAvg"), min_val=0) is not None else None
+    baseline_obj = _as_dict(hrv_sum.get("baseline"))
+    hrv_baseline = None
+    if baseline_obj.get("balancedLow") is not None and baseline_obj.get("balancedUpper") is not None:
+        hrv_baseline = {"low": baseline_obj.get("balancedLow"), "high": baseline_obj.get("balancedUpper")}
+
+    # --- Intensity Minutes ---
+    mod_min = _safe_int_num(user_summary.get("moderateIntensityMinutes"), min_val=0)
+    vig_min = _safe_int_num(user_summary.get("vigorousIntensityMinutes"), min_val=0)
+    active_intensity_min = None
+    if mod_min is not None or vig_min is not None:
+        active_intensity_min = (mod_min or 0) + ((vig_min or 0) * 2)
+    intensity_goal = _safe_int_num(user_summary.get("intensityMinutesGoal"), min_val=0)
+
+    # --- Calories ---
+    daily_cal = _safe_int_num(user_summary.get("totalKilocalories"), min_val=0)
+    act_cal = _safe_int_num(user_summary.get("activeKilocalories"), min_val=0)
+    bmr_cal = _safe_int_num(user_summary.get("bmrKilocalories"), min_val=0)
+
+    # --- SpO2 & Respiration ---
+    raw_spo2_avg = _first_not_none(
+        _safe_num(spo2.get("averageSpO2"), min_val=0, max_val=100),
+        _safe_num(spo2.get("averageSpo2"), min_val=0, max_val=100),
+        _safe_num(spo2.get("averageSpO2Value"), min_val=0, max_val=100),
+        _safe_num(sleep_dto.get("averageSpO2Value"), min_val=0, max_val=100),
+        _safe_num(user_summary.get("averageSpo2"), min_val=0, max_val=100),
+    )
+    spo2_avg = round(raw_spo2_avg, 1) if raw_spo2_avg is not None else None
+
+    raw_spo2_low = _first_not_none(
+        _safe_num(spo2.get("lowestSpO2"), min_val=0, max_val=100),
+        _safe_num(spo2.get("lowestSpo2"), min_val=0, max_val=100),
+        _safe_num(spo2.get("lowestSpO2Value"), min_val=0, max_val=100),
+        _safe_num(sleep_dto.get("lowestSpO2Value"), min_val=0, max_val=100),
+        _safe_num(user_summary.get("lowestSpo2"), min_val=0, max_val=100),
+    )
+    if raw_spo2_low is not None:
+        spo2_low: Optional[Union[int, float]] = (
+            int(round(raw_spo2_low)) if float(raw_spo2_low).is_integer() else round(raw_spo2_low, 1)
+        )
+    else:
+        spo2_low = None
+
+    raw_resp_waking = _first_not_none(
+        _safe_num(respiration.get("avgWakingRespirationValue"), min_val=0),
+        _safe_num(user_summary.get("avgWakingRespirationValue"), min_val=0),
+    )
+    respiration_waking = round(raw_resp_waking, 1) if raw_resp_waking is not None else None
+
+    raw_resp_sleep = _first_not_none(
+        _safe_num(respiration.get("avgSleepRespirationValue"), min_val=0),
+        _safe_num(sleep_dto.get("averageRespirationValue"), min_val=0),
+        _safe_num(user_summary.get("avgSleepRespirationValue"), min_val=0),
+    )
+    respiration_sleep = round(raw_resp_sleep, 1) if raw_resp_sleep is not None else None
+
+    # --- Floors ---
+    floor_vals = floors.get("floorValuesArray") if isinstance(floors.get("floorValuesArray"), list) else []
+    asc_from_array = None
+    desc_from_array = None
+    if floor_vals:
+        asc_items = [_safe_num(pt[2], min_val=0) for pt in floor_vals if isinstance(pt, (list, tuple)) and len(pt) >= 3]
+        asc_valid = [v for v in asc_items if v is not None]
+        if asc_valid:
+            asc_from_array = sum(asc_valid)
+        desc_items = [_safe_num(pt[3], min_val=0) for pt in floor_vals if isinstance(pt, (list, tuple)) and len(pt) >= 4]
+        desc_valid = [v for v in desc_items if v is not None]
+        if desc_valid:
+            desc_from_array = sum(desc_valid)
+
+    raw_floors_asc = _first_not_none(
+        _safe_num(floors.get("floorsAscended"), min_val=0),
+        asc_from_array,
+        _safe_num(user_summary.get("floorsAscended"), min_val=0),
+    )
+    floors_ascended = (
+        int(round(raw_floors_asc))
+        if raw_floors_asc is not None and float(raw_floors_asc).is_integer()
+        else (round(raw_floors_asc, 1) if raw_floors_asc is not None else None)
+    )
+
+    raw_floors_desc = _first_not_none(
+        _safe_num(floors.get("floorsDescended"), min_val=0),
+        desc_from_array,
+        _safe_num(user_summary.get("floorsDescended"), min_val=0),
+    )
+    floors_descended = (
+        int(round(raw_floors_desc))
+        if raw_floors_desc is not None and float(raw_floors_desc).is_integer()
+        else (round(raw_floors_desc, 1) if raw_floors_desc is not None else None)
+    )
+
+    # --- Min/Max Heart Rate ---
+    hr_values_raw = heart_rates.get("heartRateValues")
+    hr_pts: List[int] = []
+    if isinstance(hr_values_raw, list):
+        for pt in hr_values_raw:
+            hr_v: Optional[int] = None
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                hr_v = _safe_int_num(pt[1], min_val=1)
+            elif isinstance(pt, dict):
+                hr_v = _safe_int_num(_first_not_none(pt.get("heartRate"), pt.get("hr"), pt.get("value")), min_val=1)
+            if hr_v is not None:
+                hr_pts.append(hr_v)
+
+    min_hr = _first_not_none(
+        _safe_int_num(user_summary.get("minHeartRate"), min_val=1),
+        _safe_int_num(heart_rates.get("minHeartRate"), min_val=1),
+        min(hr_pts) if hr_pts else None,
+    )
+    max_hr = _first_not_none(
+        _safe_int_num(user_summary.get("maxHeartRate"), min_val=1),
+        _safe_int_num(heart_rates.get("maxHeartRate"), min_val=1),
+        max(hr_pts) if hr_pts else None,
+    )
+
+    # --- Body Composition (convert grams > 500 to kg) ---
+    date_weight_list = body_comp_raw.get("dateWeightList") if isinstance(body_comp_raw.get("dateWeightList"), list) else []
+    daily_weight_sums = (
+        body_comp_raw.get("dailyWeightSummaries")
+        if isinstance(body_comp_raw.get("dailyWeightSummaries"), list)
+        else []
+    )
+    bc_candidates = [
+        _as_dict(body_comp_raw.get("totalAverage")),
+        _first_dict(date_weight_list),
+        _as_dict(_first_dict(daily_weight_sums).get("latestWeight")),
+        body_comp_raw,
+    ]
+    raw_weight = _first_not_none(
+        *[
+            _safe_num(_first_not_none(d.get("weight"), d.get("weightKg"), d.get("weight_kg")), min_val=0.001)
+            for d in bc_candidates
+        ]
+    )
+    weight_kg = round((raw_weight / 1000.0) if raw_weight > 500.0 else raw_weight, 2) if raw_weight is not None else None
+
+    raw_bmi = _first_not_none(*[_safe_num(d.get("bmi"), min_val=0.001) for d in bc_candidates])
+    bmi = round(raw_bmi, 2) if raw_bmi is not None else None
+
+    raw_bf = _first_not_none(
+        *[
+            _safe_num(_first_not_none(d.get("bodyFat"), d.get("bodyFatPercentage"), d.get("body_fat_pct")), min_val=0.001)
+            for d in bc_candidates
+        ]
+    )
+    body_fat_pct = round(raw_bf, 2) if raw_bf is not None else None
+
+    raw_muscle = _first_not_none(
+        *[
+            _safe_num(_first_not_none(d.get("muscleMass"), d.get("muscle_mass_kg")), min_val=0.001)
+            for d in bc_candidates
+        ]
+    )
+    muscle_mass_kg = (
+        round((raw_muscle / 1000.0) if raw_muscle > 500.0 else raw_muscle, 2)
+        if raw_muscle is not None
+        else None
+    )
+
+    # --- Hydration ---
+    hydration_ml = _first_not_none(
+        _safe_int_num(hydration.get("valueInML"), min_val=0),
+        _safe_int_num(hydration.get("hydration_ml"), min_val=0),
+        _safe_int_num(user_summary.get("hydrationValueInML"), min_val=0),
+    )
+
+    # --- Training Readiness ---
+    training_readiness_score: Optional[int] = None
+    if isinstance(tr_raw, dict):
+        training_readiness_score = _first_not_none(
+            _safe_int_num(tr_raw.get("score"), min_val=0),
+            _safe_int_num(tr_raw.get("trainingReadinessScore"), min_val=0),
+        )
+    elif isinstance(tr_raw, list):
+        for item in tr_raw:
+            if isinstance(item, dict):
+                cand = _first_not_none(
+                    _safe_int_num(item.get("score"), min_val=0),
+                    _safe_int_num(item.get("trainingReadinessScore"), min_val=0),
+                )
+                if cand is not None:
+                    training_readiness_score = cand
+                    break
+
+    # --- VO2Max (Running & Cycling) ---
+    max_metrics_list: List[Dict[str, Any]] = []
+    if isinstance(max_metrics_raw, dict):
+        max_metrics_list = [max_metrics_raw]
+    elif isinstance(max_metrics_raw, list):
+        max_metrics_list = [m for m in max_metrics_raw if isinstance(m, dict)]
+
+    most_recent_vo2 = _as_dict(training_status.get("mostRecentVO2Max"))
+    vo2_run_cands = [_as_dict(m.get("generic")) for m in max_metrics_list] + [_as_dict(most_recent_vo2.get("generic"))]
+    vo2_cyc_cands = [_as_dict(m.get("cycling")) for m in max_metrics_list] + [_as_dict(most_recent_vo2.get("cycling"))]
+
+    raw_vo2_run = _first_not_none(
+        *[
+            _first_not_none(
+                _safe_num(d.get("vo2MaxPreciseValue"), min_val=1),
+                _safe_num(d.get("vo2MaxValue"), min_val=1),
+            )
+            for d in vo2_run_cands
+        ]
+    )
+    vo2max_running = round(raw_vo2_run, 2) if raw_vo2_run is not None else None
+
+    raw_vo2_cyc = _first_not_none(
+        *[
+            _first_not_none(
+                _safe_num(d.get("vo2MaxPreciseValue"), min_val=1),
+                _safe_num(d.get("vo2MaxValue"), min_val=1),
+            )
+            for d in vo2_cyc_cands
+        ]
+    )
+    vo2max_cycling = round(raw_vo2_cyc, 2) if raw_vo2_cyc is not None else None
+
+    return {
+        "date": cdate,
+        "steps": steps,
+        "steps_goal": steps_goal,
+        "resting_hr": rhr,
+        "resting_heart_rate": rhr,
+        "resting_hr_7d_avg": float(rhr_7d) if rhr_7d is not None else None,
+        "sleep_seconds": sleep_sec,
+        "sleep_score": sleep_score,
+        "sleep_quality": sleep_quality,
+        "sleep_deep_seconds": sleep_deep,
+        "sleep_light_seconds": sleep_light,
+        "sleep_rem_seconds": sleep_rem,
+        "sleep_awake_seconds": sleep_awake,
+        "sleep_stages": {
+            "deep_seconds": sleep_deep,
+            "light_seconds": sleep_light,
+            "rem_seconds": sleep_rem,
+            "awake_seconds": sleep_awake,
+        },
+        "stress_level": stress_level,
+        "stress_max": stress_max,
+        "stress_qualifier": stress_qualifier,
+        "stress_status": stress_qualifier,
+        "stress_rest_seconds": stress_rest_sec,
+        "stress_low_seconds": stress_low_sec,
+        "stress_medium_seconds": stress_med_sec,
+        "stress_high_seconds": stress_high_sec,
+        "stress_total_seconds": stress_total_sec,
+        "body_battery": bb_curr,
+        "body_battery_charged": bb_charged,
+        "body_battery_drained": bb_drained,
+        "charged": bb_charged,
+        "drained": bb_drained,
+        "body_battery_high": bb_high,
+        "body_battery_low": bb_low,
+        "body_battery_at_wake": bb_at_wake,
+        "hrv_status": hrv_status,
+        "hrv_weekly_avg": hrv_weekly,
+        "hrv_last_night_avg": hrv_night,
+        "hrv_7d_avg": hrv_weekly,
+        "hrv_baseline": hrv_baseline,
+        "active_intensity_minutes": active_intensity_min,
+        "intensity_minutes_goal": intensity_goal,
+        "intensity_minutes_moderate": mod_min,
+        "intensity_minutes_vigorous": vig_min,
+        "daily_calories": daily_cal,
+        "active_calories": act_cal,
+        "bmr_calories": bmr_cal,
+        "calories_total": daily_cal,
+        "calories_active": act_cal,
+        "calories_bmr": bmr_cal,
+        "spo2_avg": spo2_avg,
+        "spo2_low": spo2_low,
+        "respiration_waking": respiration_waking,
+        "respiration_sleep": respiration_sleep,
+        "floors_ascended": floors_ascended,
+        "floors_descended": floors_descended,
+        "min_hr": min_hr,
+        "max_hr": max_hr,
+        "weight_kg": weight_kg,
+        "bmi": bmi,
+        "body_fat_pct": body_fat_pct,
+        "muscle_mass_kg": muscle_mass_kg,
+        "hydration_ml": hydration_ml,
+        "training_readiness_score": training_readiness_score,
+        "vo2max_running": vo2max_running,
+        "vo2max_cycling": vo2max_cycling,
+        "intraday_body_battery": intraday_body_battery,
+        "intraday_stress": intraday_stress,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +1163,7 @@ class LiveGarminClient:
 
     def refresh_access_token(self, post_handler: Any = None) -> Dict[str, Any]:
         session = self.refresh_tokens()
-        return session.model_dump()
+        return session.model_dump() if hasattr(session, "model_dump") else session.dict()
 
     def _authenticated_request(
         self,
@@ -609,27 +1277,29 @@ class LiveGarminClient:
     def get_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
         if self._personal_garmin is not None:
             result: Dict[str, Any] = {"activityId": activity_id, "splits": []}
-            try:
-                splits = self._personal_garmin.get_activity_splits(activity_id)
-                if isinstance(splits, dict):
-                    result["splits"] = splits.get("lapDTOs", [])
-            except Exception as e:
-                logger.warning(f"Could not fetch personal activity splits for {activity_id}: {e}")
+            if hasattr(self._personal_garmin, "get_activity_splits"):
+                try:
+                    splits = self._personal_garmin.get_activity_splits(activity_id)
+                    if isinstance(splits, dict):
+                        result["splits"] = splits.get("lapDTOs", [])
+                except Exception as e:
+                    logger.warning(f"Could not fetch personal activity splits for {activity_id}: {e}")
 
-            try:
-                details = self._personal_garmin.get_activity_details(activity_id, maxchart=2000, maxpoly=4000)
-                if isinstance(details, dict):
-                    if "geoPolylineDTO" in details:
-                        result["geoPolylineDTO"] = details["geoPolylineDTO"]
-                    if "metricDescriptors" in details:
-                        result["metricDescriptors"] = details["metricDescriptors"]
-                    if "activityDetailMetrics" in details:
-                        result["activityDetailMetrics"] = details["activityDetailMetrics"]
-            except Exception as e:
-                logger.warning(f"Could not fetch personal activity GPS/chart details for {activity_id}: {e}")
+            if hasattr(self._personal_garmin, "get_activity_details"):
+                try:
+                    details = self._personal_garmin.get_activity_details(activity_id, maxchart=2000, maxpoly=4000)
+                    if isinstance(details, dict):
+                        if "geoPolylineDTO" in details:
+                            result["geoPolylineDTO"] = details["geoPolylineDTO"]
+                        if "metricDescriptors" in details:
+                            result["metricDescriptors"] = details["metricDescriptors"]
+                        if "activityDetailMetrics" in details:
+                            result["activityDetailMetrics"] = details["activityDetailMetrics"]
+                except Exception as e:
+                    logger.warning(f"Could not fetch personal activity GPS/chart details for {activity_id}: {e}")
 
-            try:
-                if hasattr(self._personal_garmin, "get_activity_hr_in_timezones"):
+            if hasattr(self._personal_garmin, "get_activity_hr_in_timezones"):
+                try:
                     hr_zones_raw = self._personal_garmin.get_activity_hr_in_timezones(activity_id)
                     if isinstance(hr_zones_raw, list):
                         hz_dict: Dict[str, int] = {}
@@ -640,8 +1310,27 @@ class LiveGarminClient:
                                     hz_dict[f"Z{z_num}"] = int(float(z.get("secsInZone") or 0))
                         if hz_dict:
                             result["hr_zones"] = hz_dict
-            except Exception as e:
-                logger.debug(f"Could not fetch personal activity HR zones for {activity_id}: {e}")
+                except Exception as e:
+                    logger.debug(f"Could not fetch personal activity HR zones for {activity_id}: {e}")
+
+            extra_activity_calls = [
+                ("typed_splits", "get_activity_typed_splits"),
+                ("split_summaries", "get_activity_split_summaries"),
+                ("power_zones", "get_activity_power_in_timezones"),
+                ("weather", "get_activity_weather"),
+                ("exercise_sets", "get_activity_exercise_sets"),
+                ("gear", "get_activity_gear"),
+            ]
+            for dest_key, method_name in extra_activity_calls:
+                if hasattr(self._personal_garmin, method_name):
+                    try:
+                        val = getattr(self._personal_garmin, method_name)(activity_id)
+                        if isinstance(val, (dict, list)):
+                            result[dest_key] = val
+                    except Exception as e:
+                        logger.debug(
+                            f"Could not fetch personal activity {dest_key} ({method_name}) for {activity_id}: {e}"
+                        )
 
             return result
 
@@ -664,133 +1353,129 @@ class LiveGarminClient:
                 logger.warning(f"Could not fetch HRV data for {cdate}: {e}")
         return None
 
-    def get_daily_wellness(self, cdate: str) -> Optional[Dict[str, Any]]:
-        """Fetch genuine daily wellness metrics (steps, RHR, sleep, stress, body battery, HRV, intensity, calories) for cdate."""
+    def _safe_personal_call(self, method_name: str, *args: Any) -> Any:
+        if self._personal_garmin is None or not hasattr(self._personal_garmin, method_name):
+            return None
+        try:
+            res = getattr(self._personal_garmin, method_name)(*args)
+            if isinstance(res, (dict, list)):
+                return res
+        except Exception as e:
+            logger.debug(f"Personal Garmin call {method_name}{args} failed: {e}")
+        return None
+
+    def get_raw_daily_wellness_bundle(self, cdate: str) -> Optional[Dict[str, Any]]:
+        """Safely query all 16 Garmin daily wellness endpoint groups and return the raw bundle."""
         if self._personal_garmin is None:
             return None
 
-        summary: Dict[str, Any] = {}
-        for method_name in ("get_user_summary", "get_stats"):
-            if hasattr(self._personal_garmin, method_name):
-                try:
-                    res = getattr(self._personal_garmin, method_name)(cdate)
-                    if isinstance(res, dict):
-                        summary = res
-                        break
-                except Exception as e:
-                    logger.debug(f"Could not fetch {method_name} for {cdate}: {e}")
+        bundle: Dict[str, Any] = {"date": cdate}
 
-        sleep_dto: Dict[str, Any] = {}
-        if hasattr(self._personal_garmin, "get_sleep_data"):
-            try:
-                s_res = self._personal_garmin.get_sleep_data(cdate)
-                if isinstance(s_res, dict):
-                    sleep_dto = s_res.get("dailySleepDTO") or s_res
-            except Exception as e:
-                logger.debug(f"Could not fetch sleep data for {cdate}: {e}")
+        # 1. User summary (with get_stats fallback)
+        user_summary = None
+        for m_name in ("get_user_summary", "get_stats"):
+            cand = self._safe_personal_call(m_name, cdate)
+            if cand:
+                user_summary = cand
+                break
+        bundle["user_summary"] = user_summary
 
-        hrv_sum: Dict[str, Any] = {}
+        # 2. Sleep
+        bundle["sleep"] = self._safe_personal_call("get_sleep_data", cdate)
+
+        # 3. HRV
         hrv_res = self.get_hrv_data(cdate)
-        if isinstance(hrv_res, dict):
-            hrv_sum = hrv_res.get("hrvSummary") or hrv_res
+        bundle["hrv"] = hrv_res if isinstance(hrv_res, (dict, list)) else None
 
-        if not summary and not sleep_dto and not hrv_sum:
+        # 4. Stress (with get_all_day_stress fallback)
+        stress_res = None
+        for m_name in ("get_stress_data", "get_all_day_stress"):
+            cand = self._safe_personal_call(m_name, cdate)
+            if cand:
+                stress_res = cand
+                break
+        bundle["stress"] = stress_res
+
+        # 5. Body Battery + Events
+        bb_res = None
+        if hasattr(self._personal_garmin, "get_body_battery"):
+            try:
+                cand = self._personal_garmin.get_body_battery(cdate)
+                if isinstance(cand, (dict, list)):
+                    bb_res = cand
+            except TypeError:
+                try:
+                    cand = self._personal_garmin.get_body_battery(cdate, cdate)
+                    if isinstance(cand, (dict, list)):
+                        bb_res = cand
+                except Exception as e:
+                    logger.debug(f"Personal Garmin call get_body_battery({cdate}, {cdate}) failed: {e}")
+            except Exception as e:
+                logger.debug(f"Personal Garmin call get_body_battery({cdate}) failed: {e}")
+        bundle["body_battery"] = bb_res
+        bundle["body_battery_events"] = self._safe_personal_call("get_body_battery_events", cdate)
+
+        # 6-12. Heart rates, steps, respiration, SpO2, training readiness, training status, max metrics
+        bundle["heart_rates"] = self._safe_personal_call("get_heart_rates", cdate)
+        bundle["steps_data"] = self._safe_personal_call("get_steps_data", cdate)
+        bundle["respiration"] = self._safe_personal_call("get_respiration_data", cdate)
+        bundle["spo2"] = self._safe_personal_call("get_spo2_data", cdate)
+        bundle["training_readiness"] = self._safe_personal_call("get_training_readiness", cdate)
+        bundle["training_status"] = self._safe_personal_call("get_training_status", cdate)
+        bundle["max_metrics"] = self._safe_personal_call("get_max_metrics", cdate)
+
+        # 13. Body composition (with single-arg and weigh-ins fallbacks)
+        body_comp = None
+        if hasattr(self._personal_garmin, "get_body_composition"):
+            try:
+                cand = self._personal_garmin.get_body_composition(cdate, cdate)
+                if isinstance(cand, (dict, list)) and cand:
+                    body_comp = cand
+            except TypeError:
+                try:
+                    cand = self._personal_garmin.get_body_composition(cdate)
+                    if isinstance(cand, (dict, list)) and cand:
+                        body_comp = cand
+                except Exception as e:
+                    logger.debug(f"Personal Garmin call get_body_composition({cdate}) failed: {e}")
+            except Exception as e:
+                logger.debug(f"Personal Garmin call get_body_composition({cdate}, {cdate}) failed: {e}")
+        if not body_comp:
+            for m_name, m_args in (("get_weigh_ins", (cdate, cdate)), ("get_daily_weigh_ins", (cdate,))):
+                if hasattr(self._personal_garmin, m_name):
+                    try:
+                        cand = getattr(self._personal_garmin, m_name)(*m_args)
+                        if isinstance(cand, (dict, list)) and cand:
+                            body_comp = cand
+                            break
+                    except TypeError:
+                        try:
+                            cand = getattr(self._personal_garmin, m_name)(cdate)
+                            if isinstance(cand, (dict, list)) and cand:
+                                body_comp = cand
+                                break
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        logger.debug(f"Personal Garmin call {m_name} failed: {e}")
+        bundle["body_composition"] = body_comp
+
+        # 14-16. Hydration, floors, fitness age
+        bundle["hydration"] = self._safe_personal_call("get_hydration_data", cdate)
+        bundle["floors"] = self._safe_personal_call("get_floors", cdate)
+        bundle["fitness_age"] = self._safe_personal_call("get_fitnessage_data", cdate)
+
+        has_data = any(bool(v) for k, v in bundle.items() if k != "date")
+        if not has_data:
             return None
+        return bundle
 
-        steps = summary.get("totalSteps")
-        steps_goal = summary.get("dailyStepGoal")
-        rhr = summary.get("restingHeartRate") or summary.get("minAvgHeartRate")
-        rhr_7d = summary.get("lastSevenDaysAvgRestingHeartRate")
-
-        sleep_sec = sleep_dto.get("sleepTimeSeconds") or summary.get("sleepingSeconds")
-        sleep_deep = sleep_dto.get("deepSleepSeconds")
-        sleep_light = sleep_dto.get("lightSleepSeconds")
-        sleep_rem = sleep_dto.get("remSleepSeconds")
-        sleep_awake = sleep_dto.get("awakeSleepSeconds")
-        sleep_scores = sleep_dto.get("sleepScores") if isinstance(sleep_dto.get("sleepScores"), dict) else {}
-        overall_sleep = sleep_scores.get("overall") if isinstance(sleep_scores.get("overall"), dict) else {}
-        sleep_score = overall_sleep.get("value") or sleep_dto.get("sleepScore")
-        sleep_quality_raw = overall_sleep.get("qualifierKey") or sleep_dto.get("sleepQualityTypePK")
-        sleep_quality = str(sleep_quality_raw).replace("_", " ").title() if sleep_quality_raw else None
-
-        stress_level = summary.get("averageStressLevel")
-        if isinstance(stress_level, (int, float)) and stress_level < 0:
-            stress_level = None
-        stress_qual_raw = summary.get("stressQualifier")
-        stress_qualifier = str(stress_qual_raw).replace("_", " ").title() if stress_qual_raw else None
-
-        bb_charged = summary.get("bodyBatteryChargedValue")
-        bb_drained = summary.get("bodyBatteryDrainedValue")
-        bb_high = summary.get("bodyBatteryHighestValue")
-        bb_low = summary.get("bodyBatteryLowestValue")
-        bb_curr = summary.get("bodyBatteryMostRecentValue") or bb_high
-
-        hrv_status_raw = hrv_sum.get("status")
-        hrv_status = str(hrv_status_raw).replace("_", " ").title() if hrv_status_raw else None
-        hrv_weekly = hrv_sum.get("weeklyAvg")
-        hrv_night = hrv_sum.get("lastNightAvg")
-        baseline_obj = hrv_sum.get("baseline") if isinstance(hrv_sum.get("baseline"), dict) else {}
-        hrv_baseline = None
-        if baseline_obj.get("balancedLow") is not None and baseline_obj.get("balancedUpper") is not None:
-            hrv_baseline = {"low": baseline_obj.get("balancedLow"), "high": baseline_obj.get("balancedUpper")}
-
-        mod_min = summary.get("moderateIntensityMinutes")
-        vig_min = summary.get("vigorousIntensityMinutes")
-        active_intensity_min = None
-        if mod_min is not None or vig_min is not None:
-            active_intensity_min = int(mod_min or 0) + (int(vig_min or 0) * 2)
-        intensity_goal = summary.get("intensityMinutesGoal")
-
-        daily_cal = summary.get("totalKilocalories")
-        act_cal = summary.get("activeKilocalories")
-        bmr_cal = summary.get("bmrKilocalories")
-
-        return {
-            "date": cdate,
-            "steps": int(steps) if steps is not None else None,
-            "steps_goal": int(steps_goal) if steps_goal is not None else None,
-            "resting_hr": int(rhr) if rhr is not None else None,
-            "resting_heart_rate": int(rhr) if rhr is not None else None,
-            "resting_hr_7d_avg": float(rhr_7d) if rhr_7d is not None else None,
-            "sleep_seconds": int(sleep_sec) if sleep_sec is not None else None,
-            "sleep_score": int(sleep_score) if sleep_score is not None else None,
-            "sleep_quality": sleep_quality,
-            "sleep_deep_seconds": int(sleep_deep) if sleep_deep is not None else None,
-            "sleep_light_seconds": int(sleep_light) if sleep_light is not None else None,
-            "sleep_rem_seconds": int(sleep_rem) if sleep_rem is not None else None,
-            "sleep_awake_seconds": int(sleep_awake) if sleep_awake is not None else None,
-            "sleep_stages": {
-                "deep_seconds": int(sleep_deep) if sleep_deep is not None else None,
-                "light_seconds": int(sleep_light) if sleep_light is not None else None,
-                "rem_seconds": int(sleep_rem) if sleep_rem is not None else None,
-                "awake_seconds": int(sleep_awake) if sleep_awake is not None else None,
-            },
-            "stress_level": int(stress_level) if stress_level is not None else None,
-            "stress_qualifier": stress_qualifier,
-            "stress_status": stress_qualifier,
-            "body_battery": int(bb_curr) if bb_curr is not None else None,
-            "body_battery_charged": int(bb_charged) if bb_charged is not None else None,
-            "body_battery_drained": int(bb_drained) if bb_drained is not None else None,
-            "charged": int(bb_charged) if bb_charged is not None else None,
-            "drained": int(bb_drained) if bb_drained is not None else None,
-            "body_battery_high": int(bb_high) if bb_high is not None else None,
-            "body_battery_low": int(bb_low) if bb_low is not None else None,
-            "hrv_status": hrv_status,
-            "hrv_weekly_avg": hrv_weekly,
-            "hrv_last_night_avg": hrv_night,
-            "hrv_7d_avg": hrv_weekly,
-            "hrv_baseline": hrv_baseline,
-            "active_intensity_minutes": active_intensity_min,
-            "intensity_minutes_goal": int(intensity_goal) if intensity_goal is not None else None,
-            "intensity_minutes_moderate": int(mod_min) if mod_min is not None else None,
-            "intensity_minutes_vigorous": int(vig_min) if vig_min is not None else None,
-            "daily_calories": int(daily_cal) if daily_cal is not None else None,
-            "active_calories": int(act_cal) if act_cal is not None else None,
-            "bmr_calories": int(bmr_cal) if bmr_cal is not None else None,
-            "calories_total": int(daily_cal) if daily_cal is not None else None,
-            "calories_active": int(act_cal) if act_cal is not None else None,
-            "calories_bmr": int(bmr_cal) if bmr_cal is not None else None,
-        }
+    def get_daily_wellness(self, cdate: str) -> Optional[Dict[str, Any]]:
+        """Fetch genuine daily wellness metrics for cdate by collecting and normalizing the raw bundle."""
+        raw_bundle = self.get_raw_daily_wellness_bundle(cdate)
+        if not raw_bundle:
+            return None
+        return normalize_daily_wellness(cdate, raw_bundle)
 
     def download_fit_file(self, activity_id: str) -> Optional[bytes]:
         if self._personal_garmin is not None:
@@ -932,7 +1617,11 @@ class MockGarminClient:
 
     def refresh_access_token(self, post_handler: Any = None) -> Dict[str, Any]:
         self.refresh_tokens()
-        return self._session_state.model_dump()
+        return (
+            self._session_state.model_dump()
+            if hasattr(self._session_state, "model_dump")
+            else self._session_state.dict()
+        )
 
     def get_activities(
         self,
@@ -979,6 +1668,137 @@ class MockGarminClient:
 
     def get_hrv_data(self, cdate: str) -> Optional[Dict[str, Any]]:
         return None
+
+    def get_raw_daily_wellness_bundle(self, cdate: str) -> Optional[Dict[str, Any]]:
+        """Return a deterministic synthetic raw daily wellness bundle for cdate without mutating generator RNG."""
+        try:
+            day_dt = datetime.strptime(cdate[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+        local_rng = random.Random(f"{self.seed}:{cdate}")
+        base_ms = int(day_dt.timestamp()) * 1000
+
+        steps = local_rng.randint(6800, 12500)
+        rhr = local_rng.randint(46, 53)
+        sleep_sec = local_rng.randint(25200, 30600)
+        sleep_deep = int(sleep_sec * 0.21)
+        sleep_rem = int(sleep_sec * 0.23)
+        sleep_awake = int(sleep_sec * 0.05)
+        sleep_light = sleep_sec - (sleep_deep + sleep_rem + sleep_awake)
+        sleep_score = local_rng.randint(78, 93)
+
+        stress_avg = local_rng.randint(18, 34)
+        stress_max = local_rng.randint(58, 86)
+        stress_total = 57600
+        stress_high = int(stress_total * 0.06)
+        stress_med = int(stress_total * 0.14)
+        stress_low = int(stress_total * 0.28)
+        stress_rest = stress_total - (stress_high + stress_med + stress_low)
+
+        bb_high = local_rng.randint(80, 96)
+        bb_low = local_rng.randint(18, 35)
+        bb_wake = max(bb_low, bb_high - local_rng.randint(0, 4))
+        bb_curr = max(bb_low, min(bb_high, bb_wake - local_rng.randint(20, 45)))
+
+        stress_arr: List[List[int]] = []
+        bb_arr: List[List[Any]] = []
+        # 3-minute intervals across 24h (480 samples)
+        for idx in range(480):
+            ts_ms = base_ms + idx * 180_000
+            is_sleep = idx < 140
+            s_val = local_rng.randint(8, 22) if is_sleep else local_rng.randint(16, stress_max)
+            stress_arr.append([ts_ms, s_val])
+            if is_sleep:
+                bb_val = int(round(bb_low + ((bb_high - bb_low) * (idx / 139.0))))
+            else:
+                frac = (idx - 140) / 339.0
+                bb_val = int(round(bb_high - ((bb_high - bb_low) * frac)))
+            bb_arr.append([ts_ms, "MEASURED", max(5, min(100, bb_val)), 3])
+
+        return {
+            "date": cdate,
+            "user_summary": {
+                "totalSteps": steps,
+                "dailyStepGoal": 10000,
+                "restingHeartRate": rhr,
+                "lastSevenDaysAvgRestingHeartRate": float(rhr),
+                "averageStressLevel": stress_avg,
+                "maxStressLevel": stress_max,
+                "stressQualifier": "LOW" if stress_avg <= 50 else "MEDIUM",
+                "restStressDuration": stress_rest,
+                "lowStressDuration": stress_low,
+                "mediumStressDuration": stress_med,
+                "highStressDuration": stress_high,
+                "stressDuration": stress_total,
+                "bodyBatteryHighestValue": bb_high,
+                "bodyBatteryLowestValue": bb_low,
+                "bodyBatteryMostRecentValue": bb_curr,
+                "bodyBatteryAtWakeTime": bb_wake,
+                "bodyBatteryChargedValue": bb_high - bb_low,
+                "bodyBatteryDrainedValue": bb_high - bb_curr,
+                "moderateIntensityMinutes": 24,
+                "vigorousIntensityMinutes": 14,
+                "intensityMinutesGoal": 150,
+                "totalKilocalories": 2350,
+                "activeKilocalories": 620,
+                "bmrKilocalories": 1730,
+                "minHeartRate": rhr - 4,
+                "maxHeartRate": 168,
+            },
+            "sleep": {
+                "dailySleepDTO": {
+                    "sleepTimeSeconds": sleep_sec,
+                    "deepSleepSeconds": sleep_deep,
+                    "lightSleepSeconds": sleep_light,
+                    "remSleepSeconds": sleep_rem,
+                    "awakeSleepSeconds": sleep_awake,
+                    "sleepScores": {
+                        "overall": {"value": sleep_score, "qualifierKey": "GOOD"},
+                    },
+                }
+            },
+            "hrv": {
+                "hrvSummary": {
+                    "status": "BALANCED",
+                    "weeklyAvg": 58,
+                    "lastNightAvg": 60,
+                    "baseline": {"balancedLow": 48, "balancedUpper": 62},
+                }
+            },
+            "stress": {
+                "avgStressLevel": stress_avg,
+                "maxStressLevel": stress_max,
+                "stressValuesArray": stress_arr,
+                "bodyBatteryValuesArray": bb_arr,
+            },
+            "body_battery": [
+                {
+                    "date": cdate,
+                    "charged": bb_high - bb_low,
+                    "drained": bb_high - bb_curr,
+                    "bodyBatteryValuesArray": bb_arr,
+                }
+            ],
+            "body_battery_events": [],
+            "heart_rates": {"restingHeartRate": rhr, "minHeartRate": rhr - 4, "maxHeartRate": 168},
+            "steps_data": [],
+            "respiration": {"avgWakingRespirationValue": 14.5, "avgSleepRespirationValue": 13.2},
+            "spo2": {"averageSpO2": 97.0, "lowestSpO2": 93},
+            "training_readiness": [{"score": 76}],
+            "training_status": {"mostRecentVO2Max": {"generic": {"vo2MaxValue": 54.0}}},
+            "max_metrics": [{"generic": {"vo2MaxValue": 54.0}, "cycling": {"vo2MaxValue": 52.0}}],
+            "body_composition": {"totalAverage": {"weight": 72500, "bmi": 22.1, "bodyFat": 14.5, "muscleMass": 34200}},
+            "hydration": {"valueInML": 2200},
+            "floors": {"floorsAscended": 8, "floorsDescended": 7},
+            "fitness_age": {"fitnessAge": 28},
+        }
+
+    def get_daily_wellness(self, cdate: str) -> Optional[Dict[str, Any]]:
+        raw_bundle = self.get_raw_daily_wellness_bundle(cdate)
+        if not raw_bundle:
+            return None
+        return normalize_daily_wellness(cdate, raw_bundle)
 
     def get_session_state(self) -> Optional[OAuthSessionState]:
         return self._session_state

@@ -1,50 +1,49 @@
-# Project: garmin-dash Fixes & Enhancements
+# Project: Garmin Vault Enhancements & Full-Fidelity Ingestion
 
 ## Architecture
-Garmin Vault is a client-side encrypted dashboard architecture.
-1. **Backend / Ingestion (`src/ingestion/`, `src/analytics/`)**:
-   - `sync.py`: Garmin API client and sync orchestration. Fetches activities and wellness metrics, normalizes taxonomies, computes cryptographic payloads, and archives to SFTP.
-   - `training_load.py`: Banister impulse-response model (ATL $\tau=7$, CTL $\tau=42$, TSB = CTL - ATL).
-   - `mock_generator.py`: Deterministic multi-sport generator creating `rollup` JSON serialized and encrypted to `data.enc`.
-2. **Frontend (`frontend/src/`, `frontend/index.html`, `dist/`)**:
-   - `main.js`: Dashboard controller, auth state machine, crypto unlocking (`crypto.subtle`), and chart coordinator.
-   - `chart_engine.js`: Custom lightweight Canvas 2D charting engine supporting DPI scaling, tooltips, responsive rendering.
-   - `wellness.js`: Wellness metric cards, gauges, sparklines, and metric interactions.
-   - `physiological.js`: HR zones donut, Coggan power zones, grade pace zones, and threshold progression.
-   - `endurance.js`: Weekly volume stacked bars, training load continuous curves, KPI cards.
-   - `activities.js`: Activity list table, activity detail drawer, route map (Leaflet), telemetry profile charts (elevation, HR, pace, cadence).
-   - `trend_modal.js`: Modular modal for detailed historical time series trends across customizable periods (1D, 7D, 1M, 1Y, Custom).
+Garmin Vault is a zero-knowledge, client-side encrypted fitness & wellness dashboard:
+1. **Backend / Ingestion (`src/ingestion/`, `src/encryption/`)**:
+   - `garmin_client.py`: Queries Garmin Connect APIs (`LiveGarminClient` / `MockGarminClient`), collects full raw activity details and full daily wellness JSON bundles (`get_raw_daily_wellness_bundle`), and normalizes them via pure `normalize_daily_wellness`.
+   - `sync.py`: Orchestrates incremental sync, archives unstripped raw activity summaries (`garmin_archive/activities/{YYYY}/{MM}/{id}_summary.json`) and per-year raw daily wellness bundles (`garmin_archive/raw_wellness/raw_wellness_{YYYY}.json`) to Google Drive / Hetzner SFTP, supports offline `--reprocess-archive`, shards heavy activity streams (`streams/<id>.enc`), and preserves `summary_polyline` on index items.
+   - `import_garmindb.py`: Imports historical GarminDB SQLite exports while preserving `summary_polyline` and accurate `has_streams` / manifest year.
+   - `mock_generator.py`: Deterministic 49-activity / 365-day wellness generator (`seed=42`) producing enriched stress zones, body battery wake/high/low, 14-day intraday samples, and `summary_polyline`.
+   - `encrypt.py` & `cleanup.py`: Encrypts rollup (`data.enc`) and stream shards (`streams/*.enc`) with AES-256-GCM (PBKDF2 600k iters) and purges/verifies zero plaintext leaks.
+2. **Frontend (`frontend/src/`, `frontend/index.html`, `frontend/build.js`, `public/`, `dist/`)**:
+   - `main.js`: Auth gate, Web Crypto unlocking, customization persistence, and dashboard rendering coordinator (`renderTodayActivityBanner` -> `renderWellnessDashboard` -> charts).
+   - `activities.js`: Today's Activity hero banner (`#today-activity-section`), async stream shard loader (`loadActivityStreamShard`), mini route SVG (`renderMiniRouteSvg`), activity table, and detail drawer (`openActivityDrawer`).
+   - `chart_engine.js`: Custom zero-dependency Canvas 2D chart engine supporting `line`, `bar`, `doughnut`, `pie`, and `rangeBar` (vertical High/Low pillars + caps, multi-line tooltips, per-bar color arrays, custom 2-item legends).
+   - `wellness.js`: "In Focus" (`['sleep', 'body_battery', 'stress', 'steps']`) and "At a Glance" (`['resting_hr', 'hrv', 'intensity_minutes', 'calories']`) cards, including proportional 4-zone Stress card.
+   - `trends_modal.js`: Interactive trend modal (`1D`/`7D`/`1M`/`1Y`/`Custom`), Body Battery `rangeBar` + `1D` intraday curve, and Stress 4-zone color-coded visualization + breakdown table.
+   - `public/icon.svg` & `frontend/build.js`: Purple obsidian vault SVG icon copied into `dist/icon.svg` alongside compiled assets.
 
 ---
 
 ## Feature Inventory
 
+Every Survey feature from `ORIGINAL_REQUEST.md` and Step 0 Survey is assigned a milestone:
+
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | Aspect Ratio Fix in Card 2 | Place `emptyEl` notice inside `canvas.parentElement` or hide `canvas.parentElement` to prevent 560px height explosion | M1 | Survey (Explorer 2) |
-| 2 | Canvas Bitmap Aspect Ratio Sync | Synchronize `canvas.style.width` and `height` with DPR-scaled raster buffer in `chart_engine.js` | M1 | Survey (Explorer 2) |
-| 3 | Chart Container ResizeObserver | Add ResizeObserver in `chart_engine.js` to trigger clean redraw on CSS grid or flex reflows | M1 | Survey (Explorer 2) |
-| 4 | Donut Chart Circular Geometry | Constrain donut chart container aspect ratio and styling so HR zone distribution remains perfectly circular | M1 | Survey (Explorer 2) |
-| 5 | Ingestion Taxonomy Default | Change fallback in `sync.py:103` from `default="hiking"` to `default="other"` | M2 | Survey (Explorer 2) |
-| 6 | Frontend Activity Sport Default | Default missing/null activity sports to `'OTHER'` and `'badge-other'` in `activities.js:236` | M2 | Survey (Explorer 2) |
-| 7 | Sport-Filtered Weekly Load KPI | Compute `#kpi-weekly-load` based on current/recent week's sport load instead of all-time historical average | M2 | Survey (Explorer 2) |
-| 8 | Walking vs Hiking Color Separation | Differentiate Walking (`#10b981`) and Hiking (`#06b6d4` / Cyan) in volume stacked bar charts | M2 | Survey (Explorer 2) |
-| 9 | Synthetic Periodization Tuning | Adjust mock generator so no hiking occurs in the recent 6 weeks, matching user training phase | M2 | Survey (Explorer 2) |
-| 10 | Activity Drawer Canvas Layout Race | Ensure `#activity-drawer` is unhidden before calculating canvas bounds or use responsive resize | M3 | Survey (Explorer 1) |
-| 11 | Zero-Elevation Profile Handling | Suppress elevation Y-axis, ticks, and polygons for indoor/zero-elevation activities (stair stepper, cardio) | M3 | Survey (Explorer 1) |
-| 12 | True Route Stream Detection | Fix `hasStream` logic so flat synthesized HR on cardio does not trigger fake route rendering | M3 | Survey (Explorer 1) |
-| 13 | Single-Split Fallback Profile | Ensure `renderFallbackProfile` with $n=1$ split draws a full-width flat line instead of a 0px polygon | M3 | Survey (Explorer 1) |
-| 14 | Dynamic Y-Axes for Pace & Cadence | Render dedicated Y-axis ticks and inverted pace scaling (min/km) when Elevation and HR are toggled off | M3 | Survey (Explorer 1) |
-| 15 | Telemetry Array Length Normalization | Ensure coordinate, elevation, HR, speed, and cadence arrays have aligned lengths for scrubber and rendering | M3 | Survey (Explorer 1) |
-| 16 | Real Garmin Telemetry Stream Extraction | Parse Garmin `metricDescriptors` and `activityDetailMetrics` in `sync.py` rather than flattening to 0 | M3 | Survey (Explorer 1) |
-| 17 | Clickable Singular Metric Cards | Add click listeners and visual affordance (`cursor-pointer`, hover border) to all wellness cards | M4 | Survey (Spec Miner 3) |
-| 18 | Trend Modal UI Component | Add `#metric-trend-modal` with obsidian dark styling (`#09090b` backdrop, `#111114` surface, `#1f1f24` border) | M4 | Survey (Spec Miner 3) |
-| 19 | Standard Time Range Filters | Implement 1D, 7D, 1M, and 1Y timeframe buttons with dynamic active states | M4 | Survey (Spec Miner 3) |
-| 20 | Customizable Date Range Selector | Support arbitrary start/end date inputs (`[YYYY-MM-DD]` to `[YYYY-MM-DD]`) with validation | M4 | Survey (Spec Miner 3) |
-| 21 | Chronological Navigation & Rollup | Implement `<` and `>` period pagination, rolling averages, and metric summary KPI callouts | M4 | Survey (Spec Miner 3) |
-| 22 | Metric-Specific Trend Charts | Implement high-DPI canvas charts for sleep stages, HRV baseline band, RHR, steps goal, body battery, etc. | M4 | Survey (Spec Miner 3) |
-| 23 | Invariant & ID Preservation | Guarantee all 12 root IDs, dark theme, and crypto security constraints are strictly maintained | M5 | Dispatch Invariants |
-| 24 | E2E & Forensic Verification | Pass all existing and new E2E tests and achieve CLEAN forensic audit verdict | M5 | Quality Gates |
+| 1 | Expanded Activity Raw Capture | Query & attach `typed_splits`, `split_summaries`, `power_zones`, `weather`, `exercise_sets`, `gear` in `LiveGarminClient.get_activity_details` without aborting on missing endpoints | M1 | ORIGINAL_REQUEST §1.1, Survey 1 |
+| 2 | Full Raw Daily Wellness Collector | Add `LiveGarminClient.get_raw_daily_wellness_bundle(cdate)` querying all 16 daily wellness endpoint groups safely | M1 | ORIGINAL_REQUEST §1.2, Survey 1 |
+| 3 | Pure `normalize_daily_wellness` & Enriched Vitals | Extract pure `normalize_daily_wellness(cdate, raw_bundle)` populating stress 4-zone durations (`stress_*_seconds`, `stress_max`), BB wake/high/low, vitals (`spo2_*`, `respiration_*`, `floors_*`, `min/max_hr`, `weight_kg`, `bmi`, `body_fat_pct`, `muscle_mass_kg`, `hydration_ml`, `training_readiness_score`, `vo2max_*`), and 15-min intraday timelines | M1 | ORIGINAL_REQUEST §1.2, Survey 1 |
+| 4 | Raw Wellness Archive Persistence | Define `REMOTE_RAW_WELLNESS_DIR = "garmin_archive/raw_wellness"` and archive per-year `raw_wellness_{YYYY}.json` keyed by `YYYY-MM-DD`; keep 14-day intraday window in compiled `data.enc` | M1 | ORIGINAL_REQUEST §1.3, Survey 1 |
+| 5 | Offline `--reprocess-archive` | Support `reprocess_archive=True` in live storage mode (even without Garmin creds) by re-reading archived activity summaries and raw wellness JSONs from storage without Garmin API calls | M1 | ORIGINAL_REQUEST §1.3, Survey 1 |
+| 6 | Preserve `summary_polyline` & Accurate `has_streams` | Preserve `summary_polyline` on rollup/index activity items when `gps_track` is sharded/stripped in `sync.py`, `mock_generator.py`, and `import_garmindb.py`; fix `has_streams` and `manifest.record_activity` year | M1 | ORIGINAL_REQUEST §1.3 & §2.1, Survey 1 & 3 |
+| 7 | Mock Wellness Enrichment | Update `mock_generator.py` (`generate_wellness_dataset`) to emit stress 4-zone durations, `stress_max`, `body_battery_at_wake`, and 14-day `intraday_body_battery` / `intraday_stress` without altering activity `seed=42` RNG | M1 | Survey 1 & 3 |
+| 8 | M1 Unit Tests | Author `tests/test_daily_wellness_full_bundle.py` and `tests/test_offline_reprocess_archive.py` | M1 | ORIGINAL_REQUEST Gates, Survey 1 |
+| 9 | Wire `renderTodayActivityBanner` | Call `renderTodayActivityBanner(rollup.activities || [], activeUnit)` in `frontend/src/main.js:renderDashboard` right before `renderWellnessDashboard(rollup)` | M2 | ORIGINAL_REQUEST §2.1, Survey 2 |
+| 10 | Async Stream Shard Mini-Route Loader | Extract `loadActivityStreamShard(act.id)` in `activities.js`; when `act.has_streams && !act.summary_polyline && !act.gps_track`, asynchronously decrypt shard and inject mini route SVG | M2 | ORIGINAL_REQUEST §2.1, Survey 2 |
+| 11 | Polish Today's Activity Hero Card | Upgrade `renderTodayActivityBanner` with emerald `TODAY` / purple `LATEST ACTIVITY • <Date>` badge, sport icon badge, TSS pill, indoor/HR fallback badge on right, and click-to-open `#activity-drawer` | M2 | ORIGINAL_REQUEST §2.1, Survey 2 |
+| 12 | `rangeBar` Chart Engine Support | Add `type: 'rangeBar'` to `chart_engine.js` (`highData`, `lowData`, `chargedData`, `drainedData`, 10–14px gradient pillar scaled cleanly for 1M/1Y, `#38bdf8` High dot, `#0b0714`/`#c4b5fd` Low ring, pillar vertical hitbox, multi-line tooltip, 2-item High/Low legend, guarded `roundRect`/`createLinearGradient`) | M3 | ORIGINAL_REQUEST §3.1, Survey 2 |
+| 13 | Body Battery Range Modal & 1D Intraday | Update `trends_modal.js` `body_battery` view to render `type: 'rangeBar'` with 2-item legend (`● Daily High`, `◉ Daily Low`) and `1D` intraday `00:00`–`23:59` curve when `intraday_body_battery` is present (with `rangeBar` + value labels fallback) | M3 | ORIGINAL_REQUEST §3.1, Survey 2 |
+| 14 | Promote Stress to "In Focus" | Set `DEFAULT_WELLNESS_LAYOUT.in_focus = ['sleep', 'body_battery', 'stress', 'steps']` and `at_a_glance = ['resting_hr', 'hrv', 'intensity_minutes', 'calories']`; update `#wellness-in-focus` grid to `grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4`; handle legacy uncustomized localStorage & Reset Defaults cleanly | M4 | ORIGINAL_REQUEST §4.1, Survey 2 |
+| 15 | 4-Zone Stress In-Focus Card | Revamp `buildStressCard` in `wellness.js` with score + Garmin qualifier badge, proportional 4-zone bar (`#38bdf8` Rest, `#fbbf24` Low, `#f97316` Med, `#f43f5e` High) from `stress_*_seconds` (with scalar fallback & `0` value preservation), and duration legend | M4 | ORIGINAL_REQUEST §4.2, Survey 2 |
+| 16 | Stress Trend Modal Upgrade | Upgrade `trends_modal.js` `stress` KPIs (`Overall Avg Stress`, `Rest / Low Share`, `High Stress Peak`, `Autonomic Status`), per-bar color-coded Garmin zone bars/points over 4 zone bands (`chart_engine.js` per-bar color support if needed or M4 coordination), `1D` intraday stress support, and 5-column breakdown table | M4 | ORIGINAL_REQUEST §4.3, Survey 2 |
+| 17 | Purple Obsidian Vault SVG Icon & Build Copy | Create 64×64 `public/icon.svg`, update `frontend/build.js` to copy `public/icon.svg` -> `dist/icon.svg`, update `frontend/index.html` favicon + header logo + passphrase lock badge to purple accents | M5 | ORIGINAL_REQUEST §5.1, Survey 2 |
+| 18 | Comprehensive README Update & Dist Rebuild | Update `README.md` with centered `public/icon.svg` header, replace `<username>` -> `piezoperny`, document M1–M5 capabilities, GDrive bridge, `bootstrap_garmin.py`, `import_garmindb.py`, `--reprocess-archive`, GitHub About instructions, preserving all `test_ci_and_docs.py` invariants; rebuild `data.enc` (`--mock --verify`) and `dist/` | M5 | ORIGINAL_REQUEST §5.2, Survey 2 & 3 |
+| 19 | E2E Testing Track (Opaque-Box Tiers 1–4) | Independently build/update opaque-box E2E tests (`tests/e2e/test_dashboard_runner.js`, `tests/e2e/test_enhancements_e2e.js`, `tests/test_e2e_m1_archive_contracts.py`) and publish `TEST_INFRA.md` & `TEST_READY.md` | E2E Track | Project Pattern Dual Track |
+| 20 | Final Milestone: E2E Pass & Tier 5 Hardening | Pass 100% of E2E tests (Tiers 1–4), run Tier 5 adversarial coverage hardening (Challenger-initiated loop), run `cleanup --verify-only`, and pass Whole-Project Forensic Audit | Final | Project Pattern Final Milestone |
 
 ---
 
@@ -52,45 +51,63 @@ Garmin Vault is a client-side encrypted dashboard architecture.
 
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Physiological Distribution Aspect Ratio Fix | Fix `#card-power-zone` empty notice DOM stacking, `_setupCanvasDPI` style sync, and `ResizeObserver` in `chart_engine.js` | none | DONE |
-| M2 | Endurance Load & Hiking Activity Taxonomy | Fix `sync.py` sport default, `activities.js` fallback, distinct walking/hiking chart colors, and recent weekly load KPI calculation | none | DONE |
-| M3 | Activity Drawer Telemetry & Graph Overhaul | Fix drawer layout race, zero-elevation axis suppression, single-split fallback, pace/cadence axes, and telemetry array alignment | M1 | DONE |
-| M4 | Singular Metric Trend Modals across Time Periods | Implement `#metric-trend-modal`, clickable wellness cards, 1D/7D/1M/1Y/Custom selectors, chronological pagination, and metric chart adapters | M1 | IN_PROGRESS |
-| M5 | E2E Integration, Regression & Forensic Gate | Run full test suite, build `dist/`, verify Playwright/headless tests, and achieve clean Forensic Audit | M1, M2, M3, M4 | PLANNED |
+| M1 | Full-Fidelity Garmin Connect Raw Archival & Offline Reprocessing | `garmin_client.py`, `sync.py`, `import_garmindb.py`, `mock_generator.py`, `tests/test_daily_wellness_full_bundle.py`, `tests/test_offline_reprocess_archive.py` | none | DONE |
+| M2 | Today's Activity Hero Card at Top of Homepage | `frontend/src/main.js`, `frontend/src/charts/activities.js`, `tests/test_m2_today_activity.js` | M1 | DONE |
+| M3 | Garmin-Style Body Battery Range Chart (High/Low Pillars + Caps) | `frontend/src/charts/chart_engine.js`, `frontend/src/charts/trends_modal.js`, `tests/test_m3_body_battery_rangebar.js` | none | DONE |
+| M4 | Stress In-Focus Hero Card & 4-Zone Breakdown Tab/Modal | `frontend/src/charts/wellness.js`, `frontend/src/charts/trends_modal.js`, `frontend/index.html`, `tests/test_m4_trend_modal.js` | M1, M3 | DONE |
+| M5 | Purple Theme SVG Icon Revamp & Comprehensive README Update | `public/icon.svg`, `frontend/index.html`, `frontend/build.js`, `README.md`, `public/data.enc`, `dist/` | M1, M2, M3, M4 | DONE |
+| E2E | E2E Testing Track (Requirements-Driven Opaque-Box Suite) | `TEST_INFRA.md`, `TEST_READY.md`, `tests/e2e/test_dashboard_runner.js`, `tests/e2e/test_enhancements_e2e.js`, `tests/test_e2e_m1_archive_contracts.py` | none | DONE |
+| Final | Final Milestone: E2E Tiers 1–4 Pass + Tier 5 Adversarial Hardening | Pass all unit/integration/E2E suites + Tier 5 adversarial challenger loop + whole-project forensic audit + `cleanup --verify-only` | M1, M2, M3, M4, M5, E2E | DONE |
 
 ---
 
 ## Interface Contracts
 
-### M1: Chart Engine ↔ Containers
-- `Chart.prototype._setupCanvasDPI()`: Sets `this.canvas.style.width` and `this.canvas.style.height` matching measured CSS pixels, preventing CSS stretch.
-- `renderPowerZoneChart(rollup, thresholds)`: When `!hasRealPower`, sets `canvas.parentElement.style.display = 'none'` and appends `#power-zone-empty-notice` into `cardEl`, or inserts `emptyEl` inside `canvas.parentElement` with matching `min-h-[260px]`.
+### M1: Ingestion (`garmin_client.py` / `sync.py` / `mock_generator.py`) ↔ Frontend (`activities.js`, `wellness.js`, `trends_modal.js`)
+- `LiveGarminClient.get_activity_details(activity_id)`: Safely attaches `typed_splits`, `split_summaries`, `power_zones`, `weather`, `exercise_sets`, `gear` without aborting if any sub-call raises.
+- `LiveGarminClient.get_raw_daily_wellness_bundle(cdate: str) -> Optional[Dict[str, Any]]`: Safely queries all 16 daily wellness endpoint groups and returns raw bundle dict.
+- `normalize_daily_wellness(cdate: str, raw_bundle: Dict[str, Any]) -> Dict[str, Any]`: Pure function emitting all existing keys plus `stress_max`, `stress_rest_seconds`, `stress_low_seconds`, `stress_medium_seconds`, `stress_high_seconds`, `stress_total_seconds`, `body_battery_at_wake`, `spo2_avg`, `spo2_low`, `respiration_waking`, `respiration_sleep`, `floors_ascended`, `floors_descended`, `min_hr`, `max_hr`, `weight_kg`, `bmi`, `body_fat_pct`, `muscle_mass_kg`, `hydration_ml`, `training_readiness_score`, `vo2max_running`, `vo2max_cycling`, and ~15-min downsampled `intraday_body_battery` / `intraday_stress` (retained for recent 14 days in `data.enc`).
+- `REMOTE_RAW_WELLNESS_DIR = "garmin_archive/raw_wellness"`: Stores per-year `raw_wellness_{YYYY}.json` mapped by `YYYY-MM-DD`.
+- `run_sync_pipeline(..., reprocess_archive=False)`: When `reprocess_archive=True` and storage is configured (even without Garmin credentials), skips Garmin API calls and re-normalizes activities & wellness from archived JSONs.
+- **Activity Index / Rollup Entry**: Every activity in `rollup_dict["activities"]` preserves `"summary_polyline": str | None` (null for `strength`/`weights`) even when `gps_track` and `telemetry_stream` are sharded (`None`), and sets `"has_streams": bool` accurately. Top-level `strength` activity objects MUST NOT contain forbidden keys (`weight`, `kg`, `load_kg`, `tonnage`, `weight_kg`).
 
-### M2: Activity Taxonomy & Endurance KPIs
-- `resolve_sport_taxonomy(summary, default="other")`: Returns normalized sport string, defaulting to `"other"` instead of `"hiking"`.
-- `renderKPICards(rollup, unit, sportFilter)`: For `#kpi-weekly-load`, computes sum of TSS for the selected sport in the most recent week (`latest.sport_loads[sportFilter] || 0`), or 0 if no activities of that sport occurred in that week.
+### M2: `main.js` ↔ `activities.js`
+- `renderDashboard(rollup)` invokes `renderTodayActivityBanner(rollup.activities || [], activeUnit)` immediately before `renderWellnessDashboard(rollup)`.
+- `loadActivityStreamShard(actId)`: Exported async helper fetching `./streams/${encodeURIComponent(String(actId))}.enc`, decrypting via `decryptWithRawKey(getStoredKey(), ...)`, caching/merging streams onto activity. Used by both `openActivityDrawer` and `renderTodayActivityBanner` (when `act.has_streams && !act.summary_polyline && !act.gps_track`).
 
-### M3: Activity Detail Drawer ↔ Profile Chart
-- `showActivityDrawer(act, unit)`: Calls `drawer.classList.remove('hidden')` before calling `renderActivityProfileChart(act, unit)` or invokes via `requestAnimationFrame`.
-- `extractActivityStreams(act)`: Returns normalized arrays where `times`, `elevations`, `hrs`, `speeds`, and `cadences` share consistent array lengths or timestamps. Suppresses `elevation` when all values are 0 or NaN.
+### M3: `chart_engine.js` ↔ `trends_modal.js`
+- `Chart` supports `type: 'rangeBar'` with dataset `{ highData, lowData, chargedData, drainedData }` (or compatible range bar config), vertical pillar (`#2d2147` / purple-slate gradient), `#38bdf8` High cap, `#0b0714` + `#c4b5fd` Low ring cap, vertical pillar hitbox, multi-line tooltip (`pt.tooltipLines`), and 2-item legend (`● Daily High`, `◉ Daily Low`). Also supports per-bar color arrays (`ds.barColors` / `Array.isArray(ds.backgroundColor)`) for M4 Stress bars.
+- `chart_engine.js` MUST guard `ctx.roundRect` and `ctx.createLinearGradient` (`typeof ... === 'function'`) for Node mock-context compatibility.
+- `trends_modal.js` Body Battery view: In `1d` mode with `intraday_body_battery?.length > 1`, renders smooth 0–100 intraday curve (`00:00`–`23:59`); otherwise renders `type: 'rangeBar'`.
 
-### M4: Wellness Cards ↔ Trend Modal
-- Global / Module function `openMetricTrendModal(metricKey, initialRange = '7d')`.
-- Event delegation on `#wellness-cards-container` for `[data-metric]`:
-  - Ignores clicks on `.card-control-btn` or `button`.
-  - Reads `card.dataset.metric` (e.g. `'sleep'`, `'hrv'`, `'resting_hr'`, `'steps'`, `'body_battery'`, `'stress'`, `'intensity_minutes'`, `'calories'`).
-  - Fetches time series from `activeRollup.wellness.daily`.
+### M4: `wellness.js` ↔ `index.html` ↔ `trends_modal.js`
+- `DEFAULT_WELLNESS_LAYOUT = { in_focus: ['sleep', 'body_battery', 'stress', 'steps'], at_a_glance: ['resting_hr', 'hrv', 'intensity_minutes', 'calories'], hidden: [] }`.
+- `#wellness-in-focus` uses `grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4`.
+- `buildStressCard`: Proportional 4-zone bar (`#38bdf8` Rest `0–25`, `#fbbf24` Low `26–50`, `#f97316` Medium `51–75`, `#f43f5e` High `76–100`) from `stress_*_seconds` with scalar fallback and zero-value (`0`) preservation.
+- `trends_modal.js` Stress view: 4 KPIs (`Overall Avg Stress`, `Rest / Low Share`, `High Stress Peak`, `Autonomic Status`), Garmin 4-zone color-coded bars/points over zone bands + `1D` intraday support, and 5-column breakdown table (`Date`, `Avg Stress`, `Rest Time`, `Low / Med / High`, `Status Badge`). Preserve `'0 pts'` for zero values and `'1 records'` in 1d mode.
+
+### M5: `public/icon.svg` ↔ `frontend/build.js` ↔ `frontend/index.html` ↔ `README.md`
+- `public/icon.svg` (64×64 purple obsidian squircle `#0b0714`->`#1b132e`, `#a855f7` border, `#c084fc`/`#a855f7` biometric pulse emblem) copied to `dist/icon.svg` by `frontend/build.js`.
+- `frontend/index.html` links purple vault icon and updates header/lock badges to `text-purple-400`, `border-purple-500/30`, preserving all 12 mandatory root IDs and `#metric-trend-modal` structure.
+- `README.md` preserves all `test_ci_and_docs.py` & `test_acceptance_criteria.py` required tokens, secret names, byte offsets, and CLI commands.
 
 ---
 
 ## Code Layout
-- `frontend/src/charts/chart_engine.js`: Base Canvas charting engine.
-- `frontend/src/charts/physiological.js`: Physiological distribution & zone charts.
-- `frontend/src/charts/endurance.js`: Volume and training load charts.
-- `frontend/src/charts/activities.js`: Activity table, drawer, and profile chart.
-- `frontend/src/charts/wellness.js`: Wellness metric cards.
-- `frontend/src/charts/trend_modal.js`: Metric trend modal and time-series visualizers.
-- `frontend/index.html`: Dashboard template and modal structures.
-- `src/ingestion/sync.py`: Garmin sync and taxonomy resolver.
-- `src/ingestion/mock_generator.py`: Synthetic generator and periodization.
-- `dist/`: Compiled production output generated by `node frontend/build.js`.
+- `src/ingestion/garmin_client.py`: Garmin Connect client, activity detail & wellness bundle collectors, pure `normalize_daily_wellness`.
+- `src/ingestion/sync.py`: Sync orchestrator, raw wellness archival, offline `--reprocess-archive`, stream sharding, `summary_polyline` preservation.
+- `src/ingestion/import_garmindb.py`: GarminDB historical importer.
+- `src/ingestion/mock_generator.py`: Deterministic mock dataset & rollup compiler.
+- `src/ingestion/cleanup.py`: Plaintext cleanup & `--verify-only` gate.
+- `src/encryption/encrypt.py`: AES-256-GCM encryption CLI (`--mock --verify`).
+- `frontend/index.html`: Dashboard HTML shell, modals, layout grids, favicon/badges.
+- `frontend/build.js`: Static distribution builder (`dist/`).
+- `frontend/src/main.js`: Dashboard controller & `renderDashboard`.
+- `frontend/src/charts/activities.js`: Today's Activity hero banner, shard loader, activity table & drawer.
+- `frontend/src/charts/chart_engine.js`: Canvas 2D charting engine (`line`, `bar`, `doughnut`, `pie`, `rangeBar`).
+- `frontend/src/charts/wellness.js`: Wellness In-Focus & At-a-Glance cards + Stress 4-zone bar.
+- `frontend/src/charts/trends_modal.js`: Metric trend modal (1D/7D/1M/1Y/Custom), Body Battery range bar, Stress 4-zone view.
+- `public/icon.svg`: Purple vault SVG icon.
+- `README.md`: Project documentation.
+- `tests/`: Python unit/integration tests and Node.js / E2E test suites.
+- `dist/`: Built static distribution (no plaintext secrets/raw data).

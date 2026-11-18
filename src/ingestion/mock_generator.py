@@ -115,25 +115,35 @@ def decode_polyline(encoded: str) -> List[Tuple[float, float]]:
     while idx < length:
         shift = 0
         result = 0
-        while True:
+        truncated = False
+        while idx < length:
             b = ord(encoded[idx]) - 63
             idx += 1
             result |= (b & 0x1F) << shift
             shift += 5
             if b < 0x20:
                 break
+        else:
+            truncated = True
+        if truncated:
+            break
         d_lat = ~(result >> 1) if (result & 1) else (result >> 1)
         lat += d_lat
 
         shift = 0
         result = 0
-        while True:
+        truncated = False
+        while idx < length:
             b = ord(encoded[idx]) - 63
             idx += 1
             result |= (b & 0x1F) << shift
             shift += 5
             if b < 0x20:
                 break
+        else:
+            truncated = True
+        if truncated:
+            break
         d_lon = ~(result >> 1) if (result & 1) else (result >> 1)
         lon += d_lon
 
@@ -1050,6 +1060,7 @@ def generate_wellness_dataset(
                 acts_by_date.setdefault(d_key, []).append(a)
 
     w_rng = random.Random(seed + 88888)
+    w_extra_rng = random.Random(seed + 99999)
     rest_hr_base = int(athlete_profile.get("rest_hr") or 48)
     bmr_base = int(athlete_profile.get("bmr") or 1730)
 
@@ -1152,6 +1163,18 @@ def generate_wellness_dataset(
         act_cal = day_cal + step_cal
         daily_cal = bmr_base + act_cal
 
+        # Enriched stress zone durations, stress peak, and wake body battery (isolated w_extra_rng)
+        stress_total_sec = 57600
+        high_ratio = min(0.22, max(0.02, (stress_level - 15) * 0.004 + (day_tss / 1000.0)))
+        med_ratio = min(0.32, max(0.06, (stress_level - 10) * 0.007))
+        low_ratio = min(0.45, max(0.18, 0.24 + (stress_level - 18) * 0.004))
+        stress_high_sec = int(round(stress_total_sec * high_ratio))
+        stress_med_sec = int(round(stress_total_sec * med_ratio))
+        stress_low_sec = int(round(stress_total_sec * low_ratio))
+        stress_rest_sec = max(0, stress_total_sec - (stress_high_sec + stress_med_sec + stress_low_sec))
+        stress_max = min(99, max(stress_level + 20, 48 + int(day_tss * 0.2) + w_extra_rng.randint(0, 12)))
+        bb_at_wake = min(100, max(bb_low, bb_high - w_extra_rng.randint(0, 5)))
+
         rec = {
             "date": date_str,
             "steps": total_steps,
@@ -1174,8 +1197,14 @@ def generate_wellness_dataset(
                 "awake_seconds": sleep_awake,
             },
             "stress_level": stress_level,
+            "stress_max": stress_max,
             "stress_qualifier": stress_qualifier,
             "stress_status": stress_qualifier,
+            "stress_rest_seconds": stress_rest_sec,
+            "stress_low_seconds": stress_low_sec,
+            "stress_medium_seconds": stress_med_sec,
+            "stress_high_seconds": stress_high_sec,
+            "stress_total_seconds": stress_total_sec,
             "body_battery": current_bb,
             "body_battery_charged": charged,
             "body_battery_drained": drained,
@@ -1183,6 +1212,7 @@ def generate_wellness_dataset(
             "drained": drained,
             "body_battery_high": bb_high,
             "body_battery_low": bb_low,
+            "body_battery_at_wake": bb_at_wake,
             "hrv_status": hrv_status,
             "hrv_weekly_avg": int(round(hrv_weekly)),
             "hrv_last_night_avg": hrv_night,
@@ -1200,6 +1230,30 @@ def generate_wellness_dataset(
             "calories_active": act_cal,
             "calories_bmr": bmr_base,
         }
+
+        if day_offset >= num_days - 14:
+            day_utc = day_date if day_date.tzinfo else day_date.replace(tzinfo=timezone.utc)
+            base_ms = int(day_utc.timestamp()) * 1000
+            intraday_bb: List[List[int]] = []
+            intraday_st: List[List[int]] = []
+            sleep_start_bb = max(5, min(bb_at_wake, bb_low + w_extra_rng.randint(2, 10)))
+            for idx in range(96):  # 15-min intervals across 24h
+                ts_ms = base_ms + idx * 900_000
+                if idx < 28:  # 00:00..06:45 overnight sleep charge
+                    frac = idx / 27.0
+                    bb_val = int(round(sleep_start_bb + (bb_at_wake - sleep_start_bb) * frac))
+                    st_val = max(5, min(99, int(round(stress_level * 0.6)) + w_extra_rng.randint(-3, 4)))
+                else:  # 07:00..23:45 daytime drain
+                    frac = (idx - 28) / 67.0
+                    target_end = current_bb if day_offset == num_days - 1 else bb_low
+                    bb_val = int(round(bb_at_wake - (bb_at_wake - target_end) * frac)) + w_extra_rng.randint(-1, 1)
+                    st_base = stress_level + int(round(math.sin(frac * math.pi) * max(4, (stress_max - stress_level) * 0.45)))
+                    st_val = max(5, min(99, st_base + w_extra_rng.randint(-4, 5)))
+                intraday_bb.append([ts_ms, max(5, min(100, bb_val))])
+                intraday_st.append([ts_ms, st_val])
+            rec["intraday_body_battery"] = intraday_bb
+            rec["intraday_stress"] = intraday_st
+
         daily_records.append(rec)
 
     latest = daily_records[-1] if daily_records else {}
@@ -1218,8 +1272,14 @@ def generate_wellness_dataset(
         "sleep_awake_seconds": latest.get("sleep_awake_seconds", 1800),
         "sleep_stages": latest.get("sleep_stages", {}),
         "stress_level": latest.get("stress_level", 24),
+        "stress_max": latest.get("stress_max", 68),
         "stress_qualifier": latest.get("stress_qualifier", "Low"),
         "stress_status": latest.get("stress_status", "Low"),
+        "stress_rest_seconds": latest.get("stress_rest_seconds", 30000),
+        "stress_low_seconds": latest.get("stress_low_seconds", 16000),
+        "stress_medium_seconds": latest.get("stress_medium_seconds", 8000),
+        "stress_high_seconds": latest.get("stress_high_seconds", 3600),
+        "stress_total_seconds": latest.get("stress_total_seconds", 57600),
         "body_battery": latest.get("body_battery", 82),
         "body_battery_charged": latest.get("body_battery_charged", 65),
         "body_battery_drained": latest.get("body_battery_drained", 43),
@@ -1227,6 +1287,7 @@ def generate_wellness_dataset(
         "drained": latest.get("drained", 43),
         "body_battery_high": latest.get("body_battery_high", 90),
         "body_battery_low": latest.get("body_battery_low", 25),
+        "body_battery_at_wake": latest.get("body_battery_at_wake", 88),
         "hrv_status": latest.get("hrv_status", "Balanced"),
         "hrv_weekly_avg": latest.get("hrv_weekly_avg", 58),
         "hrv_last_night_avg": latest.get("hrv_last_night_avg", 62),
@@ -1244,6 +1305,10 @@ def generate_wellness_dataset(
         "calories_active": latest.get("calories_active", 680),
         "calories_bmr": latest.get("calories_bmr", 1730),
     }
+    if "intraday_body_battery" in latest:
+        current_snapshot["intraday_body_battery"] = latest["intraday_body_battery"]
+    if "intraday_stress" in latest:
+        current_snapshot["intraday_stress"] = latest["intraday_stress"]
 
     return {
         "current": current_snapshot,
@@ -1338,8 +1403,8 @@ def compile_rollup(
         month_key = dt.strftime("%Y-%m")
 
         sport = act.get("sport", "other")
-        dist_km = float(act.get("distance_meters", 0.0)) / 1000.0
-        dur_hours = float(act.get("duration_seconds", 0.0)) / 3600.0
+        dist_km = float(act.get("distance_meters") or 0.0) / 1000.0
+        dur_hours = float(act.get("duration_seconds") or 0.0) / 3600.0
         load = float(act.get("tss") or act.get("training_stress_score") or 0.0)
 
         # Monthly map entry
@@ -1375,7 +1440,7 @@ def compile_rollup(
         m_entry["load"] = round(m_entry["load"] + load, 1)
 
         # Physiological accumulations
-        dur_sec = int(act.get("duration_seconds", 0))
+        dur_sec = int(act.get("duration_seconds") or 0)
 
         # HR zones accumulation
         hz = act.get("hr_zones")
@@ -1567,23 +1632,33 @@ def compile_rollup(
         ctl_val = snap["ctl"] if snap else act.get("ctl")
         tsb_val = snap["tsb"] if snap else act.get("tsb")
 
+        gps_val = None if is_strength else act.get("gps_track")
+        tel_val = None if is_strength else act.get("telemetry_stream")
+        if is_strength:
+            summary_polyline = None
+        elif isinstance(gps_val, dict):
+            summary_polyline = gps_val.get("polyline") or gps_val.get("encoded_polyline") or act.get("summary_polyline")
+        else:
+            summary_polyline = act.get("summary_polyline")
+        has_streams = False if is_strength else bool(act.get("has_streams") or gps_val or tel_val)
+
         clean_act = {
             "id": act.get("id", ""),
             "date": date_iso,
             "start_time": date_iso,
             "sport": sport_val,
             "title": act.get("title", ""),
-            "distance_meters": 0.0 if is_strength else float(act.get("distance_meters", 0.0)),
-            "duration_seconds": int(act.get("duration_seconds", 0)),
-            "moving_time_seconds": int(act.get("moving_time_seconds", 0)),
-            "calories": int(act.get("calories", 0)),
-            "avg_hr": int(act.get("avg_hr", 0)),
-            "max_hr": int(act.get("max_hr", 0)),
+            "distance_meters": 0.0 if is_strength else float(act.get("distance_meters") or 0.0),
+            "duration_seconds": int(act.get("duration_seconds") or 0),
+            "moving_time_seconds": int(act.get("moving_time_seconds") or 0),
+            "calories": int(act.get("calories") or 0),
+            "avg_hr": int(act.get("avg_hr") or 0),
+            "max_hr": int(act.get("max_hr") or 0),
             "avg_pace_sec_km": None if is_strength else act.get("avg_pace_sec_km"),
-            "avg_cadence": 0 if is_strength else int(act.get("avg_cadence", 0)),
+            "avg_cadence": 0 if is_strength else int(act.get("avg_cadence") or 0),
             "avg_power": None if is_strength else act.get("avg_power"),
             "avg_power_watts": None if is_strength else act.get("avg_power"),
-            "elevation_gain_meters": 0 if is_strength else int(act.get("elevation_gain_meters", 0)),
+            "elevation_gain_meters": 0 if is_strength else int(act.get("elevation_gain_meters") or 0),
             "tss": float(act.get("tss") or act.get("training_stress_score") or 0.0),
             "training_stress_score": float(act.get("tss") or act.get("training_stress_score") or 0.0),
             "atl": atl_val,
@@ -1592,8 +1667,10 @@ def compile_rollup(
             "laps": act.get("laps", []),
             "splits": act.get("splits", []),
             "hr_zones": act.get("hr_zones", {}),
-            "gps_track": None if is_strength else act.get("gps_track"),
-            "telemetry_stream": None if is_strength else act.get("telemetry_stream"),
+            "summary_polyline": summary_polyline,
+            "has_streams": has_streams,
+            "gps_track": gps_val,
+            "telemetry_stream": tel_val,
         }
         canonical_activities.append(clean_act)
 

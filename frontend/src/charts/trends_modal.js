@@ -119,7 +119,17 @@ export const METRIC_CONFIGS = {
  */
 function normalizeDate(d) {
   if (!d) return new Date();
-  const date = typeof d === 'string' ? new Date(d) : new Date(d.getTime());
+  if (typeof d === 'string') {
+    const m = d.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) {
+      const localDt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      if (!isNaN(localDt.getTime())) return localDt;
+    }
+    const parsed = new Date(d);
+    if (isNaN(parsed.getTime())) return new Date();
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  }
+  const date = new Date(d.getTime());
   if (isNaN(date.getTime())) return new Date();
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -141,6 +151,237 @@ function toISODate(d) {
 function formatDisplayDate(d) {
   const dt = normalizeDate(d);
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+/**
+ * Zero-preserving finite number parser.
+ */
+function toFiniteNumber(val, fallback = null) {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return fallback;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Formats YYYY-MM-DD using local calendar components to avoid UTC-1d shift,
+ * returning e.g. "Thu, Nov 12".
+ */
+function formatShortWeekdayDate(isoDateStr) {
+  const s = String(isoDateStr || '').trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return s || 'Day';
+  const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (isNaN(dt.getTime())) return s || 'Day';
+  return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+/**
+ * Extracts, normalizes, filters (< 0 sentinels / NaN), and sorts intraday
+ * Body Battery timeline points into UTC HH:MM labels.
+ */
+function extractIntradayBodyBattery(record) {
+  const raw = record?.intraday_body_battery;
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const recDateMatch = typeof record?.date === 'string' ? record.date.trim().match(/^(\d{4})-(\d{2})-(\d{2})/) : null;
+  const pts = [];
+  for (const entry of raw) {
+    let tsRaw;
+    let valRaw;
+    if (Array.isArray(entry)) {
+      tsRaw = entry[0];
+      if (entry.length >= 3 && toFiniteNumber(entry[1], null) === null) {
+        valRaw = entry[2];
+        if (entry.length >= 4 && toFiniteNumber(valRaw, null) === null) {
+          valRaw = entry[3];
+        }
+      } else {
+        valRaw = entry[1];
+      }
+    } else if (entry && typeof entry === 'object') {
+      tsRaw = entry.timestamp ?? entry.ts ?? entry.epoch_ms ?? entry.time ?? entry.x;
+      valRaw = entry.value ?? entry.val ?? entry.level ?? entry.bodyBattery ?? entry.y;
+    } else {
+      continue;
+    }
+
+    let tsMs = NaN;
+    if (typeof tsRaw === 'number') {
+      tsMs = (tsRaw > 0 && tsRaw < 1e12) ? tsRaw * 1000 : tsRaw;
+    } else if (typeof tsRaw === 'string' && tsRaw.trim() !== '') {
+      const trimmed = tsRaw.trim();
+      const timeMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (timeMatch) {
+        const hh = Number(timeMatch[1]);
+        const mm = Number(timeMatch[2]);
+        const ss = timeMatch[3] !== undefined ? Number(timeMatch[3]) : 0;
+        if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 59) {
+          if (recDateMatch) {
+            tsMs = Date.UTC(
+              Number(recDateMatch[1]),
+              Number(recDateMatch[2]) - 1,
+              Number(recDateMatch[3]),
+              hh,
+              mm,
+              ss
+            );
+          } else {
+            tsMs = Date.UTC(1970, 0, 1, hh, mm, ss);
+          }
+        }
+      } else {
+        const asNum = Number(trimmed);
+        if (Number.isFinite(asNum)) {
+          tsMs = (asNum > 0 && asNum < 1e12) ? asNum * 1000 : asNum;
+        } else {
+          tsMs = Date.parse(trimmed);
+        }
+      }
+    }
+    if (!Number.isFinite(tsMs)) continue;
+
+    const v = toFiniteNumber(valRaw, null);
+    if (v === null || v < 0) continue;
+
+    const value = Math.max(0, Math.min(100, Math.round(v)));
+    const dt = new Date(tsMs);
+    const hh = String(dt.getUTCHours()).padStart(2, '0');
+    const mm = String(dt.getUTCMinutes()).padStart(2, '0');
+    pts.push({ tsMs, timeLabel: `${hh}:${mm}`, value });
+  }
+  pts.sort((a, b) => a.tsMs - b.tsMs);
+  return pts;
+}
+
+/**
+ * Maps a 0-100 stress score to Garmin 4-zone metadata.
+ */
+function getStressZoneMeta(score) {
+  const s = toFiniteNumber(score, 0);
+  if (s <= 25) return { label: 'Rest', color: '#38bdf8', badgeClass: 'text-sky-400 border-sky-500/30 bg-sky-500/10' };
+  if (s <= 50) return { label: 'Low', color: '#fbbf24', badgeClass: 'text-amber-400 border-amber-500/30 bg-amber-500/10' };
+  if (s <= 75) return { label: 'Medium', color: '#f97316', badgeClass: 'text-orange-400 border-orange-500/30 bg-orange-500/10' };
+  return { label: 'High', color: '#f43f5e', badgeClass: 'text-rose-400 border-rose-500/30 bg-rose-500/10' };
+}
+
+/**
+ * Formats stress duration seconds into compact human-readable string (e.g. "2h 15m" or "45m").
+ */
+function formatStressDuration(seconds) {
+  const s = Math.max(0, Math.round(toFiniteNumber(seconds, 0)));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
+}
+
+/**
+ * Computes 4-zone stress durations (or scalar fallback proportions) for a daily record,
+ * preserving zero values cleanly.
+ */
+function getStressZoneDurations(record) {
+  const stress = Math.max(0, Math.min(100, toFiniteNumber(record?.stress_level, 24)));
+  const restRaw = toFiniteNumber(record?.stress_rest_seconds, null);
+  const lowRaw = toFiniteNumber(record?.stress_low_seconds, null);
+  const medRaw = toFiniteNumber(record?.stress_medium_seconds, null);
+  const highRaw = toFiniteNumber(record?.stress_high_seconds, null);
+  const hasDurations = restRaw !== null || lowRaw !== null || medRaw !== null || highRaw !== null;
+
+  if (hasDurations) {
+    const restSec = Math.max(0, restRaw ?? 0);
+    const lowSec = Math.max(0, lowRaw ?? 0);
+    const medSec = Math.max(0, medRaw ?? 0);
+    const highSec = Math.max(0, highRaw ?? 0);
+    const totalSec = restSec + lowSec + medSec + highSec;
+    const restLowSharePct = totalSec > 0
+      ? Math.round(((restSec + lowSec) / totalSec) * 100)
+      : (stress <= 50 ? 100 : 0);
+    return { hasDurations: true, restSec, lowSec, medSec, highSec, totalSec, restLowSharePct };
+  }
+
+  // Scalar-only historical record fallback (16h = 57600s nominal waking/tracked day)
+  const wRest = Math.max(5, 100 - stress * 1.15);
+  const wLow = Math.max(5, 65 - Math.abs(stress - 38) * 0.9);
+  const wMed = Math.max(4, 55 - Math.abs(stress - 63) * 0.95);
+  const wHigh = Math.max(2, stress > 50 ? (stress - 40) * 0.85 : stress * 0.12);
+  const wSum = wRest + wLow + wMed + wHigh;
+  const baseTotal = 57600;
+  const restSec = Math.round((wRest / wSum) * baseTotal);
+  const lowSec = Math.round((wLow / wSum) * baseTotal);
+  const medSec = Math.round((wMed / wSum) * baseTotal);
+  const highSec = Math.max(0, baseTotal - restSec - lowSec - medSec);
+  const restLowSharePct = Math.round(((restSec + lowSec) / baseTotal) * 100);
+  return { hasDurations: false, restSec, lowSec, medSec, highSec, totalSec: baseTotal, restLowSharePct };
+}
+
+/**
+ * Extracts, normalizes, filters (< 0 sentinels / NaN), and sorts intraday
+ * Stress timeline points into UTC HH:MM labels.
+ */
+function extractIntradayStress(record) {
+  const raw = record?.intraday_stress;
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const recDateMatch = typeof record?.date === 'string' ? record.date.trim().match(/^(\d{4})-(\d{2})-(\d{2})/) : null;
+  const pts = [];
+  for (const entry of raw) {
+    let tsRaw;
+    let valRaw;
+    if (Array.isArray(entry)) {
+      tsRaw = entry[0];
+      valRaw = entry[1];
+    } else if (entry && typeof entry === 'object') {
+      tsRaw = entry.timestamp ?? entry.ts ?? entry.epoch_ms ?? entry.time ?? entry.x;
+      valRaw = entry.value ?? entry.val ?? entry.stress ?? entry.stressLevel ?? entry.y;
+    } else {
+      continue;
+    }
+
+    let tsMs = NaN;
+    if (typeof tsRaw === 'number') {
+      tsMs = (tsRaw > 0 && tsRaw < 1e12) ? tsRaw * 1000 : tsRaw;
+    } else if (typeof tsRaw === 'string' && tsRaw.trim() !== '') {
+      const trimmed = tsRaw.trim();
+      const timeMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (timeMatch) {
+        const hh = Number(timeMatch[1]);
+        const mm = Number(timeMatch[2]);
+        const ss = timeMatch[3] !== undefined ? Number(timeMatch[3]) : 0;
+        if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 59) {
+          if (recDateMatch) {
+            tsMs = Date.UTC(
+              Number(recDateMatch[1]),
+              Number(recDateMatch[2]) - 1,
+              Number(recDateMatch[3]),
+              hh,
+              mm,
+              ss
+            );
+          } else {
+            tsMs = Date.UTC(1970, 0, 1, hh, mm, ss);
+          }
+        }
+      } else {
+        const asNum = Number(trimmed);
+        if (Number.isFinite(asNum)) {
+          tsMs = (asNum > 0 && asNum < 1e12) ? asNum * 1000 : asNum;
+        } else {
+          tsMs = Date.parse(trimmed);
+        }
+      }
+    }
+    if (!Number.isFinite(tsMs)) continue;
+
+    const v = toFiniteNumber(valRaw, null);
+    if (v === null || v < 0) continue;
+
+    const value = Math.max(0, Math.min(100, Math.round(v)));
+    const dt = new Date(tsMs);
+    const hh = String(dt.getUTCHours()).padStart(2, '0');
+    const mm = String(dt.getUTCMinutes()).padStart(2, '0');
+    pts.push({ tsMs, timeLabel: `${hh}:${mm}`, value });
+  }
+  pts.sort((a, b) => a.tsMs - b.tsMs);
+  return pts;
 }
 
 /**
@@ -618,10 +859,10 @@ function renderKPICards(metric, records, cfg) {
     kpi3 = { label: 'Max Day', val: `${max.toLocaleString()} steps`, sub: 'Long hike / excursion' };
     kpi4 = { label: 'Period Total', val: `${sum.toLocaleString()} steps`, sub: `${effectiveRecs.length} days accumulated` };
   } else if (metric === 'body_battery') {
-    const highs = records.map(r => r.body_battery_high ?? 90);
-    const lows = records.map(r => r.body_battery_low ?? 25);
-    const charged = records.map(r => r.body_battery_charged ?? 65);
-    const drained = records.map(r => r.body_battery_drained ?? 68);
+    const highs = records.map(r => toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, 90)));
+    const lows = records.map(r => toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, 25)));
+    const charged = records.map(r => toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, 65)));
+    const drained = records.map(r => toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, 68)));
 
     const avgHigh = Math.round(highs.reduce((s, v) => s + v, 0) / highs.length);
     const avgLow = Math.round(lows.reduce((s, v) => s + v, 0) / lows.length);
@@ -633,16 +874,27 @@ function renderKPICards(metric, records, cfg) {
     kpi3 = { label: 'Avg Charged', val: `+${avgChg} pts`, sub: 'Nightly replenishment' };
     kpi4 = { label: 'Avg Drained', val: `-${avgDrn} pts`, sub: 'Daily expenditure' };
   } else if (metric === 'stress') {
-    const vals = records.map(r => (typeof r.stress_level === 'number' && !isNaN(r.stress_level)) ? r.stress_level : 24);
+    const vals = records.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_level, 24))));
     const avg = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
-    const qualifier = avg < 25 ? 'Rest / Low' : (avg < 50 ? 'Low Stress' : 'Medium');
+    const avgMeta = getStressZoneMeta(avg);
 
-    kpi1 = { label: 'Average Stress', val: `${avg} pts`, sub: qualifier };
-    kpi2 = { label: 'Minimum Stress', val: `${min} pts`, sub: 'Restful recovery' };
-    kpi3 = { label: 'Peak Stress', val: `${max} pts`, sub: 'Workout / high load' };
-    kpi4 = { label: 'Status', val: 'BALANCED', sub: 'Autonomic equilibrium' };
+    const zoneDurs = records.map(r => getStressZoneDurations(r));
+    const sumRestLow = zoneDurs.reduce((s, d) => s + d.restSec + d.lowSec, 0);
+    const sumTotal = zoneDurs.reduce((s, d) => s + d.totalSec, 0);
+    const restLowShare = sumTotal > 0
+      ? Math.round((sumRestLow / sumTotal) * 100)
+      : Math.round(zoneDurs.reduce((s, d) => s + d.restLowSharePct, 0) / zoneDurs.length);
+
+    const peaks = records.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_max, toFiniteNumber(r.stress_level, 24)))));
+    const maxPeak = Math.max(...peaks);
+    const totalHighSec = zoneDurs.reduce((s, d) => s + d.highSec, 0);
+
+    const autonomicStatus = avg <= 25 ? 'Recovered' : (avg <= 55 && restLowShare >= 50 ? 'Balanced' : 'Stressed');
+
+    kpi1 = { label: 'Overall Avg Stress', val: `${avg} pts`, sub: `${avgMeta.label} zone` };
+    kpi2 = { label: 'Rest / Low Share', val: `${restLowShare}%`, sub: 'Recovery & low stress time' };
+    kpi3 = { label: 'High Stress Peak', val: `${maxPeak} pts`, sub: totalHighSec > 0 ? `High zone: ${formatStressDuration(totalHighSec)}` : 'Peak recorded load' };
+    kpi4 = { label: 'Autonomic Status', val: autonomicStatus, sub: `${records.length} day${records.length === 1 ? '' : 's'} analyzed` };
   } else if (metric === 'intensity_minutes') {
     const mod = records.map(r => r.intensity_minutes_moderate || 0);
     const vig = records.map(r => r.intensity_minutes_vigorous || 0);
@@ -915,53 +1167,184 @@ function renderMetricChart(metric, records, startDate, endDate) {
       }
     };
   } else if (metric === 'body_battery') {
-    const highs = records.map(r => r.body_battery_high ?? 90);
-    const lows = records.map(r => r.body_battery_low ?? 25);
-    const charged = records.map(r => r.body_battery_charged ?? 65);
-    const drained = records.map(r => r.body_battery_drained ?? 68);
+    const isSingleDay = state.activeRange === '1d' && records.length === 1;
+    const intradayPts = isSingleDay ? extractIntradayBodyBattery(records[0]) : [];
 
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Peak Charge', data: highs, borderColor: '#10b981', borderWidth: 2 },
-          { label: 'Low Reserve', data: lows, borderColor: '#f43f5e', borderWidth: 2 },
-          { label: 'Charged (+pts)', data: charged, borderColor: '#34d399', borderWidth: 1.5 },
-          { label: 'Drained (-pts)', data: drained, borderColor: '#fb923c', borderWidth: 1.5 }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: false },
-          y: { stacked: false, min: 0, max: 100 }
-        }
-      }
-    };
-  } else if (metric === 'stress') {
-    const stressVals = records.map(r => (typeof r.stress_level === 'number' && !isNaN(r.stress_level)) ? r.stress_level : 24);
-
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Daily Stress Score', data: stressVals, borderColor: '#fbbf24', borderWidth: 2, fill: true }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: false },
-          y: { stacked: false, min: 0, max: 100 }
+    if (isSingleDay && intradayPts.length > 1) {
+      chartConfig = {
+        type: 'line',
+        data: {
+          labels: intradayPts.map(p => p.timeLabel),
+          datasets: [
+            {
+              label: 'Body Battery (pts)',
+              data: intradayPts.map(p => p.value),
+              borderColor: '#38bdf8',
+              borderWidth: 2,
+              fill: true,
+              pointRadius: intradayPts.length > 48 ? 1.5 : 2.5
+            }
+          ]
         },
-        annotations: [
-          { type: 'band', yMin: 0, yMax: 25, color: 'rgba(52, 211, 153, 0.08)', label: 'Rest (0-25)' },
-          { type: 'band', yMin: 25, yMax: 50, color: 'rgba(56, 189, 248, 0.08)', label: 'Low (25-50)' },
-          { type: 'band', yMin: 50, yMax: 75, color: 'rgba(251, 191, 36, 0.08)', label: 'Med (50-75)' },
-          { type: 'band', yMin: 75, yMax: 100, color: 'rgba(248, 113, 113, 0.08)', label: 'High (75-100)' }
-        ]
+        options: {
+          scales: {
+            x: { stacked: false },
+            y: { stacked: false, min: 0, max: 100 }
+          }
+        }
+      };
+    } else {
+      const highs = [];
+      const lows = [];
+      const charged = [];
+      const drained = [];
+      const tooltipTitles = [];
+      const tooltipLines = [];
+
+      for (const r of records) {
+        const rawHi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, 90));
+        const rawLo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, 25));
+        const hi = Math.max(0, Math.min(100, Math.round(Math.max(rawHi, rawLo))));
+        const lo = Math.max(0, Math.min(100, Math.round(Math.min(rawHi, rawLo))));
+        const chg = Math.max(0, Math.round(toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, 65))));
+        const drn = Math.max(0, Math.round(toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, 68))));
+
+        highs.push(hi);
+        lows.push(lo);
+        charged.push(chg);
+        drained.push(drn);
+        tooltipTitles.push(formatShortWeekdayDate(r.date));
+        tooltipLines.push([
+          { text: `Daily High: ${hi} pts`, color: '#38bdf8' },
+          { text: `Daily Low: ${lo} pts`, color: '#c4b5fd' },
+          { text: `Charged: +${chg} pts | Drained: -${drn} pts`, color: '#a79bc2' }
+        ]);
       }
-    };
+
+      chartConfig = {
+        type: 'rangeBar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Body Battery',
+              data: highs,
+              highData: highs,
+              lowData: lows,
+              chargedData: charged,
+              drainedData: drained,
+              tooltipTitles,
+              tooltipLines,
+              showCapLabels: isSingleDay,
+              showValueLabels: isSingleDay,
+              highColor: '#38bdf8',
+              lowFillColor: '#0b0714',
+              lowColor: '#c4b5fd',
+              lowStrokeColor: '#c4b5fd',
+              pillarTopColor: 'rgba(168, 85, 247, 0.28)',
+              pillarBottomColor: '#2d2147',
+              legendItems: [
+                { label: 'Daily High', color: '#38bdf8', fillColor: '#38bdf8', shape: 'dot', symbol: 'dot' },
+                { label: 'Daily Low', color: '#c4b5fd', fillColor: '#0b0714', strokeColor: '#c4b5fd', shape: 'ring', symbol: 'ring' }
+              ]
+            }
+          ]
+        },
+        options: {
+          scales: {
+            x: { stacked: false },
+            y: { stacked: false, min: 0, max: 100 }
+          }
+        }
+      };
+    }
+  } else if (metric === 'stress') {
+    const stressAnnotations = [
+      { type: 'band', yMin: 0, yMax: 25, color: 'rgba(56, 189, 248, 0.08)', label: 'Rest (0-25)', labelColor: '#38bdf8' },
+      { type: 'band', yMin: 25, yMax: 50, color: 'rgba(251, 191, 36, 0.08)', label: 'Low (26-50)', labelColor: '#fbbf24' },
+      { type: 'band', yMin: 50, yMax: 75, color: 'rgba(249, 115, 22, 0.08)', label: 'Med (51-75)', labelColor: '#f97316' },
+      { type: 'band', yMin: 75, yMax: 100, color: 'rgba(244, 63, 94, 0.08)', label: 'High (76-100)', labelColor: '#f43f5e' }
+    ];
+    const stressLegendItems = [
+      { label: 'Rest (0-25)', color: '#38bdf8', shape: 'circle' },
+      { label: 'Low (26-50)', color: '#fbbf24', shape: 'circle' },
+      { label: 'Med (51-75)', color: '#f97316', shape: 'circle' },
+      { label: 'High (76-100)', color: '#f43f5e', shape: 'circle' }
+    ];
+
+    const intradayPts = state.activeRange === '1d' && records.length === 1
+      ? extractIntradayStress(records[0])
+      : [];
+
+    if (intradayPts.length > 1) {
+      const pointColors = intradayPts.map(p => getStressZoneMeta(p.value).color);
+      chartConfig = {
+        type: 'line',
+        data: {
+          labels: intradayPts.map(p => p.timeLabel),
+          datasets: [
+            {
+              label: 'Intraday Stress',
+              data: intradayPts.map(p => p.value),
+              borderColor: '#a855f7',
+              backgroundColor: 'rgba(168, 85, 247, 0.12)',
+              pointColors,
+              borderWidth: 2,
+              fill: true,
+              tooltipTitles: intradayPts.map(p => `${records[0].date} • ${p.timeLabel}`),
+              tooltipLines: intradayPts.map(p => [`Stress: ${p.value} pts (${getStressZoneMeta(p.value).label})`]),
+              legendItems: stressLegendItems
+            }
+          ]
+        },
+        options: {
+          scales: {
+            x: { stacked: false },
+            y: { stacked: false, min: 0, max: 100 }
+          },
+          annotations: stressAnnotations
+        }
+      };
+    } else {
+      const stressVals = records.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_level, 24))));
+      const barColors = stressVals.map(v => getStressZoneMeta(v).color);
+      const tooltipTitles = records.map(r => formatShortWeekdayDate(r.date));
+      const tooltipLines = records.map((r, i) => {
+        const sc = stressVals[i];
+        const meta = getStressZoneMeta(sc);
+        const durs = getStressZoneDurations(r);
+        return [
+          `Avg Stress: ${sc} pts (${meta.label})`,
+          `Rest: ${formatStressDuration(durs.restSec)} | Low: ${formatStressDuration(durs.lowSec)}`,
+          `Med: ${formatStressDuration(durs.medSec)} | High: ${formatStressDuration(durs.highSec)}`
+        ];
+      });
+
+      chartConfig = {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Daily Stress Score',
+              data: stressVals,
+              backgroundColor: barColors,
+              barColors,
+              tooltipTitles,
+              tooltipLines,
+              legendItems: stressLegendItems
+            }
+          ]
+        },
+        options: {
+          scales: {
+            x: { stacked: false },
+            y: { stacked: false, min: 0, max: 100 }
+          },
+          annotations: stressAnnotations
+        }
+      };
+    }
   } else if (metric === 'intensity_minutes') {
     const moderate = records.map(r => r.intensity_minutes_moderate || 0);
     const vigorous = records.map(r => r.intensity_minutes_vigorous || 0);
@@ -1179,34 +1562,42 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">Drained</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
+      const hi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, 90));
+      const lo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, 25));
+      const chg = toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, 65));
+      const drn = toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, 68));
       return `
         <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${r.body_battery_high ?? 90}</td>
-          <td class="py-2 px-3 text-right text-rose-400 font-mono">${r.body_battery_low ?? 25}</td>
-          <td class="py-2 px-3 text-right text-emerald-400 font-mono">+${r.body_battery_charged ?? 65}</td>
-          <td class="py-2 px-3 text-right text-orange-400 font-mono">-${r.body_battery_drained ?? 68}</td>
+          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${hi}</td>
+          <td class="py-2 px-3 text-right text-rose-400 font-mono">${lo}</td>
+          <td class="py-2 px-3 text-right text-emerald-400 font-mono">+${chg}</td>
+          <td class="py-2 px-3 text-right text-orange-400 font-mono">-${drn}</td>
         </tr>
       `;
     }).join('');
   } else if (metric === 'stress') {
     theadRow.innerHTML = `
       <th class="py-2 px-3">Date</th>
-      <th class="py-2 px-3 text-right">Stress Score</th>
-      <th class="py-2 px-3 text-right">Level</th>
+      <th class="py-2 px-3 text-right">Avg Stress</th>
+      <th class="py-2 px-3 text-right">Rest Time</th>
+      <th class="py-2 px-3 text-right">Low / Med / High</th>
       <th class="py-2 px-3 text-right">Status</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
-      const sc = (typeof r.stress_level === 'number' && !isNaN(r.stress_level)) ? r.stress_level : 24;
-      const q = r.stress_qualifier || (sc < 25 ? 'Rest' : 'Low');
+      const sc = Math.max(0, Math.min(100, Math.round(toFiniteNumber(r.stress_level, 24))));
+      const meta = getStressZoneMeta(sc);
+      const q = r.stress_qualifier || meta.label;
+      const durs = getStressZoneDurations(r);
       return `
         <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-amber-400 font-mono font-bold">${sc}</td>
-          <td class="py-2 px-3 text-right text-zinc-300 font-mono">${q}</td>
+          <td class="py-2 px-3 text-right font-mono font-bold" style="color: ${meta.color};">${sc} pts</td>
+          <td class="py-2 px-3 text-right text-sky-400 font-mono">${formatStressDuration(durs.restSec)}</td>
+          <td class="py-2 px-3 text-right text-zinc-300 font-mono">${formatStressDuration(durs.lowSec)} / ${formatStressDuration(durs.medSec)} / ${formatStressDuration(durs.highSec)}</td>
           <td class="py-2 px-3 text-right">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${sc < 25 ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : 'text-amber-400 border-amber-500/30 bg-amber-500/10'}">
-              ${q.toUpperCase()}
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${meta.badgeClass}">
+              ${String(q).toUpperCase()}
             </span>
           </td>
         </tr>

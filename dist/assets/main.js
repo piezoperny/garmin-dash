@@ -83,7 +83,7 @@ export function loadCustomizationPreferences() {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
       activeCustomization = {
-        wellness_layout: parsed.wellness_layout || loadWellnessLayout(),
+        wellness_layout: loadWellnessLayout(),
         hidden_cards: Array.isArray(parsed.hidden_cards) ? parsed.hidden_cards : [],
         thresholds: {
           max_hr: Number(parsed.thresholds?.max_hr) > 0 ? Number(parsed.thresholds.max_hr) : null,
@@ -200,7 +200,10 @@ function renderDashboard(rollup) {
   applyCardVisibility();
   syncDynamicSportFilterButtons(rollup.activities || []);
 
-  // 0. Health & Fitness Dashboard (Garmin Connect Web Layout: In Focus & At a Glance)
+  // 0a. Today's / Latest Activity Hero Banner (top of homepage)
+  renderTodayActivityBanner(rollup.activities || [], activeUnit);
+
+  // 0b. Health & Fitness Dashboard (Garmin Connect Web Layout: In Focus & At a Glance)
   renderWellnessDashboard(rollup);
 
   // 1. KPI Cards (reacts to active unit and sport filter)
@@ -367,6 +370,7 @@ async function handlePassphraseSubmit(e) {
 function handleLockVault() {
   clearSession();
   activeRollup = null;
+  renderTodayActivityBanner([], activeUnit);
   showModal();
 }
 

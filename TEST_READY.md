@@ -1,103 +1,65 @@
-# TEST_READY: End-to-End & Integration Test Infrastructure
+# Test Readiness & Verification Inventory (`TEST_READY.md`)
 
-**Project**: Client-Side Encrypted Garmin Fitness Dashboard  
-**Status**: Ready for Verification & Implementation Gate  
-**Date**: 2026-10-24  
-**Author**: Test Writer Agent (`test_writer_e2e`)  
-**Target Coverage**: Acceptance Criteria 1, 2, 3, and 4 (`ORIGINAL_REQUEST.md`)
+## 1. Test Inventory
 
----
+### Owned E2E & Test Infrastructure Deliverables
+| File | Layer | Coverage | Tests |
+|---|---|---|---|
+| [`tests/test_e2e_m1_archive_contracts.py`](file:///home/antigravity/piezoperny/garmin-dash/tests/test_e2e_m1_archive_contracts.py) | Python (`unittest`) | M1 Backend, `LiveGarminClient` (6 activity + 16 wellness endpoints), `normalize_daily_wellness`, `MockGenerator` (`summary_polyline` & intraday), sharded sync + `raw_wellness` archival + 14d retention + offline `reprocess_archive=True`, `import_garmindb.py`, `cleanup.py`, `SecretRedactionFilter`, `.github/workflows/sync.yml` | 19 (Tiers 1–4) |
+| [`tests/e2e/test_dashboard_runner.js`](file:///home/antigravity/piezoperny/garmin-dash/tests/e2e/test_dashboard_runner.js) | Node.js ESM + Web Crypto | Part A: 6 baseline auth state-machine checks (`TC-01`..`TC-06`); Part B: 4 real-module M2–M5 enhancement E2E checks + shared headless DOM/Canvas2D harness (`--strict` / `E2E_STRICT=1` gate) | 6 Baseline + 4 Enhancement |
+| [`tests/e2e/test_enhancements_e2e.js`](file:///home/antigravity/piezoperny/garmin-dash/tests/e2e/test_enhancements_e2e.js) | Node.js ESM + Web Crypto | Opaque-box 4-tier E2E suite for M2 (12 tests), M3 (12 tests), M4 (12 tests), M5 (10 tests), Cross-Feature (6 tests) | 52 (Tiers 1–4) |
+| [`TEST_INFRA.md`](file:///home/antigravity/piezoperny/garmin-dash/TEST_INFRA.md) | Documentation | Headless DOM/Canvas2D/WebCrypto harness design, suite exit policies, workspace hygiene & isolation rules | — |
+| [`TEST_READY.md`](file:///home/antigravity/piezoperny/garmin-dash/TEST_READY.md) | Documentation | Complete test inventory, exact runnable commands, and verbatim verified baseline counts | — |
 
-## 1. Test Suite Summary & Inventory
-
-The test infrastructure is partitioned into opaque-box integration and E2E suites located under `tests/`. It covers all four acceptance criteria without requiring live Garmin API credentials or external network access.
-
-| Test File | Target Subsystem | Acceptance Criteria | Framework | Test Count |
-| :--- | :--- | :--- | :--- | :---: |
-| `tests/test_crypto_interop.py` | PBKDF2 (600k iters), AES-256-GCM, wire format slicing, tamper rejection across all slices, truncation | AC 1, R2 | Python `unittest` / `pytest` | 16 |
-| `tests/test_crypto_web.js` | Native Web Crypto (`crypto.subtle`) decryption, sessionStorage raw key caching, tamper & auth errors | AC 1, R3 | Node.js (Web Crypto native) | 11 |
-| `tests/test_ingestion_sftp.py` | Mocked Garmin API incremental sync, OAuth 2.0 refresh, Hetzner SFTP archival, raw file purge | AC 2, R1, R5 | Python `unittest` / `pytest` | 12 |
-| `tests/test_mock_generator.py` | Deterministic 8-week multi-sport dataset, 14-byte FIT protocol 2.0 header & CRC, metric boundaries | AC 2, R1 | Python `unittest` / `pytest` | 12 |
-| `tests/test_secret_hygiene.py` | Forensic zero-plaintext static scanner, `.fit` & JSON leak detection, GPS & secret detection | AC 2, R5 | Python `unittest` / `pytest` | 12 |
-| `tests/e2e/dashboard.spec.js` | Playwright browser E2E: password modal gate, invalid passphrase, decrypt/render, reload bypass | AC 3, R3 | Playwright (`@playwright/test`) | 7 |
-| `tests/e2e/test_dashboard_runner.js` | In-process headless DOM and auth state machine simulation runner | AC 3, R3 | Node.js (Web Crypto native) | 6 |
-| **TOTAL** | | | | **76** (70 distinct) |
+### Full Repository Test Suites
+- **Python Suite (`tests/test_*.py`)**: `test_acceptance_criteria.py`, `test_ci_and_docs.py`, `test_crypto.py`, `test_daily_wellness_full_bundle.py`, `test_e2e_m1_archive_contracts.py`, `test_ingestion_pipeline.py`, `test_offline_reprocess_archive.py`, `test_secret_hygiene.py`, `test_visualizations.py`
+- **Node.js Suites (`tests/*.js`, `tests/e2e/*.js`)**: `test_crypto_web.js`, `test_frontend_modules.js`, `test_m2_today_activity.js`, `test_m3_body_battery_rangebar.js`, `test_m4_trend_modal.js`, `test_chart_layout_integrity.js`, `e2e/test_dashboard_runner.js`, `e2e/test_enhancements_e2e.js`
 
 ---
 
-## 2. Test Breakdown by Tier
-
-Following the project test philosophy (`TEST_INFRA.md`):
-
-| Tier | Focus Area | Test Count | Description |
-| :--- | :--- | :---: | :--- |
-| **Tier 1** | Core Feature Coverage | **25** | Verifies primary happy path for every feature (PBKDF2, AES-GCM, wire format packing, incremental API fetch, SFTP token persistence, FIT binary headers, clean dist directory, and dashboard unlocking). |
-| **Tier 2** | Boundary & Corner Cases | **37** | Verifies bit-flipping across all 4 wire slices (Salt, IV, Ciphertext, Tag), truncation (<44 bytes), empty payloads, unicode/emoji passphrases, token expiry, upload size mismatches, metric bounds (HR 40-215 bpm, Power 0-1500W, Cadence), and leak injections. |
-| **Tier 3** | Cross-Feature Combinations | **7** | Verifies end-to-end multi-module flows: Python encryption $\leftrightarrow$ Web Crypto JS decryption, full ingestion-to-SFTP archival with staging cleanup, and sessionStorage reload bypass. |
-| **Tier 4** | Real-World & Stress Scenarios | **7** | Verifies large payload rollups (>50-250 KB), multi-week periodized training schedules, chronological ordering, idempotent empty batch handling, and lock vault state purges. |
-| **Grand Total** | | **76** | **100% Passing** across all executable targets. |
-
----
-
-## 3. Exact Test Execution Commands
-
-### 3.1 Python Integration & Security Suites
-To run all Python test suites (`test_crypto_interop.py`, `test_ingestion_sftp.py`, `test_mock_generator.py`, `test_secret_hygiene.py`):
+## 2. Exact Runnable Commands
 
 ```bash
-# Standard Python unittest runner (zero external dependencies required)
-python -m unittest discover -s tests -p "test_*.py" -v
+# 1. Full Python Unit, Integration, Hygiene & M1 E2E Suite
+python3 -m unittest discover -s tests -p "test_*.py" -v
 
-# Or using pytest (in environments with pytest installed)
-pytest tests/ -v
-```
+# 2. M1 E2E Contracts Standalone
+python3 -m unittest tests/test_e2e_m1_archive_contracts.py -v
 
-### 3.2 JavaScript Web Crypto Cross-Runtime Suite
-To run the Web Crypto subtle decryption, sessionStorage caching, and tamper tests:
-
-```bash
-# Using Node.js (Node 18+ or Node 24)
+# 3. Frontend Web Crypto & DOM Contracts
 node tests/test_crypto_web.js
+node tests/test_frontend_modules.js
+node tests/test_m2_today_activity.js
+node tests/test_m3_body_battery_rangebar.js
+node tests/test_m4_trend_modal.js
+node tests/test_chart_layout_integrity.js
 
-# Or using Antigravity bundled Node runtime
-agy-node tests/test_crypto_web.js
-```
-
-### 3.3 Headless E2E Dashboard Simulation Suite
-To run the in-process DOM state machine and auth lifecycle simulation:
-
-```bash
-# Using Node.js
+# 4. E2E Runner (Default: Baseline 6/6 gate; --strict: requires 100% M2-M5 pass)
 node tests/e2e/test_dashboard_runner.js
+node tests/e2e/test_dashboard_runner.js --strict
 
-# Or using Antigravity bundled Node runtime
-agy-node tests/e2e/test_dashboard_runner.js
-```
+# 5. M2-M5 Opaque-Box 4-Tier Enhancements E2E Suite (TDD Red-to-Green Gate)
+node tests/e2e/test_enhancements_e2e.js
 
-### 3.4 Full Browser Playwright E2E Suite (CI/CD)
-To run the Playwright browser E2E tests against the built dashboard frontend (`dist/`):
-
-```bash
-# Start local static server (in background)
-npx serve dist -l 3000
-
-# Execute Playwright E2E spec
-npx playwright test tests/e2e/dashboard.spec.js --headed=false
+# 6. Zero-Plaintext Workspace Forensic Hygiene Audit
+python3 -m src.ingestion.cleanup --verify-only
 ```
 
 ---
 
-## 4. Verification & Gate Confirmation
+## 3. Verbatim Verified Results (Iteration 3 Polish Snapshot)
 
-- **Acceptance Criterion 1 (Crypto & Tamper)**:
-  - Python $\leftrightarrow$ Web Crypto decryption produces byte-for-byte matching JSON (`test_t3_crypto_15_cross_runtime_python_to_webcrypto` & `T1-WEB-01`).
-  - Bit-flip tamper tests across all 4 slices (Salt, IV, Ciphertext, Auth Tag) immediately reject with authentication errors (`test_t2_crypto_09` through `test_t2_crypto_12`, and `T2-WEB-05` through `T2-WEB-08`).
-  - Truncated payloads (<44 bytes) rejected before cryptographic routines are invoked (`test_t2_crypto_13` & `T2-WEB-09`).
-- **Acceptance Criterion 2 (Ingestion, SFTP & Forensic Hygiene)**:
-  - Mocked Garmin API endpoints verify incremental fetching and OAuth token refresh (`test_t1_ingest_01`, `test_t1_ingest_03`, `test_t2_ingest_06`).
-  - Mocked Paramiko SFTP client verifies upload, atomic token persistence, and upload size verification (`test_t1_ingest_02`, `test_t1_ingest_04`, `test_t2_ingest_07`, `test_t2_ingest_09`).
-  - Staging scrubber purges all `.fit` and raw `.json` files (`test_t1_cleanup_05`, `test_t2_ingest_10`).
-  - Static audit scanner confirms clean distribution and detects injected `.fit`, JSON, GPS traces, or SSH keys (`test_t1_audit_01` through `test_t2_audit_10`).
-  - Synthetic data generator deterministic seed 42 verified with genuine 14-byte binary `.FIT` header (`test_t1_mock_01` through `test_t1_mock_04`).
-- **Acceptance Criterion 3 (Dashboard UI & E2E)**:
-  - Headless state machine and Playwright spec cover locked modal, invalid passphrase feedback, valid unlock rendering all 3 visualization sections, sessionStorage bypass, and manual lock vault (`TC-01` through `TC-07`).
+| Command | Result | Verbatim Summary |
+|---|---|---|
+| `python3 -m unittest discover -s tests -p "test_*.py" -v` | Exit `0` | `Ran 188 tests in 32.568s` — `OK` (includes `19` M1 E2E archive contract tests) |
+| `python3 -m unittest tests/test_e2e_m1_archive_contracts.py -v` | Exit `0` | `Ran 19 tests in 14.368s` — `OK` |
+| `node tests/test_crypto_web.js` | Exit `0` | `=== Web Crypto Results: 11 passed, 0 failed (Total: 11) ===` |
+| `node tests/test_frontend_modules.js` | Exit `0` | `=== Frontend Modules Results: 6 passed, 0 failed (Total: 6) ===` |
+| `node tests/test_m2_today_activity.js` | Exit `0` | `=== M2 Test Results: 15 passed, 0 failed (Total: 15) ===` |
+| `node tests/test_m3_body_battery_rangebar.js` | Exit `0` | `ALL 21 M3 BODY BATTERY RANGEBAR TESTS PASSED.` |
+| `node tests/test_m4_trend_modal.js` | Exit `0` | `Milestone 4 Test Suite Results: 24 passed, 0 failed (Total: 24)` |
+| `node tests/test_chart_layout_integrity.js` | Exit `0` | `[PASS] All chart layouts verified: zero legend clipping, zero X-axis collisions across all viewports.` |
+| `node tests/e2e/test_dashboard_runner.js` | Exit `0` | `Baseline Checks: 6 passed, 0 failed (Total: 6)` / `M2-M5 Enhancement E2E Checks: 2 passed, 2 pending-impl, 0 errors (Total: 4)` |
+| `node tests/e2e/test_dashboard_runner.js --strict` | Exit `1` | `STRICT MODE: Exiting 1 because M2-M5 enhancement checks are still pending implementation.` |
+| `node tests/e2e/test_enhancements_e2e.js` | Exit `1` | `=== Enhancements E2E Total: 27 passed, 25 pending_impl, 0 errors (Total: 52) ===` (`M2: 12/12`, `M3: 12/12`, `M4: 1/12`, `M5: 0/10`, `CROSS: 2/6`; `Tier 1: 12/23`, `Tier 2: 11/20`, `Tier 3: 2/5`, `Tier 4: 2/4`) |
+| `python3 -m src.ingestion.cleanup --verify-only` | Exit `0` | `PASS: Workspace is clean. Zero raw .fit or unencrypted activity summaries detected.` |

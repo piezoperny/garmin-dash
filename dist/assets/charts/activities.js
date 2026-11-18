@@ -24,12 +24,129 @@ import { getStoredKey } from '../session.js';
 
 let profileChartInstance = null;
 let currentActivities = [];
+let currentTodayActivities = [];
 let currentFilter = 'all';
 let currentSearch = '';
 let currentSort = 'date-desc';
 let currentUnit = 'km';
 let currentSelectedActivity = null;
 let isDrawerExpanded = false;
+let bannerRenderGeneration = 0;
+
+const shardCache = new Map();
+const inFlightShards = new Map();
+
+export function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function applyShardToActivity(act, shard) {
+  if (!act || !shard || typeof shard !== 'object') return;
+  if (shard.gps_track) act.gps_track = shard.gps_track;
+  if (shard.telemetry_stream) act.telemetry_stream = shard.telemetry_stream;
+  if (Array.isArray(shard.splits) && shard.splits.length > 0) act.splits = shard.splits;
+  if (Array.isArray(shard.laps) && shard.laps.length > 0) act.laps = shard.laps;
+  if (shard.hr_zones && Object.keys(shard.hr_zones).length > 0) act.hr_zones = shard.hr_zones;
+  if (!act.summary_polyline && shard.gps_track && typeof shard.gps_track === 'object') {
+    act.summary_polyline = shard.gps_track.polyline || shard.gps_track.encoded_polyline || null;
+  }
+  act._streamsLoaded = true;
+  act._streamsLoading = false;
+}
+
+function syncActivityShardState(actId, shard, targetAct = null) {
+  const idStr = String(actId);
+  const seen = new Set();
+  const candidates = [targetAct, ...(currentActivities || []), ...(currentTodayActivities || [])];
+  for (const item of candidates) {
+    if (!item || typeof item !== 'object' || seen.has(item)) continue;
+    seen.add(item);
+    if (item === targetAct || String(item.id) === idStr) {
+      if (shard) {
+        applyShardToActivity(item, shard);
+      } else {
+        item._streamsLoading = false;
+      }
+    }
+  }
+}
+
+/**
+ * Fetches and decrypts a sharded activity stream payload (./streams/<id>.enc).
+ * Resolves to null gracefully on missing key, network/404 failure, <44B wire, or decrypt error.
+ * @param {string|number} actId
+ * @param {object|null} targetAct
+ * @returns {Promise<object|null>}
+ */
+export async function loadActivityStreamShard(actId, targetAct = null) {
+  if (actId === null || actId === undefined || actId === '') return null;
+  const idStr = String(actId);
+  const rawKey = getStoredKey();
+  if (!rawKey || typeof fetch !== 'function') {
+    if (targetAct && typeof targetAct === 'object') {
+      targetAct._streamsLoading = false;
+    }
+    return null;
+  }
+
+  const cacheKey = `${rawKey}::${idStr}`;
+  if (shardCache.has(cacheKey)) {
+    const cached = shardCache.get(cacheKey);
+    syncActivityShardState(idStr, cached, targetAct);
+    return cached;
+  }
+
+  if (inFlightShards.has(cacheKey)) {
+    const shard = await inFlightShards.get(cacheKey);
+    if (shard) {
+      syncActivityShardState(idStr, shard, targetAct);
+    } else if (targetAct && typeof targetAct === 'object') {
+      targetAct._streamsLoading = false;
+    }
+    return shard;
+  }
+
+  if (targetAct && typeof targetAct === 'object') {
+    targetAct._streamsLoading = true;
+  }
+
+  const promise = (async () => {
+    try {
+      const res = await fetch(`./streams/${encodeURIComponent(idStr)}.enc`);
+      if (!res || !res.ok) {
+        syncActivityShardState(idStr, null, targetAct);
+        return null;
+      }
+      const buf = await res.arrayBuffer();
+      if (!buf || buf.byteLength < 44) {
+        syncActivityShardState(idStr, null, targetAct);
+        return null;
+      }
+      const shard = await decryptWithRawKey(rawKey, new Uint8Array(buf));
+      if (!shard || typeof shard !== 'object') {
+        syncActivityShardState(idStr, null, targetAct);
+        return null;
+      }
+      shardCache.set(cacheKey, shard);
+      syncActivityShardState(idStr, shard, targetAct);
+      return shard;
+    } catch (_err) {
+      syncActivityShardState(idStr, null, targetAct);
+      return null;
+    } finally {
+      inFlightShards.delete(cacheKey);
+    }
+  })();
+
+  inFlightShards.set(cacheKey, promise);
+  return promise;
+}
 
 export const streamVisibility = {
   elevation: true,
@@ -194,7 +311,9 @@ export function formatDate(isoString) {
  * @param {string} unit
  */
 export function renderActivityTable(activities, unit = 'km') {
-  currentActivities = activities || [];
+  currentActivities = Array.isArray(activities)
+    ? activities.filter(a => a && typeof a === 'object')
+    : [];
   currentUnit = unit;
   applyFiltersAndRender();
 }
@@ -209,7 +328,8 @@ export function applyFiltersAndRender() {
   const tbody = (table ? table.querySelector('tbody') : null) || document.getElementById('activities-table-body');
   if (!tbody) return;
 
-  let filtered = [...currentActivities];
+  let filtered = (Array.isArray(currentActivities) ? currentActivities : [])
+    .filter(a => a && typeof a === 'object');
 
   // Sport Filter
   if (currentFilter && currentFilter !== 'all') {
@@ -324,16 +444,16 @@ export function applyFiltersAndRender() {
     const tssStr = act.tss || act.training_stress_score ? Math.round(act.tss || act.training_stress_score) : '-';
 
     row.innerHTML = `
-      <td class="py-3 px-4 font-mono text-xs text-zinc-400 tabular-nums">${dateStr}</td>
+      <td class="py-3 px-4 font-mono text-xs text-zinc-400 tabular-nums">${escapeHtml(dateStr)}</td>
       <td class="py-3 px-4">
-        <span class="px-2 py-0.5 rounded text-xs font-semibold ${sportBadgeClass}">${sportLabel}</span>
+        <span class="px-2 py-0.5 rounded text-xs font-semibold ${sportBadgeClass}">${escapeHtml(sportLabel)}</span>
       </td>
-      <td class="py-3 px-4 font-medium text-zinc-200">${act.title || 'Workout'}</td>
-      <td class="py-3 px-4 text-right font-mono text-zinc-300 tabular-nums">${distStr}</td>
-      <td class="py-3 px-4 text-right font-mono text-zinc-300 tabular-nums">${durStr}</td>
-      <td class="py-3 px-4 text-right font-mono text-rose-400 tabular-nums">${hrStr}</td>
-      <td class="py-3 px-4 text-right font-mono text-zinc-400 tabular-nums">${elevStr}</td>
-      <td class="py-3 px-4 text-right font-mono text-amber-400 tabular-nums">${tssStr}</td>
+      <td class="py-3 px-4 font-medium text-zinc-200">${escapeHtml(act.title || 'Workout')}</td>
+      <td class="py-3 px-4 text-right font-mono text-zinc-300 tabular-nums">${escapeHtml(distStr)}</td>
+      <td class="py-3 px-4 text-right font-mono text-zinc-300 tabular-nums">${escapeHtml(durStr)}</td>
+      <td class="py-3 px-4 text-right font-mono text-rose-400 tabular-nums">${escapeHtml(hrStr)}</td>
+      <td class="py-3 px-4 text-right font-mono text-zinc-400 tabular-nums">${escapeHtml(elevStr)}</td>
+      <td class="py-3 px-4 text-right font-mono text-amber-400 tabular-nums">${escapeHtml(tssStr)}</td>
     `;
 
     row.addEventListener('click', () => {
@@ -430,7 +550,7 @@ export function toggleDrawerExpand() {
  */
 export function openActivityDrawer(act, unit = 'km') {
   const drawer = document.getElementById('activity-drawer');
-  if (!drawer) return;
+  if (!drawer || !act || typeof act !== 'object') return;
 
   currentSelectedActivity = act;
 
@@ -488,7 +608,9 @@ export function openActivityDrawer(act, unit = 'km') {
   const splitsTbody = document.getElementById('drawer-splits-tbody');
   if (splitsTbody) {
     splitsTbody.innerHTML = '';
-    const splits = act.splits || [];
+    const splits = Array.isArray(act.splits)
+      ? act.splits.filter(s => s && typeof s === 'object')
+      : [];
     if (splits.length === 0) {
       splitsTbody.innerHTML = `<tr><td colspan="7" class="py-4 text-center text-zinc-500">No split breakdown recorded.</td></tr>`;
     } else {
@@ -548,13 +670,13 @@ export function openActivityDrawer(act, unit = 'km') {
         const tr = document.createElement('tr');
         tr.className = 'border-b border-[#2d2147] text-xs font-mono text-zinc-300 tabular-nums';
         tr.innerHTML = `
-          <td class="py-2 px-3 text-zinc-400">#${splitNum}</td>
-          <td class="py-2 px-3 text-white font-semibold">${splitDist}</td>
-          <td class="py-2 px-3">${splitDur}</td>
-          <td class="py-2 px-3 text-teal-400">${paceOrSpeed}</td>
-          <td class="py-2 px-3 text-rose-400">${splitHR}</td>
-          <td class="py-2 px-3 text-zinc-400">${elevDiff}</td>
-          <td class="py-2 px-3 text-indigo-300">${splitCadence}</td>
+          <td class="py-2 px-3 text-zinc-400">#${escapeHtml(splitNum)}</td>
+          <td class="py-2 px-3 text-white font-semibold">${escapeHtml(splitDist)}</td>
+          <td class="py-2 px-3">${escapeHtml(splitDur)}</td>
+          <td class="py-2 px-3 text-teal-400">${escapeHtml(paceOrSpeed)}</td>
+          <td class="py-2 px-3 text-rose-400">${escapeHtml(splitHR)}</td>
+          <td class="py-2 px-3 text-zinc-400">${escapeHtml(elevDiff)}</td>
+          <td class="py-2 px-3 text-indigo-300">${escapeHtml(splitCadence)}</td>
         `;
         splitsTbody.appendChild(tr);
       });
@@ -586,32 +708,12 @@ export function openActivityDrawer(act, unit = 'km') {
   });
 
   // Lazy-load encrypted activity stream shard (./streams/<id>.enc) if sharded
-  if (act && act.id && !act._streamsLoaded && !act._streamsLoading && (!act.telemetry_stream || !act.gps_track)) {
-    const rawKey = getStoredKey();
-    if (rawKey && typeof fetch === 'function') {
-      act._streamsLoading = true;
-      fetch(`./streams/${encodeURIComponent(String(act.id))}.enc`)
-        .then(res => (res && res.ok ? res.arrayBuffer() : null))
-        .then(buf => (buf ? decryptWithRawKey(rawKey, new Uint8Array(buf)) : null))
-        .then(shard => {
-          act._streamsLoading = false;
-          act._streamsLoaded = true;
-          if (shard && typeof shard === 'object') {
-            if (shard.gps_track) act.gps_track = shard.gps_track;
-            if (shard.telemetry_stream) act.telemetry_stream = shard.telemetry_stream;
-            if (Array.isArray(shard.splits) && shard.splits.length > 0) act.splits = shard.splits;
-            if (Array.isArray(shard.laps) && shard.laps.length > 0) act.laps = shard.laps;
-            if (shard.hr_zones && Object.keys(shard.hr_zones).length > 0) act.hr_zones = shard.hr_zones;
-            if (currentSelectedActivity === act) {
-              openActivityDrawer(act, unit);
-            }
-          }
-        })
-        .catch(() => {
-          act._streamsLoading = false;
-          act._streamsLoaded = true;
-        });
-    }
+  if (act && act.id && !act._streamsLoaded && (!act.telemetry_stream || !act.gps_track)) {
+    loadActivityStreamShard(act.id, act).then((shard) => {
+      if (shard && typeof shard === 'object' && currentSelectedActivity === act) {
+        openActivityDrawer(act, unit);
+      }
+    });
   }
 }
 
@@ -1686,26 +1788,51 @@ export function setActivitySportFilter(sport) {
   applyFiltersAndRender();
 }
 
+function isValidGpsCoord(lat, lng) {
+  return (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lng >= -180 &&
+    lng <= 180 &&
+    !(Math.abs(lat) < 1e-4 && Math.abs(lng) < 1e-4)
+  );
+}
+
+function isValidEncodedPolyline(poly) {
+  if (typeof poly !== 'string' || poly.length === 0) return false;
+  for (let i = 0; i < poly.length; i++) {
+    const code = poly.charCodeAt(i);
+    if (code < 63 || code > 126) return false;
+  }
+  return true;
+}
+
 function renderMiniRouteSvg(act) {
   let coords = [];
-  const poly = act?.summary_polyline || act?.polyline || act?.gps_track?.encoded_polyline;
+  const poly = act?.summary_polyline || act?.polyline || act?.gps_track?.polyline || act?.gps_track?.encoded_polyline;
   if (typeof poly === 'string' && poly.length > 0) {
+    if (!isValidEncodedPolyline(poly)) return '';
     coords = decodePolyline(poly);
   } else if (Array.isArray(act?.gps_track?.points) && act.gps_track.points.length > 1) {
-    coords = act.gps_track.points.map(p => [p[0], p[1]]);
+    coords = act.gps_track.points.map(p => (Array.isArray(p) ? [Number(p[0]), Number(p[1])] : [NaN, NaN]));
   }
   if (!coords || coords.length < 2) return '';
 
   let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
   for (const [lat, lng] of coords) {
-    if (typeof lat !== 'number' || typeof lng !== 'number' || isNaN(lat) || isNaN(lng)) continue;
-    if (Math.abs(lat) < 1e-4 && Math.abs(lng) < 1e-4) continue;
+    if (!isValidGpsCoord(lat, lng)) continue;
     if (lat < minLat) minLat = lat;
     if (lat > maxLat) maxLat = lat;
     if (lng < minLng) minLng = lng;
     if (lng > maxLng) maxLng = lng;
   }
-  if (!isFinite(minLat) || !isFinite(maxLat)) return '';
+  if (!Number.isFinite(minLat) || !Number.isFinite(maxLat) || !Number.isFinite(minLng) || !Number.isFinite(maxLng)) {
+    return '';
+  }
 
   const w = 140;
   const h = 64;
@@ -1713,6 +1840,7 @@ function renderMiniRouteSvg(act) {
   const latSpan = Math.max(maxLat - minLat, 1e-5);
   const lngSpan = Math.max(maxLng - minLng, 1e-5);
   const scale = Math.min((w - pad * 2) / lngSpan, (h - pad * 2) / latSpan);
+  if (!Number.isFinite(scale) || scale <= 0) return '';
   const xOff = (w - lngSpan * scale) / 2;
   const yOff = (h - latSpan * scale) / 2;
 
@@ -1720,10 +1848,11 @@ function renderMiniRouteSvg(act) {
   const pts = [];
   for (let i = 0; i < coords.length; i += step) {
     const [lat, lng] = coords[i];
-    if (Math.abs(lat) < 1e-4 && Math.abs(lng) < 1e-4) continue;
-    const x = (xOff + (lng - minLng) * scale).toFixed(1);
-    const y = (h - (yOff + (lat - minLat) * scale)).toFixed(1);
-    pts.push(`${x},${y}`);
+    if (!isValidGpsCoord(lat, lng)) continue;
+    const x = xOff + (lng - minLng) * scale;
+    const y = h - (yOff + (lat - minLat) * scale);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
   }
   if (pts.length < 2) return '';
   const startPt = pts[0].split(',');
@@ -1740,24 +1869,103 @@ function renderMiniRouteSvg(act) {
   `;
 }
 
+function getSportIconAndBadge(sportRaw) {
+  const sport = String(sportRaw || 'other').toLowerCase().trim();
+  const formatted = sport.charAt(0).toUpperCase() + sport.slice(1).replace(/_/g, ' ');
+
+  if (sport === 'cycling' || sport === 'cycle' || sport === 'indoor_cycling') {
+    const isIndoor = sport === 'indoor_cycling';
+    return {
+      badgeClass: 'badge-cycling',
+      label: formatted || 'Cycling',
+      isStrength: false,
+      isIndoor,
+      isCycling: true,
+      iconSvg: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="5.5" cy="17.5" r="3.5" stroke-width="1.8"/><circle cx="18.5" cy="17.5" r="3.5" stroke-width="1.8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 6a1 1 0 100-2 1 1 0 000 2zm-3 11.5V14l-3-3 4-3 2 3h3"/></svg>'
+    };
+  }
+  if (sport === 'running' || sport === 'run' || sport === 'treadmill_running') {
+    const isIndoor = sport === 'treadmill_running';
+    return {
+      badgeClass: 'badge-running',
+      label: formatted || 'Running',
+      isStrength: false,
+      isIndoor,
+      isCycling: false,
+      iconSvg: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'
+    };
+  }
+  if (sport === 'hiking' || sport === 'hike') {
+    return {
+      badgeClass: 'badge-hiking',
+      label: formatted || 'Hiking',
+      isStrength: false,
+      isIndoor: false,
+      isCycling: false,
+      iconSvg: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 20l6-10 4 6 3-4 5 8H3z"/></svg>'
+    };
+  }
+  if (sport === 'walking' || sport === 'walk') {
+    return {
+      badgeClass: 'badge-walking',
+      label: formatted || 'Walking',
+      isStrength: false,
+      isIndoor: false,
+      isCycling: false,
+      iconSvg: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M13 4a2 2 0 11-4 0 2 2 0 014 0zm-2 4l-2 6 3 2v6m-3-8l-3 4m5-10l3 3 2-1"/></svg>'
+    };
+  }
+  if (sport === 'strength' || sport === 'weights' || sport === 'strength_training') {
+    return {
+      badgeClass: 'badge-strength',
+      label: sport === 'weights' ? 'Weights' : 'Strength',
+      isStrength: true,
+      isIndoor: true,
+      isCycling: false,
+      iconSvg: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6.5 6.5v11M17.5 6.5v11M3.5 8.5v7M20.5 8.5v7M6.5 12h11"/></svg>'
+    };
+  }
+  const isIndoor = ['cardio', 'stair_stepper', 'elliptical', 'yoga', 'pilates', 'indoor_rowing'].includes(sport);
+  return {
+    badgeClass: 'badge-other',
+    label: formatted || 'Workout',
+    isStrength: false,
+    isIndoor,
+    isCycling: false,
+    iconSvg: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 12h4l3-7 4 14 3-7h4"/></svg>'
+  };
+}
+
 /**
  * Renders Today's (or Latest) Activity minimalistic hero card at the top of the homepage.
  * @param {Array} activities
  * @param {string} unit - 'km' or 'mi'
  */
 export function renderTodayActivityBanner(activities, unit = 'km') {
+  const myGen = ++bannerRenderGeneration;
   const container = document.getElementById('today-activity-section');
   if (!container) return;
 
-  if (!Array.isArray(activities) || activities.length === 0) {
+  const validActivities = Array.isArray(activities)
+    ? activities.filter(a => a && typeof a === 'object')
+    : [];
+
+  if (validActivities.length === 0) {
+    currentTodayActivities = [];
     container.classList.add('hidden');
     container.innerHTML = '';
     return;
   }
 
-  const sorted = [...activities].sort((a, b) => {
-    const da = String(a?.date || a?.start_time || '');
-    const db = String(b?.date || b?.start_time || '');
+  const sorted = [...validActivities].sort((a, b) => {
+    const da = String(a?.start_time || a?.date || '');
+    const db = String(b?.start_time || b?.date || '');
+    const ta = Date.parse(da);
+    const tb = Date.parse(db);
+    const aValid = Number.isFinite(ta);
+    const bValid = Number.isFinite(tb);
+    if (aValid !== bValid) return bValid ? 1 : -1;
+    if (aValid && bValid && ta !== tb) return tb - ta;
     return db.localeCompare(da);
   });
 
@@ -1766,25 +1974,36 @@ export function renderTodayActivityBanner(activities, unit = 'km') {
   const todaysActs = sorted.filter(a => String(a?.start_time || a?.date || '').slice(0, 10) === todayIso);
   const hasToday = todaysActs.length > 0;
   const displayActs = hasToday ? todaysActs : [sorted[0]];
+  currentTodayActivities = displayActs;
+
+  const currentRawKey = getStoredKey();
+  const canFetchShards = Boolean(currentRawKey && typeof fetch === 'function');
+  const pendingShardActs = [];
 
   const cardsHtml = displayActs.map((act, idx) => {
     const rawDate = String(act.start_time || act.date || '');
-    const timeMatch = rawDate.match(/T(\d{2}:\d{2})/);
-    let timeLabel = formatDate(rawDate);
+    const timeMatch = rawDate.match(/[T ](\d{2}:\d{2})/);
+    const formattedDate = formatDate(rawDate);
+    let timeLabel = formattedDate;
     if (hasToday) {
       timeLabel = timeMatch ? `Today @ ${timeMatch[1]}` : 'Today';
     } else if (timeMatch) {
-      timeLabel = `${formatDate(rawDate)} @ ${timeMatch[1]}`;
+      timeLabel = `${formattedDate} @ ${timeMatch[1]}`;
     }
 
-    const sport = String(act.sport || 'other').toLowerCase();
-    const sportLabel = sport.charAt(0).toUpperCase() + sport.slice(1).replace(/_/g, ' ');
-    const isStrength = sport === 'strength' || sport === 'weights';
+    const sportInfo = getSportIconAndBadge(act.sport);
+    const isStrength = sportInfo.isStrength;
+    const isIndoor = sportInfo.isIndoor;
+    const isCycling = sportInfo.isCycling;
+
     const distM = Number(act.distance_meters || 0);
-    const durSec = Number(act.duration_seconds || 0);
+    const durSec = Number(act.duration_seconds || act.moving_time_seconds || 0);
+    const movSec = Number(act.moving_time_seconds || durSec || 0);
     const elevM = Number(act.elevation_gain_meters || 0);
     const calories = Number(act.calories || 0);
     const avgHr = Number(act.avg_hr || 0);
+    const maxHr = Number(act.max_hr || 0);
+    const tss = Number(act.tss || act.training_stress_score || 0);
 
     const metrics = [];
     if (!isStrength && distM > 0) {
@@ -1793,45 +2012,99 @@ export function renderTodayActivityBanner(activities, unit = 'km') {
     if (durSec > 0) {
       metrics.push({ label: 'Time', value: formatSplitDuration(durSec) });
     }
-    if (!isStrength && sport === 'cycling' && distM > 0 && durSec > 0) {
-      metrics.push({ label: 'Avg Speed', value: formatSpeed(distM / durSec, unit) });
-    } else if (!isStrength && act.avg_pace_sec_km > 0) {
-      metrics.push({ label: 'Avg Pace', value: formatPace(act.avg_pace_sec_km, unit) });
+    if (!isStrength && isCycling && distM > 0 && movSec > 0) {
+      metrics.push({ label: 'Avg Speed', value: formatSpeed(distM / movSec, unit) });
+    } else if (!isStrength && (Number(act.avg_pace_sec_km || 0) > 0 || (distM > 0 && durSec > 0))) {
+      const paceSecKm = Number(act.avg_pace_sec_km || 0) > 0
+        ? Number(act.avg_pace_sec_km)
+        : (durSec / (distM / 1000.0));
+      metrics.push({ label: 'Avg Pace', value: formatPace(paceSecKm, unit) });
     }
     if (!isStrength && elevM > 0) {
       metrics.push({ label: 'Total Ascent', value: formatElevation(elevM, unit) });
     }
-    if (calories > 0) {
-      metrics.push({ label: 'Calories', value: `${calories.toLocaleString()} kcal` });
+    if (avgHr > 0) {
+      metrics.push({ label: 'Avg HR', value: `${Math.round(avgHr)} bpm` });
     }
-    if (avgHr > 0 && metrics.length < 5) {
-      metrics.push({ label: 'Avg HR', value: `${avgHr} bpm` });
+    if (calories > 0) {
+      metrics.push({ label: 'Calories', value: `${Math.round(calories).toLocaleString()} kcal` });
+    }
+    if (tss > 0) {
+      metrics.push({ label: 'Training Load', value: `${Math.round(tss)} TSS` });
     }
 
-    const metricsHtml = metrics.slice(0, 5).map(m => `
+    const metricsHtml = metrics.map(m => `
       <div>
-        <div class="text-lg sm:text-xl font-bold font-mono text-purple-50 tabular-nums leading-tight">${m.value}</div>
-        <div class="text-[11px] text-purple-300/65 mt-0.5">${m.label}</div>
+        <div class="text-lg sm:text-xl font-bold font-mono text-purple-50 tabular-nums leading-tight">${escapeHtml(m.value)}</div>
+        <div class="text-[11px] text-purple-300/65 mt-0.5">${escapeHtml(m.label)}</div>
       </div>
     `).join('');
 
-    const routeSvg = renderMiniRouteSvg(act);
+    const routeSvg = isStrength ? '' : renderMiniRouteSvg(act);
+    let rightVisualHtml = routeSvg;
+
+    if (!rightVisualHtml) {
+      if (isStrength || isIndoor) {
+        const badgeCategory = isStrength ? 'Indoor Strength' : 'Indoor';
+        const badgePrimary = avgHr > 0 ? `${Math.round(avgHr)} bpm` : escapeHtml(sportInfo.label);
+        const badgeSecondary = maxHr > 0
+          ? `Max ${Math.round(maxHr)} bpm`
+          : (durSec > 0 ? formatSplitDuration(durSec) : '');
+        rightVisualHtml = `
+          <div class="hidden sm:flex flex-col items-center justify-center bg-[#0b0714]/80 border border-[#2d2147] rounded-xl px-4 py-2.5 min-w-[112px] shrink-0 text-center">
+            <span class="text-[10px] font-mono uppercase tracking-wider text-purple-300/80">${badgeCategory}</span>
+            <span class="text-sm font-bold font-mono text-rose-300 mt-0.5 tabular-nums">${badgePrimary}</span>
+            ${badgeSecondary ? `<span class="text-[10px] font-mono text-purple-300/60 mt-0.5">${escapeHtml(badgeSecondary)}</span>` : ''}
+          </div>
+        `;
+      } else if (
+        act.id &&
+        act.has_streams &&
+        !act._streamsLoaded &&
+        canFetchShards &&
+        (act._bannerShardKey !== currentRawKey || inFlightShards.has(`${currentRawKey}::${String(act.id)}`))
+      ) {
+        pendingShardActs.push(act);
+        rightVisualHtml = `
+          <div class="hidden sm:flex flex-col items-center justify-center bg-[#0b0714]/80 border border-[#2d2147] rounded-xl px-4 py-2.5 min-w-[112px] shrink-0 text-center">
+            <span class="text-[10px] font-mono uppercase tracking-wider text-purple-300/75">GPS Route</span>
+            <span class="text-xs font-mono text-purple-300/65 mt-0.5">${avgHr > 0 ? `${Math.round(avgHr)} bpm` : 'Loading…'}</span>
+          </div>
+        `;
+      } else if (avgHr > 0) {
+        rightVisualHtml = `
+          <div class="hidden sm:flex flex-col items-center justify-center bg-[#0b0714]/80 border border-[#2d2147] rounded-xl px-4 py-2.5 min-w-[112px] shrink-0 text-center">
+            <span class="text-[10px] font-mono uppercase tracking-wider text-purple-300/75">Heart Rate</span>
+            <span class="text-sm font-bold font-mono text-rose-300 mt-0.5 tabular-nums">${Math.round(avgHr)} bpm</span>
+            ${maxHr > 0 ? `<span class="text-[10px] font-mono text-purple-300/60 mt-0.5">Max ${Math.round(maxHr)} bpm</span>` : ''}
+          </div>
+        `;
+      }
+    }
+
+    const statusBadgeText = hasToday ? 'TODAY' : `LATEST ACTIVITY • ${escapeHtml(formattedDate)}`;
+    const statusBadgeClasses = hasToday
+      ? 'text-emerald-300 border-emerald-500/35 bg-emerald-500/15'
+      : 'text-purple-300 border-purple-500/35 bg-purple-500/15';
 
     return `
       <div data-today-act-idx="${idx}" role="button" tabindex="0" class="bg-[#130d21] border border-[#2d2147] hover:border-purple-500/60 rounded-2xl p-5 transition-card cursor-pointer shadow-lg shadow-purple-950/20">
         <div class="flex items-center justify-between gap-4">
           <div class="min-w-0 flex-1 space-y-3">
             <div class="flex flex-wrap items-center gap-2 text-xs text-purple-300/80">
-              <span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${hasToday ? 'text-emerald-300 border-emerald-500/35 bg-emerald-500/15' : 'text-purple-300 border-purple-500/35 bg-purple-500/15'}">
-                ${hasToday ? 'TODAY' : 'LATEST'}
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${statusBadgeClasses}">
+                ${statusBadgeText}
               </span>
-              <span class="font-medium text-purple-200">${sportLabel}</span>
+              <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-semibold ${sportInfo.badgeClass}">
+                ${sportInfo.iconSvg}
+                <span>${escapeHtml(sportInfo.label)}</span>
+              </span>
               <span class="text-purple-400/60">•</span>
-              <span class="font-mono text-[11px] text-purple-300/70">${timeLabel}</span>
+              <span class="font-mono text-[11px] text-purple-300/70">${escapeHtml(timeLabel)}</span>
             </div>
 
             <div class="text-lg sm:text-xl font-semibold text-white tracking-tight truncate">
-              ${act.title || `${sportLabel} Session`}
+              ${escapeHtml(act.title || `${sportInfo.label} Session`)}
             </div>
 
             <div class="flex flex-wrap items-center gap-x-7 gap-y-2 pt-1">
@@ -1839,7 +2112,7 @@ export function renderTodayActivityBanner(activities, unit = 'km') {
             </div>
           </div>
 
-          ${routeSvg}
+          ${rightVisualHtml}
         </div>
       </div>
     `;
@@ -1852,7 +2125,7 @@ export function renderTodayActivityBanner(activities, unit = 'km') {
         <div class="flex items-center space-x-2.5">
           <h2 class="text-base font-semibold text-white tracking-tight">Today's Activities</h2>
           <span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${hasToday ? 'text-emerald-300 border-emerald-500/35 bg-emerald-500/15' : 'text-purple-300 border-purple-500/35 bg-purple-500/15'}">
-            ${hasToday ? `${todaysActs.length} TODAY` : 'LATEST'}
+            ${hasToday ? `${todaysActs.length} TODAY` : 'LATEST ACTIVITY'}
           </span>
         </div>
         ${!hasToday ? '<span class="text-[11px] text-zinc-400">No activities recorded today yet</span>' : ''}
@@ -1869,11 +2142,23 @@ export function renderTodayActivityBanner(activities, unit = 'km') {
       card.addEventListener('click', () => openActivityDrawer(act, unit));
       card.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
+          if (typeof e.preventDefault === 'function') e.preventDefault();
           openActivityDrawer(act, unit);
         }
       });
     }
   });
+
+  if (pendingShardActs.length > 0) {
+    for (const act of pendingShardActs) {
+      act._bannerShardKey = currentRawKey;
+      loadActivityStreamShard(act.id, act).then((shard) => {
+        if (bannerRenderGeneration !== myGen) return;
+        if ((shard && typeof shard === 'object') || act._streamsLoaded || act._bannerShardKey === currentRawKey) {
+          renderTodayActivityBanner(validActivities, unit);
+        }
+      });
+    }
+  }
 }
 

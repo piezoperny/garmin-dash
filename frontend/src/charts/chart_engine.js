@@ -27,6 +27,22 @@ function colorWithAlpha(color, alpha) {
 }
 
 const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const SHORT_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function toFiniteNumber(val) {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatTooltipDateHeader(rawLabel) {
+  const s = String(rawLabel || '').trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return s;
+  const dt = new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
+  if (isNaN(dt.getTime())) return s;
+  return `${SHORT_DAYS[dt.getUTCDay()]}, ${SHORT_MONTHS[dt.getUTCMonth()]} ${dt.getUTCDate()}`;
+}
 
 function isoWeekToUTCDate(year, week) {
   const jan4 = new Date(Date.UTC(year, 0, 4));
@@ -256,22 +272,63 @@ export class Chart {
     const ctx = this.ctx;
     const datasets = this.data.datasets || [];
     const labels = this.data.labels || [];
+    const isRangeBar = !isLine && (this.type === 'rangeBar' || datasets.some(ds => ds.type === 'rangeBar'));
     const isStacked = Boolean(this.options.scales?.x?.stacked || this.options.scales?.y?.stacked);
 
     // Prepare legend rows to dynamically reserve top padding
     let legendRows = [];
     let legendHeight = 0;
-    if (datasets.length > 1) {
+    const legendDisabled = this.options.plugins?.legend?.display === false;
+    const customLegendItems =
+      this.options.legendItems ||
+      this.options.plugins?.legend?.items ||
+      this.options.plugins?.legend?.customItems ||
+      datasets.find(d => Array.isArray(d.legendItems))?.legendItems;
+
+    if (!legendDisabled) {
+      let items = null;
       ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      const items = datasets.map((ds, dsIndex) => {
-        const name = ds.label || 'Series';
-        const textWidth = ctx.measureText(name).width;
-        const w = textWidth + 24;
-        return { name, w, color: ds.borderColor || ds.backgroundColor || '#38bdf8', dsIndex, hidden: Boolean(ds.hidden) };
-      });
-      const maxLegendW = Math.max(100, this.displayWidth - 30);
-      legendRows = this._computeWrappedLegendRows(items, maxLegendW);
-      legendHeight = legendRows.length * 18 + 6;
+
+      if (Array.isArray(customLegendItems) && customLegendItems.length > 0) {
+        items = customLegendItems.map(item => {
+          const name = String(item.label ?? item.name ?? item.text ?? 'Series');
+          const shape = item.shape || item.style || item.symbol || 'square';
+          const color = item.color || item.fillColor || item.strokeColor || '#38bdf8';
+          const fillColor = item.fillColor || (shape === 'ring' ? '#0b0714' : color);
+          const strokeColor = item.strokeColor || item.borderColor || color || '#c4b5fd';
+          const textWidth = ctx.measureText(name).width;
+          return {
+            name,
+            w: textWidth + 24,
+            color,
+            fillColor,
+            strokeColor,
+            shape,
+            dsIndex: typeof item.dsIndex === 'number' ? item.dsIndex : null,
+            hidden: Boolean(item.hidden)
+          };
+        });
+      } else if (isRangeBar && datasets.length > 0) {
+        items = [
+          { name: 'Daily High', color: '#38bdf8', fillColor: '#38bdf8', strokeColor: '#38bdf8', shape: 'dot', dsIndex: null, hidden: false },
+          { name: 'Daily Low', color: '#c4b5fd', fillColor: '#0b0714', strokeColor: '#c4b5fd', shape: 'ring', dsIndex: null, hidden: false }
+        ].map(it => ({ ...it, w: ctx.measureText(it.name).width + 24 }));
+      } else if (datasets.length > 1) {
+        items = datasets.map((ds, dsIndex) => {
+          const name = ds.label || 'Series';
+          const textWidth = ctx.measureText(name).width;
+          const w = textWidth + 24;
+          const rawColor = ds.borderColor || ds.legendColor || (Array.isArray(ds.backgroundColor) ? ds.backgroundColor[0] : ds.backgroundColor);
+          const swatchColor = typeof rawColor === 'string' ? rawColor : '#38bdf8';
+          return { name, w, color: swatchColor, fillColor: swatchColor, strokeColor: swatchColor, shape: 'square', dsIndex, hidden: Boolean(ds.hidden) };
+        });
+      }
+
+      if (items && items.length > 0) {
+        const maxLegendW = Math.max(100, this.displayWidth - 30);
+        legendRows = this._computeWrappedLegendRows(items, maxLegendW);
+        legendHeight = legendRows.length * 18 + 6;
+      }
     }
 
     const padding = {
@@ -290,19 +347,19 @@ export class Chart {
     let minY = 0;
     let maxY = 0;
 
-    if (isStacked && !isLine) {
+    if (isStacked && !isLine && !isRangeBar) {
       for (let i = 0; i < labels.length; i++) {
         let posSum = 0;
         let negSum = 0;
         for (const ds of datasets) {
           if (ds.hidden) continue;
           if (ds.type === 'line') {
-            const v = Number(ds.data?.[i]) || 0;
+            const v = toFiniteNumber(ds.data?.[i]) ?? 0;
             if (v > maxY) maxY = v;
             if (v < minY) minY = v;
             continue;
           }
-          const val = Number(ds.data?.[i]) || 0;
+          const val = toFiniteNumber(ds.data?.[i]) ?? 0;
           if (val >= 0) posSum += val;
           else negSum += val;
         }
@@ -312,10 +369,24 @@ export class Chart {
     } else {
       for (const ds of datasets) {
         if (ds.hidden) continue;
-        for (const val of ds.data || []) {
-          const v = Number(val) || 0;
-          if (v > maxY) maxY = v;
-          if (v < minY) minY = v;
+        for (const arr of [ds.data, ds.highData, ds.lowData]) {
+          if (!Array.isArray(arr)) continue;
+          for (const raw of arr) {
+            if (raw && typeof raw === 'object') {
+              const hi = toFiniteNumber(raw.high);
+              const lo = toFiniteNumber(raw.low);
+              const yv = toFiniteNumber(raw.y);
+              if (hi !== null) { if (hi > maxY) maxY = hi; if (hi < minY) minY = hi; }
+              if (lo !== null) { if (lo > maxY) maxY = lo; if (lo < minY) minY = lo; }
+              if (yv !== null) { if (yv > maxY) maxY = yv; if (yv < minY) minY = yv; }
+            } else {
+              const v = toFiniteNumber(raw);
+              if (v !== null) {
+                if (v > maxY) maxY = v;
+                if (v < minY) minY = v;
+              }
+            }
+          }
         }
       }
     }
@@ -366,6 +437,8 @@ export class Chart {
       maxY = yMid + ySpan / 2;
     }
 
+    const ySpanSafe = (maxY - minY) || 1;
+
     // Apply interactive X pan and scale if active
     const xZoom = Math.max(0.25, Math.min(10, this._view?.xZoom || 1));
     const xPan = this._view?.xPan || 0;
@@ -394,13 +467,18 @@ export class Chart {
       ctx.stroke();
 
       ctx.fillStyle = '#a79bc2';
-      const labelText = Math.abs(yVal) >= 100 ? Math.round(yVal) : yVal.toFixed(1);
+      let labelText;
+      if (isRangeBar || this.options.scales?.y?.integerTicks) {
+        labelText = Math.abs(yVal - Math.round(yVal)) < 1e-6 ? String(Math.round(yVal)) : yVal.toFixed(1);
+      } else {
+        labelText = Math.abs(yVal) >= 100 ? Math.round(yVal) : yVal.toFixed(1);
+      }
       ctx.fillText(labelText, padding.left - 8, y);
     }
 
     // Zero baseline
     if (minY < 0 && maxY > 0) {
-      const zeroNorm = (maxY - 0) / (maxY - minY);
+      const zeroNorm = (maxY - 0) / ySpanSafe;
       const zeroY = padding.top + zeroNorm * chartH;
       ctx.strokeStyle = '#433269';
       ctx.lineWidth = 1;
@@ -508,7 +586,11 @@ export class Chart {
     if (typeof ctx.save === 'function') ctx.save();
     if (typeof ctx.rect === 'function' && typeof ctx.clip === 'function') {
       ctx.beginPath();
-      ctx.rect(padding.left, padding.top, chartW, chartH);
+      if (isRangeBar) {
+        ctx.rect(padding.left, Math.max(0, padding.top - 10), chartW, chartH + 17);
+      } else {
+        ctx.rect(padding.left, padding.top, chartW, chartH);
+      }
       ctx.clip();
     }
 
@@ -521,14 +603,14 @@ export class Chart {
           for (let i = 0; i < labels.length; i++) {
             const x = getX(i);
             const vMax = Number(ann.yMaxSeries[i]);
-            const yTop = padding.top + ((maxY - vMax) / (maxY - minY)) * chartH;
+            const yTop = padding.top + ((maxY - vMax) / ySpanSafe) * chartH;
             if (i === 0) ctx.moveTo(x, yTop);
             else ctx.lineTo(x, yTop);
           }
           for (let i = labels.length - 1; i >= 0; i--) {
             const x = getX(i);
             const vMin = Number(ann.yMinSeries[i]);
-            const yBot = padding.top + ((maxY - vMin) / (maxY - minY)) * chartH;
+            const yBot = padding.top + ((maxY - vMin) / ySpanSafe) * chartH;
             ctx.lineTo(x, yBot);
           }
           if (typeof ctx.closePath === 'function') ctx.closePath();
@@ -546,7 +628,7 @@ export class Chart {
             for (let i = 0; i < labels.length; i++) {
               const x = getX(i);
               const vMean = Number(ann.meanSeries[i]);
-              const yMean = padding.top + ((maxY - vMean) / (maxY - minY)) * chartH;
+              const yMean = padding.top + ((maxY - vMean) / ySpanSafe) * chartH;
               if (i === 0) ctx.moveTo(x, yMean);
               else ctx.lineTo(x, yMean);
             }
@@ -566,15 +648,21 @@ export class Chart {
           }
           if (typeof ctx.restore === 'function') ctx.restore();
         } else if (ann.type === 'band' && typeof ann.yMin === 'number' && typeof ann.yMax === 'number') {
-          const normTop = (maxY - ann.yMax) / (maxY - minY);
-          const normBottom = (maxY - ann.yMin) / (maxY - minY);
+          const normTop = (maxY - ann.yMax) / ySpanSafe;
+          const normBottom = (maxY - ann.yMin) / ySpanSafe;
           const yTop = Math.max(padding.top, padding.top + normTop * chartH);
           const yBottom = Math.min(padding.top + chartH, padding.top + normBottom * chartH);
           const h = yBottom - yTop;
           if (h > 0) {
             if (typeof ctx.save === 'function') ctx.save();
             ctx.fillStyle = ann.color || 'rgba(168, 85, 247, 0.14)';
-            ctx.fillRect(padding.left, yTop, chartW, h);
+            if (typeof ctx.fillRect === 'function') {
+              ctx.fillRect(padding.left, yTop, chartW, h);
+            } else {
+              ctx.beginPath();
+              ctx.rect(padding.left, yTop, chartW, h);
+              ctx.fill();
+            }
             if (ann.label) {
               ctx.fillStyle = ann.labelColor || '#c4b5fd';
               ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -598,10 +686,19 @@ export class Chart {
         for (let i = 0; i < labels.length; i++) {
           const val = Number(ds.data?.[i]) ?? 0;
           const x = getX(i);
-          const normY = (maxY - val) / (maxY - minY);
+          const normY = (maxY - val) / ySpanSafe;
           const y = padding.top + normY * chartH;
           const ptColor = Array.isArray(ds.pointColors) && ds.pointColors[i] ? ds.pointColors[i] : color;
-          pts.push({ x, y, val, label: labels[i], datasetName: ds.label, color: ptColor });
+          pts.push({
+            x,
+            y,
+            val,
+            label: labels[i],
+            datasetName: ds.label,
+            color: ptColor,
+            ...(Array.isArray(ds.tooltipTitles) && ds.tooltipTitles[i] ? { tooltipTitle: ds.tooltipTitles[i] } : {}),
+            ...(Array.isArray(ds.tooltipLines) && Array.isArray(ds.tooltipLines[i]) ? { tooltipLines: ds.tooltipLines[i] } : {})
+          });
         }
 
         if (pts.length === 0) continue;
@@ -680,33 +777,206 @@ export class Chart {
           this.dataPoints.push({ ...p, radius: 8 });
         });
       }
+    } else if (isRangeBar) {
+      for (const ds of datasets) {
+        if (ds.hidden) continue;
+        const pillarW = typeof ds.pillarWidth === 'number'
+          ? Math.max(2, ds.pillarWidth)
+          : Math.max(2, Math.min(14, xStep * 0.48));
+        const capR = Math.max(2, Math.min(6, pillarW * 0.45));
+        const showCapLabels = Boolean(
+          ds.showCapLabels || ds.showValueLabels || ds.showRangeValueLabels ||
+          this.options.showCapLabels || this.options.showValueLabels
+        );
+
+        for (let i = 0; i < labels.length; i++) {
+          const rawItem = ds.data?.[i];
+          const objItem = (rawItem && typeof rawItem === 'object') ? rawItem : null;
+          const highVal = toFiniteNumber(ds.highData?.[i] ?? objItem?.high);
+          const lowVal = toFiniteNumber(ds.lowData?.[i] ?? objItem?.low);
+          const chargedVal = toFiniteNumber(ds.chargedData?.[i] ?? objItem?.charged);
+          const drainedVal = toFiniteNumber(ds.drainedData?.[i] ?? objItem?.drained);
+
+          if (highVal === null && lowVal === null) continue;
+
+          const xCenter = getX(i);
+          const effHigh = highVal !== null ? highVal : lowVal;
+          const effLow = lowVal !== null ? lowVal : highVal;
+          const topVal = Math.max(effHigh, effLow);
+          const botVal = Math.min(effHigh, effLow);
+          const displayHigh = (highVal !== null && lowVal !== null) ? topVal : highVal;
+          const displayLow = (highVal !== null && lowVal !== null) ? botVal : lowVal;
+
+          const yHigh = padding.top + ((maxY - topVal) / ySpanSafe) * chartH;
+          const yLow = padding.top + ((maxY - botVal) / ySpanSafe) * chartH;
+          const pillarH = Math.max(0, yLow - yHigh);
+
+          if (pillarH > 0) {
+            const pillarX = xCenter - pillarW / 2;
+            if (typeof ctx.createLinearGradient === 'function') {
+              const grad = ctx.createLinearGradient(0, yHigh, 0, yHigh + pillarH);
+              grad.addColorStop(0, ds.pillarTopColor || 'rgba(168, 85, 247, 0.28)');
+              grad.addColorStop(1, ds.pillarBottomColor || '#2d2147');
+              ctx.fillStyle = grad;
+            } else {
+              ctx.fillStyle = ds.pillarFallbackColor || ds.pillarColor || 'rgba(168, 85, 247, 0.28)';
+            }
+            ctx.beginPath();
+            const radius = Math.min(pillarW / 2, pillarH / 2);
+            if (typeof ctx.roundRect === 'function') {
+              ctx.roundRect(pillarX, yHigh, pillarW, pillarH, radius);
+            } else {
+              ctx.rect(pillarX, yHigh, pillarW, pillarH);
+            }
+            ctx.fill();
+          }
+
+          if (displayHigh !== null) {
+            ctx.beginPath();
+            ctx.arc(xCenter, yHigh, capR, 0, Math.PI * 2);
+            ctx.fillStyle = ds.highColor || '#38bdf8';
+            ctx.fill();
+          }
+
+          if (displayLow !== null) {
+            ctx.beginPath();
+            ctx.arc(xCenter, yLow, capR, 0, Math.PI * 2);
+            ctx.fillStyle = ds.lowFillColor || '#0b0714';
+            ctx.fill();
+            ctx.strokeStyle = ds.lowStrokeColor || ds.lowColor || '#c4b5fd';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          }
+
+          if (showCapLabels && xCenter >= padding.left && xCenter <= padding.left + chartW) {
+            ctx.font = 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+            const highFitsAbove = displayHigh !== null && (yHigh - capR - 3) >= padding.top;
+            const lowFitsBelow = displayLow !== null && (yLow + capR + 13) <= (padding.top + chartH);
+            const minInsideSpan = (!highFitsAbove && !lowFitsBelow) ? (capR * 2 + 28) : (capR * 2 + 18);
+            const canPlaceInside = (yLow - yHigh) >= minInsideSpan;
+
+            if (displayHigh !== null) {
+              const highText = String(Math.round(displayHigh));
+              ctx.fillStyle = ds.highColor || '#38bdf8';
+              if (highFitsAbove) {
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText(highText, xCenter, yHigh - capR - 3);
+              } else if (canPlaceInside) {
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillText(highText, xCenter, yHigh + capR + 3);
+              } else {
+                const textW = ctx.measureText(highText).width;
+                const placeLeft = (xCenter + capR + 4 + textW) > (padding.left + chartW);
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = placeLeft ? 'right' : 'left';
+                ctx.fillText(highText, placeLeft ? (xCenter - capR - 4) : (xCenter + capR + 4), yHigh);
+              }
+            }
+
+            if (displayLow !== null) {
+              const lowText = String(Math.round(displayLow));
+              ctx.fillStyle = ds.lowStrokeColor || ds.lowColor || '#c4b5fd';
+              if (lowFitsBelow) {
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillText(lowText, xCenter, yLow + capR + 3);
+              } else if (canPlaceInside) {
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText(lowText, xCenter, yLow - capR - 3);
+              } else {
+                const textW = ctx.measureText(lowText).width;
+                const placeLeft = (xCenter + capR + 4 + textW) > (padding.left + chartW);
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = placeLeft ? 'right' : 'left';
+                ctx.fillText(lowText, placeLeft ? (xCenter - capR - 4) : (xCenter + capR + 4), yLow);
+              }
+            }
+          }
+
+          let tooltipLines;
+          if (Array.isArray(ds.tooltipLines) && Array.isArray(ds.tooltipLines[i])) {
+            tooltipLines = ds.tooltipLines[i];
+          } else {
+            tooltipLines = [];
+            if (displayHigh !== null) {
+              tooltipLines.push({ text: `Daily High: ${Math.round(displayHigh)} pts`, color: ds.highColor || '#38bdf8' });
+            }
+            if (displayLow !== null) {
+              tooltipLines.push({ text: `Daily Low: ${Math.round(displayLow)} pts`, color: ds.lowStrokeColor || ds.lowColor || '#c4b5fd' });
+            }
+            if (chargedVal !== null || drainedVal !== null) {
+              const parts = [];
+              if (chargedVal !== null) parts.push(`Charged: +${Math.abs(Math.round(chargedVal))} pts`);
+              if (drainedVal !== null) parts.push(`Drained: -${Math.abs(Math.round(drainedVal))} pts`);
+              tooltipLines.push({ text: parts.join(' | '), color: '#a79bc2' });
+            }
+          }
+
+          const topY = displayHigh !== null ? yHigh : yLow;
+          const botY = displayLow !== null ? yLow : yHigh;
+          const hitHalfW = Math.max(12, pillarW / 2 + 6);
+          const tooltipTitle = (Array.isArray(ds.tooltipTitles) && ds.tooltipTitles[i]) ||
+            ds.tooltipTitle ||
+            formatTooltipDateHeader(labels[i]);
+
+          this.dataPoints.push({
+            x: xCenter,
+            y: topY,
+            yTop: Math.min(topY, botY),
+            yBottom: Math.max(topY, botY),
+            w: pillarW,
+            val: displayHigh ?? displayLow,
+            highVal: displayHigh,
+            lowVal: displayLow,
+            chargedVal,
+            drainedVal,
+            label: labels[i],
+            tooltipTitle,
+            tooltipLines,
+            datasetName: ds.label,
+            color: ds.highColor || '#38bdf8',
+            hitRect: {
+              left: xCenter - hitHalfW,
+              right: xCenter + hitHalfW,
+              top: Math.min(topY, botY) - capR - 6,
+              bottom: Math.max(topY, botY) + capR + 6
+            }
+          });
+        }
+      }
     } else {
       // Bar Datasets
-      const barDatasets = datasets.filter(ds => ds.type !== 'line' && !ds.hidden);
+      const barDatasets = datasets.filter(ds => ds.type !== 'line' && ds.type !== 'rangeBar' && !ds.hidden);
       const lineDatasets = datasets.filter(ds => ds.type === 'line' && !ds.hidden);
 
       if (isStacked) {
         const stackAccum = new Array(labels.length).fill(0);
         for (const ds of barDatasets) {
-          const color = ds.backgroundColor || '#38bdf8';
+          const baseColor = (typeof ds.backgroundColor === 'string' ? ds.backgroundColor : ds.backgroundColor?.[0]) || '#38bdf8';
           const barWidth = Math.max(1, Math.min(28, xStep * 0.6));
 
           for (let i = 0; i < labels.length; i++) {
-            const val = Number(ds.data?.[i]) || 0;
+            const val = toFiniteNumber(ds.data?.[i]) ?? 0;
             if (val <= 0) continue;
 
+            const barColor = (Array.isArray(ds.barColors) && ds.barColors[i]) ||
+              (Array.isArray(ds.backgroundColor) && ds.backgroundColor[i]) ||
+              baseColor;
             const bottomVal = stackAccum[i];
             const topVal = bottomVal + val;
             stackAccum[i] = topVal;
 
             const x = getX(i) - barWidth / 2;
-            const normTop = (maxY - topVal) / (maxY - minY);
-            const normBottom = (maxY - bottomVal) / (maxY - minY);
+            const normTop = (maxY - topVal) / ySpanSafe;
+            const normBottom = (maxY - bottomVal) / ySpanSafe;
             const yTop = padding.top + normTop * chartH;
             const yBottom = padding.top + normBottom * chartH;
-            const h = yBottom - yTop;
+            const h = Math.max(0, yBottom - yTop);
 
-            ctx.fillStyle = color;
+            ctx.fillStyle = barColor;
             ctx.beginPath();
             if (typeof ctx.roundRect === 'function') {
               const radius = Math.min(2, Math.floor(barWidth / 2));
@@ -724,7 +994,9 @@ export class Chart {
               val,
               label: labels[i],
               datasetName: ds.label,
-              color
+              color: barColor,
+              ...(Array.isArray(ds.tooltipTitles) && ds.tooltipTitles[i] ? { tooltipTitle: ds.tooltipTitles[i] } : {}),
+              ...(Array.isArray(ds.tooltipLines) && Array.isArray(ds.tooltipLines[i]) ? { tooltipLines: ds.tooltipLines[i] } : {})
             });
           }
         }
@@ -734,19 +1006,22 @@ export class Chart {
         const singleBarWidth = totalBarGroupWidth / Math.max(1, groupCount);
 
         barDatasets.forEach((ds, dsIdx) => {
-          const color = ds.backgroundColor || '#38bdf8';
+          const baseColor = (typeof ds.backgroundColor === 'string' ? ds.backgroundColor : ds.backgroundColor?.[0]) || '#38bdf8';
           for (let i = 0; i < labels.length; i++) {
-            const val = Number(ds.data?.[i]) || 0;
+            const val = toFiniteNumber(ds.data?.[i]) ?? 0;
+            const barColor = (Array.isArray(ds.barColors) && ds.barColors[i]) ||
+              (Array.isArray(ds.backgroundColor) && ds.backgroundColor[i]) ||
+              baseColor;
             const groupStartX = getX(i) - totalBarGroupWidth / 2;
             const x = groupStartX + dsIdx * singleBarWidth;
-            const normVal = (maxY - val) / (maxY - minY);
+            const normVal = (maxY - val) / ySpanSafe;
             const y = padding.top + normVal * chartH;
-            const zeroNorm = (maxY - 0) / (maxY - minY);
+            const zeroNorm = (maxY - 0) / ySpanSafe;
             const zeroY = padding.top + zeroNorm * chartH;
             const barY = Math.min(y, zeroY);
             const barH = Math.max(1, Math.abs(zeroY - y));
 
-            ctx.fillStyle = color;
+            ctx.fillStyle = barColor;
             ctx.beginPath();
             ctx.rect(x, barY, Math.max(1, singleBarWidth - 1), barH);
             ctx.fill();
@@ -759,7 +1034,9 @@ export class Chart {
               val,
               label: labels[i],
               datasetName: ds.label,
-              color
+              color: barColor,
+              ...(Array.isArray(ds.tooltipTitles) && ds.tooltipTitles[i] ? { tooltipTitle: ds.tooltipTitles[i] } : {}),
+              ...(Array.isArray(ds.tooltipLines) && Array.isArray(ds.tooltipLines[i]) ? { tooltipLines: ds.tooltipLines[i] } : {})
             });
           }
         });
@@ -773,7 +1050,7 @@ export class Chart {
         for (let i = 0; i < labels.length; i++) {
           const val = Number(ds.data?.[i]) ?? 0;
           const x = getX(i);
-          const normY = (maxY - val) / (maxY - minY);
+          const normY = (maxY - val) / ySpanSafe;
           const y = padding.top + normY * chartH;
           pts.push({ x, y, val, label: labels[i], datasetName: ds.label, color });
         }
@@ -819,7 +1096,7 @@ export class Chart {
     if (this.options.annotations && Array.isArray(this.options.annotations)) {
       for (const ann of this.options.annotations) {
         if (ann.type === 'line' && typeof ann.y === 'number') {
-          const normY = (maxY - ann.y) / (maxY - minY);
+          const normY = (maxY - ann.y) / ySpanSafe;
           const y = padding.top + normY * chartH;
           if (y >= padding.top - 2 && y <= padding.top + chartH + 2) {
             if (typeof ctx.save === 'function') ctx.save();
@@ -857,18 +1134,37 @@ export class Chart {
         let startX = Math.max(10, (this.displayWidth - rowWidth) / 2);
 
         row.forEach(item => {
-          this._legendHitboxes.push({ x: startX - 2, y: currentY - 9, w: item.w, h: 18, dsIndex: item.dsIndex });
-          ctx.globalAlpha = item.hidden ? 0.35 : 1.0;
-          ctx.fillStyle = item.color;
-          ctx.beginPath();
-          if (typeof ctx.roundRect === 'function') {
-            ctx.roundRect(startX, currentY - 4, 7, 7, 2);
-          } else {
-            ctx.rect(startX, currentY - 4, 7, 7);
+          if (typeof item.dsIndex === 'number') {
+            this._legendHitboxes.push({ x: startX - 2, y: currentY - 9, w: item.w, h: 18, dsIndex: item.dsIndex });
           }
-          ctx.fill();
+          ctx.globalAlpha = item.hidden ? 0.35 : 1.0;
+
+          if (item.shape === 'dot' || item.shape === 'circle') {
+            ctx.fillStyle = item.fillColor || item.color || '#38bdf8';
+            ctx.beginPath();
+            ctx.arc(startX + 3.5, currentY, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (item.shape === 'ring') {
+            ctx.fillStyle = item.fillColor || '#0b0714';
+            ctx.strokeStyle = item.strokeColor || item.color || '#c4b5fd';
+            ctx.lineWidth = 1.75;
+            ctx.beginPath();
+            ctx.arc(startX + 3.5, currentY, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = item.fillColor || item.color || '#38bdf8';
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') {
+              ctx.roundRect(startX, currentY - 4, 7, 7, 2);
+            } else {
+              ctx.rect(startX, currentY - 4, 7, 7);
+            }
+            ctx.fill();
+          }
 
           ctx.fillStyle = '#c4b5fd';
+          ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'middle';
 
@@ -944,7 +1240,7 @@ export class Chart {
       ctx.beginPath();
       ctx.arc(centerX, centerY, outerRadius, startAngle, endAngle);
       ctx.arc(centerX, centerY, innerRadius, endAngle, startAngle, true);
-      ctx.closePath();
+      if (typeof ctx.closePath === 'function') ctx.closePath();
       ctx.fillStyle = color;
       ctx.fill();
 
@@ -1028,10 +1324,12 @@ export class Chart {
       const y = evt.clientY - rect.top;
       for (const hb of this._legendHitboxes || []) {
         if (x >= hb.x && x <= hb.x + hb.w && y >= hb.y && y <= hb.y + hb.h) {
-          const ds = this.data.datasets?.[hb.dsIndex];
-          if (ds) {
-            ds.hidden = !ds.hidden;
-            this.render();
+          if (typeof hb.dsIndex === 'number') {
+            const ds = this.data.datasets?.[hb.dsIndex];
+            if (ds) {
+              ds.hidden = !ds.hidden;
+              this.render();
+            }
           }
           return;
         }
@@ -1069,16 +1367,39 @@ export class Chart {
     let minDist = 30;
 
     for (const pt of this.dataPoints) {
-      const dx = pt.x - x;
-      const dy = pt.y - y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
+      let dist;
+      if (pt.hitRect) {
+        const r = pt.hitRect;
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+          dist = Math.min(29, Math.abs(pt.x - x));
+        } else {
+          const clampedX = Math.max(r.left, Math.min(r.right, x));
+          const clampedY = Math.max(r.top, Math.min(r.bottom, y));
+          const dx = clampedX - x;
+          const dy = clampedY - y;
+          dist = Math.sqrt(dx * dx + dy * dy) + Math.abs(pt.x - x) * 0.001;
+        }
+      } else {
+        const dx = pt.x - x;
+        const dy = pt.y - y;
+        dist = Math.sqrt(dx * dx + dy * dy);
+      }
       if (dist < minDist) {
         minDist = dist;
         nearest = pt;
       }
     }
 
-    if (nearest !== this.activeTooltip) {
+    const isSameTooltip =
+      nearest === this.activeTooltip ||
+      (nearest && this.activeTooltip &&
+        nearest.x === this.activeTooltip.x &&
+        nearest.y === this.activeTooltip.y &&
+        nearest.label === this.activeTooltip.label &&
+        nearest.datasetName === this.activeTooltip.datasetName &&
+        nearest.val === this.activeTooltip.val);
+
+    if (!isSameTooltip) {
       this.activeTooltip = nearest;
       this.render();
     }
@@ -1096,6 +1417,73 @@ export class Chart {
     if (!pt) return;
 
     const ctx = this.ctx;
+
+    if (Array.isArray(pt.tooltipLines) && pt.tooltipLines.length > 0) {
+      const title = pt.tooltipTitle || formatTooltipDateHeader(pt.label) || String(pt.label || '');
+      const rawLines = pt.tooltipLines.map(item =>
+        typeof item === 'string'
+          ? { text: item, color: null }
+          : { text: String(item?.text ?? ''), color: item?.color || null }
+      );
+      const lines = (rawLines.length > 0 && title && rawLines[0].text === title)
+        ? rawLines.slice(1)
+        : rawLines;
+
+      ctx.font = 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      const titleW = ctx.measureText(title).width;
+      ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      let maxLineW = 0;
+      for (const ln of lines) {
+        const w = ctx.measureText(ln.text).width + (ln.color ? 10 : 0);
+        if (w > maxLineW) maxLineW = w;
+      }
+
+      const lineH = 15;
+      const boxW = Math.max(titleW + 24, maxLineW + 24);
+      const boxH = 26 + lines.length * lineH;
+
+      let bx = pt.x - boxW / 2;
+      let by = pt.y - boxH - 10;
+      bx = Math.max(8, Math.min(Math.max(8, this.displayWidth - boxW - 8), bx));
+      if (by < 8) by = pt.y + 10;
+      by = Math.max(8, Math.min(Math.max(8, this.displayHeight - boxH - 8), by));
+
+      ctx.fillStyle = '#130d21';
+      ctx.strokeStyle = '#433269';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(bx, by, boxW, boxH, 6);
+      } else {
+        ctx.rect(bx, by, boxW, boxH);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#f5f3ff';
+      ctx.font = 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(title, bx + 12, by + 14);
+
+      ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      lines.forEach((ln, idx) => {
+        const yLine = by + 28 + idx * lineH;
+        if (ln.color) {
+          ctx.fillStyle = ln.color;
+          ctx.beginPath();
+          ctx.arc(bx + 14, yLine, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#c4b5fd';
+          ctx.fillText(ln.text, bx + 22, yLine);
+        } else {
+          ctx.fillStyle = '#c4b5fd';
+          ctx.fillText(ln.text, bx + 12, yLine);
+        }
+      });
+      return;
+    }
+
     const title = pt.datasetName ? `${pt.label || ''} - ${pt.datasetName}` : (pt.label || '');
     const valText = `Value: ${pt.val}`;
 
@@ -1109,8 +1497,9 @@ export class Chart {
     let bx = pt.x - boxW / 2;
     let by = pt.y - boxH - 10;
     if (bx < 8) bx = 8;
-    if (bx + boxW > this.displayWidth - 8) bx = this.displayWidth - boxW - 8;
+    if (bx + boxW > this.displayWidth - 8) bx = Math.max(8, this.displayWidth - boxW - 8);
     if (by < 8) by = pt.y + 10;
+    if (by + boxH > this.displayHeight - 8) by = Math.max(8, this.displayHeight - boxH - 8);
 
     ctx.fillStyle = '#130d21';
     ctx.strokeStyle = '#433269';

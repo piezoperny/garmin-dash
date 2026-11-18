@@ -1,13 +1,16 @@
-# Client-Side Encrypted Garmin Fitness Dashboard
+<div align="center">
+  <img src="public/icon.svg" width="84" height="84" alt="Garmin Vault Icon" />
+  <h1>Garmin Vault — Client-Side Encrypted Fitness Dashboard</h1>
 
-[![CI/CD Garmin Sync & Deploy](https://github.com/<username>/garmin-dash/actions/workflows/sync.yml/badge.svg)](https://github.com/<username>/garmin-dash/actions/workflows/sync.yml)
-[![Zero-Knowledge Security](https://img.shields.io/badge/Security-Zero--Knowledge%20AES--256--GCM-blue.svg)](https://github.com/<username>/garmin-dash)
-[![Web Crypto API](https://img.shields.io/badge/Web%20Crypto-Subtle%20API-success.svg)](https://w3c.github.io/webcrypto/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+  [![CI/CD Garmin Sync & Deploy](https://github.com/piezoperny/garmin-dash/actions/workflows/sync.yml/badge.svg)](https://github.com/piezoperny/garmin-dash/actions/workflows/sync.yml)
+  [![Zero-Knowledge Security](https://img.shields.io/badge/Security-Zero--Knowledge%20AES--256--GCM-a855f7.svg)](https://github.com/piezoperny/garmin-dash)
+  [![Web Crypto API](https://img.shields.io/badge/Web%20Crypto-Subtle%20API-38bdf8.svg)](https://w3c.github.io/webcrypto/)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+</div>
 
-A fully automated, **zero-knowledge, client-side encrypted personal fitness dashboard** hosted on **GitHub Pages** from a public repository.
+A fully automated, **zero-knowledge, client-side encrypted personal fitness & wellness dashboard** hosted on **GitHub Pages** from a public repository, styled in a **Deep Purple Obsidian UI Theme**.
 
-This project automatically ingests activity summaries, physiological metrics, and raw `.FIT` files from the **Garmin Connect Developer API (Personal Tier)**, permanently archives raw workouts off-site to a remote **Hetzner Storage Box over SFTP**, and publishes an **AES-256-GCM encrypted binary wire payload (`data.enc`)** that is decrypted **exclusively in-browser** using your master passphrase.
+This project automatically ingests activity summaries, full daily wellness telemetry, and raw `.FIT` / `.GPX` files from **Garmin Connect**, permanently archives full-fidelity raw data off-site to **Google Drive** and/or a **Hetzner Storage Box over SFTP**, and publishes an **AES-256-GCM encrypted binary wire payload (`data.enc`)** (with sharded per-activity streams) that is decrypted **exclusively in-browser** using your master passphrase.
 
 ---
 
@@ -154,9 +157,17 @@ To automatically pull your workouts, register for the Garmin Connect Developer A
    - Configure permissions for **Activities** and **Health & Fitness Metrics**.
 3. **Acquire OAuth Credentials**:
    - Note your **Consumer Key** (`GARMIN_API_KEY`) and **Consumer Secret** (`GARMIN_CLIENT_SECRET`).
-4. **Initial Token Bootstrapping**:
-   - Perform the initial one-time OAuth 2.0 handshake using Garmin's OAuth portal or our bootstrap helper to obtain an initial `GARMIN_ACCESS_TOKEN` and `GARMIN_REFRESH_TOKEN`.
-   - **Continuous Persistence**: You do not need to manually rotate tokens after initial setup! The pipeline automatically persists rotated OAuth 2.0 refresh tokens directly to `garmin_archive/.session/garmin_oauth.json` on your Hetzner Storage Box over SFTP during each scheduled run.
+4. **1-Click Personal Garmin Connect Token Bootstrap (`src/ingestion/bootstrap_garmin.py`)**:
+   - For personal Garmin Connect accounts, run the 1-click token bootstrapper to authenticate (with MFA support) and copy your serialized `GARMIN_TOKEN` directly to the clipboard:
+     ```bash
+     python -m src.ingestion.bootstrap_garmin
+     ```
+   - **Continuous Persistence**: You do not need to manually rotate tokens after initial setup! The pipeline automatically persists rotated OAuth session tokens directly to `garmin_archive/.session/garmin_oauth.json` on your configured vault (Google Drive or Hetzner Storage Box over SFTP) during each scheduled run.
+5. **4-Year GarminDB Historical Importer (`src/ingestion/import_garmindb.py`)**:
+   - Already have years of historical exports in [GarminDB](https://github.com/tcgoetz/GarminDB) SQLite databases (`garmin_activities.db`, `garmin.db`, `garmin_summary.db`, `garmin_monitoring.db`)? Import up to 4+ years of workouts, sleep, stress, resting HR, and GPS polylines directly into your encrypted vault:
+     ```bash
+     python -m src.ingestion.import_garmindb --db-dir /path/to/HealthData/DBs
+     ```
 
 ### 3.2 Hetzner Storage Box SFTP Archival
 
@@ -229,6 +240,21 @@ To enable automated synchronization, configure the following repository secrets 
 | `GARMIN_ACCESS_TOKEN` | *Optional*| Initial bootstrap OAuth access token (before first SFTP write) | `eyJhbGciOi...` |
 | `GARMIN_REFRESH_TOKEN`| *Optional*| Initial bootstrap OAuth refresh token (before first SFTP write) | `1000.abc123...` |
 
+### 3.5 Full-Fidelity Raw Data Vaulting (Google Drive & Hetzner SFTP)
+
+Every sync archives **complete, unstripped raw data** so you never have to re-download from Garmin Connect when adding new dashboard features:
+- **Raw Activity Files & Detail JSON**: `.FIT`, `.GPX`, and `{activity_id}_summary.json` (including splits, typed splits, HR/power zones, strength exercise sets/reps/weights, weather, and gear) stored under `garmin_archive/activities/{YYYY}/{MM}/`.
+- **Full Daily Wellness JSON Bundles**: Raw daily responses (user summary, sleep hypnograms, HRV, 3-minute stress & body battery arrays, heart rates, steps, respiration, SpO2, training readiness/status, VO2Max, body composition, hydration, floors, fitness age) archived per year in `garmin_archive/raw_wellness/raw_wellness_{YYYY}.json`.
+- **Supported Storage Backends**:
+  - **Google Drive**: Connect via a Google Cloud Service Account (`GDRIVE_SERVICE_ACCOUNT_JSON` + `GDRIVE_FOLDER_ID`) or the zero-config **Google Apps Script Web App bridge** (`GDRIVE_APPS_SCRIPT_URL`).
+  - **Hetzner Storage Box (SFTP)**: Configure `HETZNER_HOST`, `HETZNER_USER`, and `HETZNER_SSH_KEY` as documented above.
+
+### 3.6 GitHub Repository "About" Sidebar Settings
+
+To configure the repository's **About** sidebar on GitHub (`https://github.com/piezoperny/garmin-dash`), paste the following into **Settings / About**:
+- **Description**: `Zero-knowledge, client-side AES-256-GCM encrypted Garmin fitness & wellness dashboard on GitHub Pages`
+- **Website**: `https://piezoperny.github.io/garmin-dash/`
+
 ---
 
 ## 4. Local Execution & Development Commands
@@ -239,7 +265,7 @@ To enable automated synchronization, configure the following repository secrets 
 
 ```bash
 # Clone the repository
-git clone https://github.com/<username>/garmin-dash.git
+git clone https://github.com/piezoperny/garmin-dash.git
 cd garmin-dash
 
 # Create and activate Python virtual environment
@@ -263,6 +289,9 @@ Test the entire pipeline locally without Garmin API credentials or external netw
 ```bash
 # 1. Run incremental ingestion in synthetic mock mode
 python -m src.ingestion.sync --mock
+
+# (Live archive mode) Reprocess archived raw JSON bundles offline without querying Garmin Connect:
+# python -m src.ingestion.sync --reprocess-archive
 
 # 2. Compile and encrypt the rollup into public/data.enc (uses demo passphrase: demo-passphrase-2026!)
 python -m src.encryption.encrypt --mock --verify
@@ -353,10 +382,25 @@ npx playwright test tests/e2e/dashboard.spec.js
 ---
 
 ## 5. Interactive Visualizations & Metrics
- 
-Once unlocked with your master passphrase, the dashboard renders three interactive sections built with Chart.js, styled in a minimalist dark aesthetic with hairline borders and tabular numerals:
 
-### 1. Endurance & Training Load
+Once unlocked with your master passphrase, the dashboard renders a **Deep Purple Obsidian UI** built with a custom zero-dependency Canvas 2D chart engine, featuring hairline borders and tabular numerals:
+
+### 1. Today's Activities Hero Banner & Health & Fitness Wellness Dashboard
+- **Today's Activities Hero Banner**: Highlights today's (or latest recorded) workouts at the top of the dashboard with sport icon badges, key telemetry pills (Distance, Duration, Avg Pace/Speed, Elevation, Avg HR, Calories, TSS), an inline mini GPS route SVG preview, and one-click drill-down into the Activity Detail Drawer.
+- **Customizable Wellness Layout ("In Focus" & "At a Glance")**:
+  - **In Focus (4-column hero grid)**: **Sleep**, **Body Battery**, **Stress** (with proportional 4-zone Rest / Low / Medium / High breakdown bar), and **Steps**.
+  - **At a Glance**: **Resting HR (RHR)**, **HRV**, **Intensity Minutes**, and **Calories**.
+  - Click **Customize** / **Edit Home** to reorder, promote, or hide any wellness card; preferences persist in `localStorage`.
+
+### 2. Interactive Metric Trend Modals
+Clicking any Wellness card opens an interactive **Metric Trend Modal** supporting:
+- **Time Ranges & Navigation**: `1D` / `7D` / `1M` / `1Y` / `Custom` date ranges with previous/next period stepping.
+- **Garmin-Style Body Battery Range Bars**: Vertical High/Low pillars (`Daily High` `#38bdf8` cap and `Daily Low` `#c4b5fd` ring cap) with Charged/Drained tooltips, plus a `00:00`–`23:59` intraday curve in `1D` mode.
+- **4-Zone Stress Breakdown**: Color-coded bars over Rest (`0–25`), Low (`26–50`), Medium (`51–75`), and High (`76–100`) bands, `1D` intraday stress curve, autonomic KPIs, and a 5-column daily breakdown table.
+- **HRV & RHR Baseline Bands**: Rolling `±1 SD` baseline bands for recovery tracking.
+- **Pan & Zoom Controls**: X/Y mouse drag pan and right-click zoom on trend charts.
+
+### 3. Endurance & Training Load
 - **Stacked Weekly Volume**: Multi-sport duration chart plotting Weekly Duration (Hours) across Cycling, Hiking, and Weights, allowing cross-discipline volume analysis.
 - **Dynamic Sport Filter Pills**: Instant filtering across **All · Cycling · Hiking · Weights** that dynamically updates KPI cards, volume charts, and activity records. Weights displays workout duration and heart rate metrics while displaying `—` for distance.
 - **Physiological Training Load Curves**:
@@ -364,15 +408,15 @@ Once unlocked with your master passphrase, the dashboard renders three interacti
   - **CTL (Chronic Training Load)**: 42-day exponentially weighted moving average representing fitness.
   - **TSB (Training Stress Balance)**: Form curve ($TSB = CTL - ATL$) indicating freshness vs. overtraining risk.
 
-### 2. Physiological Distribution
+### 4. Physiological Distribution
 - **Heart Rate Zones (Z1 - Z5)**: Wrapped donut chart displaying time in zone breakdowns calculated from resting and maximum heart rates.
 - **Coggan Power Zones (Z1 - Z7)**: Cycling power output distribution relative to Functional Threshold Power (FTP).
 - **Pace Zones**: Concise, non-colliding pace distribution for endurance activities (Hiking / Running) partitioned into Recovery, Aerobic, Tempo, Threshold, and Interval paces.
 - **Historical Threshold Trends**: Longitudinal progression curves for VO2Max, FTP (watts), and Lactate Threshold Heart Rate (LTHR).
 
-### 3. Activity Drill-Down
+### 5. Activity Drill-Down
 - **Filterable & Searchable Table**: Instant search across activity titles, sports (Weights, Cycling, Hiking), dates, and metrics with high-contrast sport badges.
-- **Activity Detail Drawer**: Per-kilometer/mile split breakdowns with synchronized elevation ascent and cadence (spm for hiking, rpm for cycling), and HR curves for weight training workouts.
+- **Activity Detail Drawer**: Interactive Leaflet GPS route map, per-kilometer/mile split breakdowns, synchronized elevation/HR/pace/cadence streams (loaded on-demand from encrypted `streams/<id>.enc` shards), and HR curves for weight training workouts.
 
 ---
 

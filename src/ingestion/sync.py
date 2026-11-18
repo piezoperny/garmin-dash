@@ -16,7 +16,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,7 @@ from src.ingestion.garmin_client import (
     MockGarminClient,
     SecretRedactionFilter,
     SFTPTokenStore,
+    normalize_daily_wellness,
 )
 from src.ingestion.mock_generator import (
     SyntheticDatasetGenerator,
@@ -58,8 +59,61 @@ REMOTE_MANIFEST_PATH = "garmin_archive/metadata/sync_manifest.json"
 REMOTE_CANONICAL_PATH = "garmin_archive/metadata/canonical_activities.json"
 REMOTE_INDEX_PATH = "garmin_archive/metadata/activities_index.json"
 REMOTE_WELLNESS_PATH = "garmin_archive/metadata/wellness_history.json"
+REMOTE_RAW_WELLNESS_DIR = "garmin_archive/raw_wellness"
 REMOTE_STREAMS_DIR = "garmin_archive/streams"
 REMOTE_SESSION_PATH = "garmin_archive/.session/garmin_oauth.json"
+
+
+def apply_wellness_intraday_retention(
+    records: List[Dict[str, Any]],
+    retention_days: int = 14,
+) -> List[Dict[str, Any]]:
+    """
+    Keep intraday_body_battery and intraday_stress only on records within the most recent
+    `retention_days` calendar days anchored to the max valid date in `records`
+    (falling back to UTC today). Strips those intraday keys from older records.
+    """
+    if not records:
+        return []
+
+    parsed_dates = []
+    for rec in records:
+        if isinstance(rec, dict) and rec.get("date"):
+            try:
+                parsed_dates.append(datetime.strptime(str(rec["date"])[:10], "%Y-%m-%d").date())
+            except Exception:
+                pass
+
+    anchor_date = max(parsed_dates) if parsed_dates else datetime.now(timezone.utc).date()
+    cutoff_date = anchor_date - timedelta(days=retention_days)
+
+    retained: List[Dict[str, Any]] = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        copy_rec = dict(rec)
+        keep_intraday = False
+        if copy_rec.get("date"):
+            try:
+                rec_date = datetime.strptime(str(copy_rec["date"])[:10], "%Y-%m-%d").date()
+                keep_intraday = rec_date > cutoff_date
+            except Exception:
+                keep_intraday = False
+        if not keep_intraday:
+            copy_rec.pop("intraday_body_battery", None)
+            copy_rec.pop("intraday_stress", None)
+        retained.append(copy_rec)
+    return retained
+
+
+def _safe_listdir(storage_client: Any, remote_dir: str) -> List[str]:
+    """Safely list a remote directory across SFTP/GDrive/Mock clients without crashing on missing dirs."""
+    try:
+        entries = storage_client.listdir(remote_dir)
+        return sorted(str(e) for e in entries) if entries else []
+    except Exception as e:
+        logger.debug(f"Directory listing skipped for {remote_dir}: {e}")
+        return []
 
 
 SPORT_TAXONOMY_MAP: Dict[str, str] = {
@@ -272,6 +326,25 @@ def reprocess_canonical_activities(
         if raw_type and not act.get("raw_activity_type"):
             act["raw_activity_type"] = raw_type
 
+        if new_sport in ("strength", "weights"):
+            for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
+                act.pop(forbidden_key, None)
+            act["gps_track"] = None
+            act["telemetry_stream"] = None
+            act["summary_polyline"] = None
+            act["has_streams"] = False
+        else:
+            if not act.get("summary_polyline") and isinstance(act.get("gps_track"), dict):
+                act["summary_polyline"] = (
+                    act["gps_track"].get("polyline")
+                    or act["gps_track"].get("encoded_polyline")
+                    or None
+                )
+            if act.get("gps_track") or act.get("telemetry_stream"):
+                act["has_streams"] = True
+            elif act.get("has_streams") is None:
+                act["has_streams"] = False
+
         reprocessed.append(act)
 
     return reprocessed
@@ -450,6 +523,16 @@ def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
         return default
 
 
+def _extract_num(d: Dict[str, Any], keys: Tuple[str, ...], conv: Callable[[Any], Any], default: Any) -> Any:
+    """Return the first non-None value from keys that converts cleanly via conv, preserving 0/0.0."""
+    for k in keys:
+        if k in d and d[k] is not None:
+            val = conv(d[k])
+            if val is not None:
+                return val
+    return default
+
+
 def parse_garmin_activity_detail_metrics(
     details: Any,
     dur_sec: int = 0,
@@ -614,31 +697,31 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
     if " " in start_str and "T" not in start_str:
         start_str = start_str.replace(" ", "T") + "Z"
 
-    dur_sec = int(float(summary.get("duration") or summary.get("durationInSeconds") or summary.get("duration_seconds") or 0))
-    moving_sec = int(float(summary.get("movingDuration") or summary.get("moving_time_seconds") or dur_sec))
-    dist_m = 0.0 if sport in ("strength", "weights") else float(summary.get("distance") or summary.get("distanceInMeters") or summary.get("distance_meters") or 0.0)
-    avg_hr = int(float(summary.get("averageHR") or summary.get("averageHeartRateInBeatsPerMinute") or summary.get("avg_hr") or 130))
-    max_hr = int(float(summary.get("maxHR") or summary.get("maxHeartRateInBeatsPerMinute") or summary.get("max_hr") or max(avg_hr + 15, 145)))
-    elev_m = 0 if sport in ("strength", "weights", "swimming") else int(float(summary.get("elevationGain") or summary.get("elevation_gain_meters") or 0))
-    avg_power = None if sport != "cycling" else (summary.get("avgPower") or summary.get("averagePower") or summary.get("avg_power"))
+    dur_sec = _extract_num(summary, ("duration", "durationInSeconds", "duration_seconds"), safe_int, 0)
+    moving_sec = _extract_num(summary, ("movingDuration", "movingDurationInSeconds", "moving_time_seconds"), safe_int, dur_sec)
+    dist_m = 0.0 if sport in ("strength", "weights") else _extract_num(summary, ("distance", "distanceInMeters", "distance_meters"), safe_float, 0.0)
+    avg_hr = _extract_num(summary, ("averageHR", "averageHeartRateInBeatsPerMinute", "avg_hr"), safe_int, 130)
+    max_hr = _extract_num(summary, ("maxHR", "maxHeartRateInBeatsPerMinute", "max_hr"), safe_int, max(avg_hr + 15, 145))
+    elev_m = 0 if sport in ("strength", "weights", "swimming") else _extract_num(summary, ("elevationGain", "totalElevationGainInMeters", "elevation_gain_meters"), safe_int, 0)
+    avg_power = None if sport != "cycling" else _extract_num(summary, ("avgPower", "averagePower", "averagePowerInWatts", "avg_power"), safe_float, None)
 
     if sport in ("strength", "weights"):
         avg_cadence = 0
     elif sport == "cycling":
-        avg_cadence = int(float(summary.get("averageBikingCadenceInRevPerMinute") or summary.get("avg_cadence") or 0))
+        avg_cadence = _extract_num(summary, ("averageBikingCadenceInRevPerMinute", "avg_cadence"), safe_int, 0)
     else:
-        avg_cadence = int(float(
-            summary.get("averageRunCadenceInStepsPerMinute")
-            or summary.get("averageRunningCadenceInStepsPerMinute")
-            or summary.get("avg_cadence")
-            or 0
-        ))
+        avg_cadence = _extract_num(
+            summary,
+            ("averageRunCadenceInStepsPerMinute", "averageRunningCadenceInStepsPerMinute", "avg_cadence"),
+            safe_int,
+            0,
+        )
 
+    tss_raw = _extract_num(summary, ("activityTrainingLoad", "trainingStressScore", "tss"), safe_float, None)
     tss = float(
-        summary.get("activityTrainingLoad")
-        or summary.get("trainingStressScore")
-        or summary.get("tss")
-        or compute_activity_tss(
+        tss_raw
+        if tss_raw is not None
+        else compute_activity_tss(
             sport=sport,
             dur_sec=dur_sec,
             avg_hr=avg_hr,
@@ -806,6 +889,15 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
     if sport in ("strength", "weights"):
         gps_track = None
         telemetry_stream = None
+        summary_polyline = None
+        has_streams = False
+    else:
+        summary_polyline = (
+            (gps_track.get("polyline") or gps_track.get("encoded_polyline"))
+            if isinstance(gps_track, dict)
+            else None
+        ) or details.get("summary_polyline") or summary.get("summary_polyline") or None
+        has_streams = bool(gps_track or telemetry_stream)
 
     return {
         "id": act_id,
@@ -816,19 +908,21 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
         "distance_meters": dist_m,
         "duration_seconds": dur_sec,
         "moving_time_seconds": moving_sec,
-        "calories": int(float(summary.get("calories") or round(dur_sec * 0.18))),
+        "calories": _extract_num(summary, ("calories", "activeKilocalories"), safe_int, round(dur_sec * 0.18)),
         "avg_hr": avg_hr,
         "max_hr": max_hr,
         "avg_pace_sec_km": avg_pace_sec_km,
         "avg_cadence": avg_cadence,
-        "avg_power": int(float(avg_power)) if avg_power is not None else None,
-        "avg_power_watts": int(float(avg_power)) if avg_power is not None else None,
+        "avg_power": safe_int(avg_power) if avg_power is not None else None,
+        "avg_power_watts": safe_int(avg_power) if avg_power is not None else None,
         "elevation_gain_meters": elev_m,
         "tss": round(tss, 1),
         "training_stress_score": round(tss, 1),
         "splits": canonical_splits,
         "laps": canonical_laps,
         "hr_zones": details.get("hr_zones") or summary.get("hr_zones") or {},
+        "summary_polyline": summary_polyline,
+        "has_streams": has_streams,
         "gps_track": gps_track,
         "telemetry_stream": telemetry_stream,
         "raw_activity_type": raw_activity_type,
@@ -883,11 +977,15 @@ class SyncManifest(BaseModel):
                     self.formats_backed_up[fmt_key] = self.formats_backed_up.get(fmt_key, 0) + 1
 
     def to_json(self) -> str:
-        return self.model_dump_json(indent=2)
+        if hasattr(self, "model_dump_json"):
+            return self.model_dump_json(indent=2)
+        return self.json(indent=2)
 
     @classmethod
     def from_json(cls, text: str) -> SyncManifest:
-        return cls.model_validate_json(text)
+        if hasattr(cls, "model_validate_json"):
+            return cls.model_validate_json(text)
+        return cls.parse_raw(text)
 
 
 def verify_archive_integrity(
@@ -1078,11 +1176,13 @@ def run_sync_pipeline(
     lookback_days: int = 90,
     staging_dir: Union[Path, str] = Path(".raw_staging"),
     output_rollup: Union[Path, str] = Path(".staging/dashboard_rollup.json"),
+    sftp_client: Optional[Any] = None,
+    garmin_client: Optional[GarminClientProtocol] = None,
 ) -> int:
     """
     Main ingestion execution coordinator:
     1. Initialize SFTP and Garmin clients (Live or Mock based on mode/credentials).
-    2. Execute incremental activity pull and SFTP archival.
+    2. Execute incremental activity pull and SFTP archival (or offline archive walk when reprocess_archive=True).
     3. Invoke Rollup Compiler to generate dashboard_rollup.json.
     4. Guarantee complete purging of .raw_staging/ in finally block.
     """
@@ -1095,51 +1195,72 @@ def run_sync_pipeline(
     credentials = GarminCredentials.from_env()
     sftp_config = SFTPConfig.from_env()
     gdrive_config = GDriveConfig.from_env()
-    is_mock = mock_mode or credentials is None or (sftp_config is None and gdrive_config is None)
+    has_storage = (sftp_client is not None) or (sftp_config is not None) or (gdrive_config is not None)
+    is_mock = mock_mode or (not has_storage) or (
+        credentials is None and not reprocess_archive and garmin_client is None
+    )
+
+    owns_sftp = sftp_client is None
+    active_garmin: Optional[GarminClientProtocol] = None
 
     if is_mock:
         logger.info("Operating in MOCK MODE: utilizing synthetic generator and in-memory mock SFTP.")
-        sftp_client = MockSFTPClient()
-        token_store = SFTPTokenStore(sftp_client, REMOTE_SESSION_PATH)
-        garmin_client = MockGarminClient(seed=42, token_store=token_store)
+        active_sftp = sftp_client if sftp_client is not None else MockSFTPClient()
+        token_store = SFTPTokenStore(active_sftp, REMOTE_SESSION_PATH)
+        active_garmin = (
+            garmin_client
+            if garmin_client is not None
+            else MockGarminClient(seed=42, token_store=token_store)
+        )
     else:
-        logger.info("Operating in LIVE MODE: connecting to storage (Google Drive / Hetzner SFTP) and Garmin API.")
-        sftp_client = get_storage_client(force_mock=False)
-        token_store = SFTPTokenStore(sftp_client, REMOTE_SESSION_PATH)
-        garmin_client = LiveGarminClient(api_key_or_credentials=credentials, token_store=token_store)
+        logger.info("Operating in LIVE MODE: connecting to storage (Google Drive / Hetzner SFTP).")
+        active_sftp = sftp_client if sftp_client is not None else get_storage_client(force_mock=False)
+        if reprocess_archive:
+            logger.info("Offline archive reprocessing enabled: skipping LiveGarminClient initialization.")
+            active_garmin = None
+        else:
+            token_store = SFTPTokenStore(active_sftp, REMOTE_SESSION_PATH)
+            active_garmin = (
+                garmin_client
+                if garmin_client is not None
+                else LiveGarminClient(api_key_or_credentials=credentials, token_store=token_store)
+            )
 
     try:
         if force_refresh and not is_mock:
             manifest = SyncManifest()
         else:
-            manifest = load_remote_manifest(sftp_client)
+            manifest = load_remote_manifest(active_sftp)
 
-        new_activities, count = execute_incremental_pull(
-            garmin_client=garmin_client,
-            sftp_client=sftp_client,
-            manifest=manifest,
-            staging_dir=staging_dir_path,
-            lookback_days=lookback_days,
-            force_refresh=force_refresh,
-        )
-
-        verify_archive_integrity(sftp_client, manifest)
-        elapsed = time.time() - start_time
-        manifest.history.append(
-            SyncHistoryEntry(
-                timestamp=int(time.time()),
-                datetime_utc=datetime.now(timezone.utc).isoformat(),
-                activities_synced=count,
-                duration_seconds=round(elapsed, 2),
+        if not is_mock and reprocess_archive:
+            new_activities, count = [], 0
+        else:
+            new_activities, count = execute_incremental_pull(
+                garmin_client=active_garmin,
+                sftp_client=active_sftp,
+                manifest=manifest,
+                staging_dir=staging_dir_path,
+                lookback_days=lookback_days,
+                force_refresh=force_refresh,
             )
-        )
-        save_remote_manifest(sftp_client, manifest)
 
         # Compile Rollup Payload
         logger.info("Compiling dashboard_rollup.json from ingested dataset...")
         wellness_payload: Optional[Dict[str, Any]] = None
 
         if is_mock:
+            verify_archive_integrity(active_sftp, manifest)
+            elapsed = time.time() - start_time
+            manifest.history.append(
+                SyncHistoryEntry(
+                    timestamp=int(time.time()),
+                    datetime_utc=datetime.now(timezone.utc).isoformat(),
+                    activities_synced=count,
+                    duration_seconds=round(elapsed, 2),
+                )
+            )
+            save_remote_manifest(active_sftp, manifest)
+
             gen = SyntheticDatasetGenerator(seed=42)
             canonical_acts = gen.generate_activities()
             if reprocess_archive:
@@ -1148,9 +1269,9 @@ def run_sync_pipeline(
             existing_acts_map: Dict[str, Dict[str, Any]] = {}
             if not force_refresh:
                 for path_candidate in (REMOTE_INDEX_PATH, REMOTE_CANONICAL_PATH):
-                    if sftp_client.file_exists(path_candidate):
+                    if active_sftp.file_exists(path_candidate):
                         try:
-                            raw_existing = sftp_client.read_text(path_candidate)
+                            raw_existing = active_sftp.read_text(path_candidate)
                             if raw_existing:
                                 for item in json.loads(raw_existing):
                                     act_key = str(item.get("id"))
@@ -1160,6 +1281,8 @@ def run_sync_pipeline(
                             logger.warning(f"Could not read existing activities from {path_candidate}: {e}")
 
             local_streams_dir = output_rollup_path.parent / "streams"
+            if reprocess_archive and local_streams_dir.exists():
+                shutil.rmtree(local_streams_dir, ignore_errors=True)
             local_streams_dir.mkdir(parents=True, exist_ok=True)
 
             streams_by_year: Dict[str, Dict[str, Any]] = {}
@@ -1170,8 +1293,8 @@ def run_sync_pipeline(
                     bundle_path = f"{REMOTE_STREAMS_DIR}/streams_{y_str}.json"
                     loaded: Dict[str, Any] = {}
                     try:
-                        if sftp_client.file_exists(bundle_path):
-                            raw_b = sftp_client.read_text(bundle_path)
+                        if active_sftp.file_exists(bundle_path):
+                            raw_b = active_sftp.read_text(bundle_path)
                             if raw_b:
                                 parsed_b = json.loads(raw_b)
                                 if isinstance(parsed_b, dict):
@@ -1181,7 +1304,39 @@ def run_sync_pipeline(
                     streams_by_year[y_str] = loaded
                 return streams_by_year[y_str]
 
-            for payload in new_activities:
+            payloads_to_process: List[Dict[str, Any]] = list(new_activities)
+            if reprocess_archive:
+                for y_dir in _safe_listdir(active_sftp, "garmin_archive/activities"):
+                    if not (len(y_dir) == 4 and y_dir.isdigit()):
+                        continue
+                    for m_dir in _safe_listdir(active_sftp, f"garmin_archive/activities/{y_dir}"):
+                        if not m_dir.isdigit():
+                            continue
+                        month_remote_dir = f"garmin_archive/activities/{y_dir}/{m_dir}"
+                        for fname in _safe_listdir(active_sftp, month_remote_dir):
+                            if not fname.lower().endswith("_summary.json"):
+                                continue
+                            remote_sum_path = f"{month_remote_dir}/{fname}"
+                            try:
+                                raw_sum_txt = active_sftp.read_text(remote_sum_path)
+                                if not raw_sum_txt:
+                                    continue
+                                parsed_payload = json.loads(raw_sum_txt)
+                                if not isinstance(parsed_payload, dict):
+                                    continue
+                                payloads_to_process.append(parsed_payload)
+                                sum_obj = parsed_payload.get("summary") if isinstance(parsed_payload.get("summary"), dict) else parsed_payload
+                                raw_id = (
+                                    sum_obj.get("activityId")
+                                    or sum_obj.get("id")
+                                    or re.sub(r"_summary\.json$", "", fname, flags=re.IGNORECASE)
+                                )
+                                manifest.record_activity(str(raw_id), year=y_dir, formats=["json"])
+                                count += 1
+                            except Exception as e:
+                                logger.warning(f"Could not reprocess archived activity {remote_sum_path}: {e}")
+
+            for payload in payloads_to_process:
                 norm_act = normalize_garmin_activity(payload)
                 act_id_str = str(norm_act["id"])
                 existing_acts_map[act_id_str] = norm_act
@@ -1203,6 +1358,18 @@ def run_sync_pipeline(
                 y_map[act_id_str] = shard_obj
                 dirty_years.add(year_str)
 
+            verify_archive_integrity(active_sftp, manifest)
+            elapsed = time.time() - start_time
+            manifest.history.append(
+                SyncHistoryEntry(
+                    timestamp=int(time.time()),
+                    datetime_utc=datetime.now(timezone.utc).isoformat(),
+                    activities_synced=count,
+                    duration_seconds=round(elapsed, 2),
+                )
+            )
+            save_remote_manifest(active_sftp, manifest)
+
             canonical_acts = list(existing_acts_map.values())
             canonical_acts = reprocess_canonical_activities(canonical_acts)
 
@@ -1211,6 +1378,7 @@ def run_sync_pipeline(
                 act_id_str = str(act.get("id") or "")
                 if not act_id_str:
                     continue
+                is_str_act = act.get("sport") in ("strength", "weights")
                 local_shard_file = local_streams_dir / f"{act_id_str}.json"
                 date_str = str(act.get("start_time") or act.get("date") or "")
                 year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
@@ -1231,33 +1399,80 @@ def run_sync_pipeline(
                         if act_id_str not in y_map:
                             y_map[act_id_str] = shard_obj
                             dirty_years.add(year_str)
+                        if not is_str_act:
+                            act["has_streams"] = True
+                            if not act.get("summary_polyline") and isinstance(shard_obj.get("gps_track"), dict):
+                                act["summary_polyline"] = (
+                                    shard_obj["gps_track"].get("polyline")
+                                    or shard_obj["gps_track"].get("encoded_polyline")
+                                    or None
+                                )
                     else:
                         y_map = _get_year_streams(year_str)
                         if act_id_str in y_map:
+                            shard_obj = y_map[act_id_str]
                             local_shard_file.write_text(
-                                json.dumps(y_map[act_id_str], separators=(",", ":")),
+                                json.dumps(shard_obj, separators=(",", ":")),
                                 encoding="utf-8",
                             )
+                            if not is_str_act and isinstance(shard_obj, dict):
+                                act["has_streams"] = bool(
+                                    shard_obj.get("gps_track") or shard_obj.get("telemetry_stream")
+                                )
+                                if not act.get("summary_polyline") and isinstance(shard_obj.get("gps_track"), dict):
+                                    act["summary_polyline"] = (
+                                        shard_obj["gps_track"].get("polyline")
+                                        or shard_obj["gps_track"].get("encoded_polyline")
+                                        or None
+                                    )
                         else:
                             remote_shard_path = f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id_str}.json"
                             recovered = False
                             try:
-                                if sftp_client.file_exists(remote_shard_path):
-                                    raw_shard = sftp_client.read_text(remote_shard_path)
+                                if active_sftp.file_exists(remote_shard_path):
+                                    raw_shard = active_sftp.read_text(remote_shard_path)
                                     if raw_shard:
                                         local_shard_file.write_text(raw_shard, encoding="utf-8")
-                                        y_map[act_id_str] = json.loads(raw_shard)
+                                        shard_obj = json.loads(raw_shard)
+                                        y_map[act_id_str] = shard_obj
                                         dirty_years.add(year_str)
                                         recovered = True
+                                        if not is_str_act and isinstance(shard_obj, dict):
+                                            act["has_streams"] = bool(
+                                                shard_obj.get("gps_track") or shard_obj.get("telemetry_stream")
+                                            )
+                                            if not act.get("summary_polyline") and isinstance(shard_obj.get("gps_track"), dict):
+                                                act["summary_polyline"] = (
+                                                    shard_obj["gps_track"].get("polyline")
+                                                    or shard_obj["gps_track"].get("encoded_polyline")
+                                                    or None
+                                                )
                             except Exception:
                                 pass
 
                             # Fallback: recover full GPS & telemetry directly from archived raw *_summary.json
                             if not recovered and year_str != "unknown":
+                                candidate_ym: List[Tuple[str, str]] = [(year_str, month_str)]
+                                try:
+                                    base_dt = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                                    for delta in (1, -1):
+                                        adj_dt = base_dt + timedelta(days=delta)
+                                        pair = (f"{adj_dt.year:04d}", f"{adj_dt.month:02d}")
+                                        if pair not in candidate_ym:
+                                            candidate_ym.append(pair)
+                                except Exception:
+                                    pass
                                 raw_summary_path = f"garmin_archive/activities/{year_str}/{month_str}/{act_id_str}_summary.json"
                                 try:
-                                    if sftp_client.file_exists(raw_summary_path):
-                                        raw_sum_txt = sftp_client.read_text(raw_summary_path)
+                                    matched_path = None
+                                    for cand_y, cand_m in candidate_ym:
+                                        cand_path = f"garmin_archive/activities/{cand_y}/{cand_m}/{act_id_str}_summary.json"
+                                        if active_sftp.file_exists(cand_path):
+                                            matched_path = cand_path
+                                            break
+                                    if matched_path:
+                                        raw_summary_path = matched_path
+                                        raw_sum_txt = active_sftp.read_text(raw_summary_path)
                                         if raw_sum_txt:
                                             re_norm = normalize_garmin_activity(json.loads(raw_sum_txt))
                                             shard_obj = {
@@ -1272,14 +1487,22 @@ def run_sync_pipeline(
                                             local_shard_file.write_text(shard_json, encoding="utf-8")
                                             y_map[act_id_str] = shard_obj
                                             dirty_years.add(year_str)
-                                            act["has_streams"] = bool(re_norm.get("gps_track") or re_norm.get("telemetry_stream"))
+                                            if is_str_act:
+                                                act["has_streams"] = False
+                                                act["summary_polyline"] = None
+                                            else:
+                                                act["has_streams"] = bool(
+                                                    re_norm.get("gps_track") or re_norm.get("telemetry_stream")
+                                                )
+                                                if not act.get("summary_polyline") and re_norm.get("summary_polyline"):
+                                                    act["summary_polyline"] = re_norm.get("summary_polyline")
                                 except Exception as e:
                                     logger.warning(f"Could not recover stream from {raw_summary_path}: {e}")
 
             for y_str in sorted(dirty_years):
                 bundle_path = f"{REMOTE_STREAMS_DIR}/streams_{y_str}.json"
                 try:
-                    sftp_client.write_text_atomic(
+                    active_sftp.write_text_atomic(
                         bundle_path,
                         json.dumps(streams_by_year[y_str], separators=(",", ":")),
                     )
@@ -1290,23 +1513,33 @@ def run_sync_pipeline(
             index_acts = []
             for act in canonical_acts:
                 idx_copy = dict(act)
-                has_s = bool(
-                    idx_copy.get("gps_track")
-                    or idx_copy.get("telemetry_stream")
-                    or idx_copy.get("has_streams")
-                    or (local_streams_dir / f"{idx_copy.get('id')}.json").exists()
-                )
-                idx_copy["has_streams"] = has_s
+                is_str_act = idx_copy.get("sport") in ("strength", "weights")
+                if is_str_act:
+                    for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
+                        idx_copy.pop(forbidden_key, None)
+                    idx_copy["summary_polyline"] = None
+                    idx_copy["has_streams"] = False
+                else:
+                    gps_val = idx_copy.get("gps_track")
+                    if not idx_copy.get("summary_polyline") and isinstance(gps_val, dict):
+                        idx_copy["summary_polyline"] = (
+                            gps_val.get("polyline") or gps_val.get("encoded_polyline") or None
+                        )
+                    idx_copy["has_streams"] = bool(
+                        idx_copy.get("gps_track")
+                        or idx_copy.get("telemetry_stream")
+                        or idx_copy.get("has_streams")
+                    )
                 idx_copy.pop("gps_track", None)
                 idx_copy.pop("telemetry_stream", None)
                 index_acts.append(idx_copy)
-            sftp_client.write_text_atomic(REMOTE_INDEX_PATH, json.dumps(index_acts, indent=2))
+            active_sftp.write_text_atomic(REMOTE_INDEX_PATH, json.dumps(index_acts, indent=2))
 
             # Fetch genuine daily wellness history (zero synthetic estimation)
             wellness_by_date: Dict[str, Dict[str, Any]] = {}
-            if not force_refresh and sftp_client.file_exists(REMOTE_WELLNESS_PATH):
+            if not force_refresh and active_sftp.file_exists(REMOTE_WELLNESS_PATH):
                 try:
-                    raw_w = sftp_client.read_text(REMOTE_WELLNESS_PATH)
+                    raw_w = active_sftp.read_text(REMOTE_WELLNESS_PATH)
                     if raw_w:
                         for w_rec in json.loads(raw_w):
                             if isinstance(w_rec, dict) and w_rec.get("date"):
@@ -1314,40 +1547,125 @@ def run_sync_pipeline(
                 except Exception as e:
                     logger.warning(f"Could not read existing wellness history: {e}")
 
-            if hasattr(garmin_client, "get_daily_wellness"):
+            raw_wellness_by_year: Dict[str, Dict[str, Any]] = {}
+            dirty_wellness_years: Set[str] = set()
+
+            def _get_raw_wellness_year(y_str: str) -> Dict[str, Any]:
+                if y_str not in raw_wellness_by_year:
+                    raw_path = f"{REMOTE_RAW_WELLNESS_DIR}/raw_wellness_{y_str}.json"
+                    loaded: Dict[str, Any] = {}
+                    try:
+                        if active_sftp.file_exists(raw_path):
+                            raw_txt = active_sftp.read_text(raw_path)
+                            if raw_txt:
+                                parsed = json.loads(raw_txt)
+                                if isinstance(parsed, dict):
+                                    loaded = parsed
+                    except Exception as e:
+                        logger.warning(f"Could not read raw wellness bundle {raw_path}: {e}")
+                    raw_wellness_by_year[y_str] = loaded
+                return raw_wellness_by_year[y_str]
+
+            if reprocess_archive:
+                for fname in _safe_listdir(active_sftp, REMOTE_RAW_WELLNESS_DIR):
+                    if not re.fullmatch(r"raw_wellness_(\d{4})\.json", fname):
+                        continue
+                    raw_w_path = f"{REMOTE_RAW_WELLNESS_DIR}/{fname}"
+                    try:
+                        raw_w_txt = active_sftp.read_text(raw_w_path)
+                        if not raw_w_txt:
+                            continue
+                        year_bundle = json.loads(raw_w_txt)
+                        if not isinstance(year_bundle, dict):
+                            continue
+                        for cdate, raw_bundle in year_bundle.items():
+                            if isinstance(raw_bundle, dict):
+                                norm_w = normalize_daily_wellness(str(cdate), raw_bundle)
+                                wellness_by_date[str(norm_w["date"])] = norm_w
+                    except Exception as e:
+                        logger.warning(f"Could not reprocess raw wellness archive {raw_w_path}: {e}")
+            elif active_garmin is not None and (
+                hasattr(active_garmin, "get_raw_daily_wellness_bundle")
+                or hasattr(active_garmin, "get_daily_wellness")
+            ):
                 today_dt = datetime.now(timezone.utc).date()
                 wellness_days = min(max(7, lookback_days), 30) if not force_refresh else min(lookback_days, 90)
+                has_raw_bundle_fn = hasattr(active_garmin, "get_raw_daily_wellness_bundle")
                 for d_offset in range(wellness_days):
                     cdate = (today_dt - timedelta(days=d_offset)).isoformat()
-                    if not force_refresh and cdate in wellness_by_date and d_offset > 2:
+                    yyyy = cdate[:4]
+                    y_raw = _get_raw_wellness_year(yyyy)
+                    if not force_refresh and cdate in wellness_by_date and cdate in y_raw and d_offset > 2:
                         continue
                     try:
-                        w_day = garmin_client.get_daily_wellness(cdate)
-                        if isinstance(w_day, dict):
-                            wellness_by_date[cdate] = w_day
+                        if has_raw_bundle_fn:
+                            raw_bundle = active_garmin.get_raw_daily_wellness_bundle(cdate)
+                            if isinstance(raw_bundle, dict) and raw_bundle:
+                                y_raw[cdate] = raw_bundle
+                                dirty_wellness_years.add(yyyy)
+                                wellness_by_date[cdate] = normalize_daily_wellness(cdate, raw_bundle)
+                        elif hasattr(active_garmin, "get_daily_wellness"):
+                            w_day = active_garmin.get_daily_wellness(cdate)
+                            if isinstance(w_day, dict):
+                                wellness_by_date[cdate] = w_day
                     except Exception as e:
                         logger.warning(f"Failed fetching daily wellness for {cdate}: {e}")
 
+                for y_str in sorted(dirty_wellness_years):
+                    raw_path = f"{REMOTE_RAW_WELLNESS_DIR}/raw_wellness_{y_str}.json"
+                    try:
+                        active_sftp.write_text_atomic(
+                            raw_path,
+                            json.dumps(raw_wellness_by_year[y_str], separators=(",", ":"), sort_keys=True),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not save raw wellness bundle {raw_path}: {e}")
+
             sorted_wellness = [wellness_by_date[k] for k in sorted(wellness_by_date.keys())]
+            retained_wellness = apply_wellness_intraday_retention(sorted_wellness, retention_days=14)
             try:
-                sftp_client.write_text_atomic(REMOTE_WELLNESS_PATH, json.dumps(sorted_wellness, indent=2))
+                active_sftp.write_text_atomic(REMOTE_WELLNESS_PATH, json.dumps(retained_wellness, indent=2))
             except Exception as e:
                 logger.warning(f"Could not save wellness history: {e}")
 
-            latest_wellness = sorted_wellness[-1] if sorted_wellness else {}
+            latest_wellness = retained_wellness[-1] if retained_wellness else {}
             wellness_payload = {
                 "current": latest_wellness,
-                "daily": sorted_wellness,
+                "daily": retained_wellness,
             }
 
         rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
 
         # In live sharded mode, strip heavy gps_track and telemetry_stream from index rollup_dict["activities"]
-        # since they are encrypted into individual streams/<id>.enc shards
+        # since they are encrypted into individual streams/<id>.enc shards, while preserving summary_polyline and accurate has_streams
         if not is_mock:
+            src_by_id = {str(a.get("id")): a for a in canonical_acts if isinstance(a, dict)}
             for act_item in rollup_dict.get("activities", []):
                 if isinstance(act_item, dict):
-                    act_item["has_streams"] = True
+                    src_act = src_by_id.get(str(act_item.get("id")), {})
+                    is_str_act = act_item.get("sport") in ("strength", "weights")
+                    if is_str_act:
+                        for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
+                            act_item.pop(forbidden_key, None)
+                        act_item["summary_polyline"] = None
+                        act_item["has_streams"] = False
+                    else:
+                        gps_val = act_item.get("gps_track") or src_act.get("gps_track")
+                        if not act_item.get("summary_polyline"):
+                            if isinstance(gps_val, dict):
+                                act_item["summary_polyline"] = (
+                                    gps_val.get("polyline") or gps_val.get("encoded_polyline") or None
+                                )
+                            elif src_act.get("summary_polyline"):
+                                act_item["summary_polyline"] = src_act.get("summary_polyline")
+                        act_item["has_streams"] = bool(
+                            act_item.get("has_streams")
+                            or src_act.get("has_streams")
+                            or act_item.get("gps_track")
+                            or act_item.get("telemetry_stream")
+                            or src_act.get("gps_track")
+                            or src_act.get("telemetry_stream")
+                        )
                     act_item["gps_track"] = None
                     act_item["telemetry_stream"] = None
 
@@ -1362,9 +1680,9 @@ def run_sync_pipeline(
         # CRITICAL HYGIENE: Guarantee complete unlinking of raw staging files
         logger.info(f"Purging temporary staging directory: {staging_dir_path}")
         purge_raw_staging(staging_dir_path)
-        if hasattr(sftp_client, "close"):
+        if owns_sftp and hasattr(active_sftp, "close"):
             try:
-                sftp_client.close()
+                active_sftp.close()
             except Exception:
                 pass
 
@@ -1398,6 +1716,8 @@ class IngestionCoordinator:
             lookback_days=self.lookback_days,
             staging_dir=self.staging_dir,
             output_rollup=self.output_rollup,
+            sftp_client=self.sftp_client,
+            garmin_client=self.garmin_client,
         )
 
 

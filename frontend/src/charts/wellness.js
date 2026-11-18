@@ -25,8 +25,8 @@
  */
 
 export const DEFAULT_WELLNESS_LAYOUT = {
-  in_focus: ['sleep', 'body_battery', 'steps'],
-  at_a_glance: ['resting_hr', 'stress', 'hrv', 'intensity_minutes', 'calories'],
+  in_focus: ['sleep', 'body_battery', 'stress', 'steps'],
+  at_a_glance: ['resting_hr', 'hrv', 'intensity_minutes', 'calories'],
   hidden: []
 };
 
@@ -34,7 +34,7 @@ export const WELLNESS_METRIC_METADATA = {
   steps: { id: 'card-wellness-steps', name: 'Daily Steps', defaultSection: 'in_focus' },
   resting_hr: { id: 'card-wellness-rhr', name: 'Resting Heart Rate', defaultSection: 'at_a_glance' },
   sleep: { id: 'card-wellness-sleep', name: 'Sleep', defaultSection: 'in_focus' },
-  stress: { id: 'card-wellness-stress', name: 'Stress', defaultSection: 'at_a_glance' },
+  stress: { id: 'card-wellness-stress', name: 'Stress', defaultSection: 'in_focus' },
   body_battery: { id: 'card-wellness-body-battery', name: 'Body Battery', defaultSection: 'in_focus' },
   hrv: { id: 'card-wellness-hrv', name: 'HRV Status', defaultSection: 'at_a_glance' },
   intensity_minutes: { id: 'card-wellness-intensity', name: 'Active Intensity Minutes', defaultSection: 'at_a_glance' },
@@ -108,6 +108,19 @@ export function loadWellnessLayout() {
     inFocus = inFocus.filter(k => !seen.has(k) && seen.add(k));
     atAGlance = atAGlance.filter(k => !seen.has(k) && seen.add(k));
     hidden = hidden.filter(k => !seen.has(k) && seen.add(k));
+
+    // Auto-promote stress to in_focus only when stored layout is the exact legacy default
+    const isLegacyDefault =
+      inFocus.length === 3 &&
+      inFocus[0] === 'sleep' && inFocus[1] === 'body_battery' && inFocus[2] === 'steps' &&
+      atAGlance.length === 5 &&
+      atAGlance[0] === 'resting_hr' && atAGlance[1] === 'stress' && atAGlance[2] === 'hrv' &&
+      atAGlance[3] === 'intensity_minutes' && atAGlance[4] === 'calories' &&
+      hidden.length === 0;
+
+    if (isLegacyDefault) {
+      return JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT));
+    }
 
     return { in_focus: inFocus, at_a_glance: atAGlance, hidden };
   } catch (e) {
@@ -486,9 +499,82 @@ function buildSleepCard(c, daily, isHero) {
   `;
 }
 
+function toFiniteWellnessNum(val, fallback = null) {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return fallback;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function formatStressDurationShort(seconds) {
+  const s = Math.max(0, Math.round(toFiniteWellnessNum(seconds, 0)));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
+}
+
+function deriveStressQualifier(stress) {
+  if (stress <= 25) return 'Rest';
+  if (stress <= 50) return 'Low';
+  if (stress <= 75) return 'Medium';
+  return 'High';
+}
+
 function buildStressCard(c, daily, isHero) {
-  const stress = c.stress_level || 24;
-  const qualifier = c.stress_qualifier || c.stress_status || 'Low';
+  const rawStress = toFiniteWellnessNum(c?.stress_level, 24);
+  const stress = Math.max(0, Math.min(100, Math.round(rawStress)));
+  const qualifier = c?.stress_qualifier || c?.stress_status || deriveStressQualifier(stress);
+  const stressMax = toFiniteWellnessNum(c?.stress_max, null);
+
+  const restSecRaw = toFiniteWellnessNum(c?.stress_rest_seconds, null);
+  const lowSecRaw = toFiniteWellnessNum(c?.stress_low_seconds, null);
+  const medSecRaw = toFiniteWellnessNum(c?.stress_medium_seconds, null);
+  const highSecRaw = toFiniteWellnessNum(c?.stress_high_seconds, null);
+  const hasDurationFields = restSecRaw !== null || lowSecRaw !== null || medSecRaw !== null || highSecRaw !== null;
+
+  let restPct, lowPct, medPct, highPct;
+  let restLabel, lowLabel, medLabel, highLabel;
+
+  if (hasDurationFields) {
+    const restSec = Math.max(0, restSecRaw ?? 0);
+    const lowSec = Math.max(0, lowSecRaw ?? 0);
+    const medSec = Math.max(0, medSecRaw ?? 0);
+    const highSec = Math.max(0, highSecRaw ?? 0);
+    const totalSec = restSec + lowSec + medSec + highSec;
+    if (totalSec > 0) {
+      restPct = Number(((restSec / totalSec) * 100).toFixed(1));
+      lowPct = Number(((lowSec / totalSec) * 100).toFixed(1));
+      medPct = Number(((medSec / totalSec) * 100).toFixed(1));
+      highPct = Number(Math.max(0, 100 - restPct - lowPct - medPct).toFixed(1));
+    } else {
+      restPct = 100;
+      lowPct = 0;
+      medPct = 0;
+      highPct = 0;
+    }
+    restLabel = formatStressDurationShort(restSec);
+    lowLabel = formatStressDurationShort(lowSec);
+    medLabel = formatStressDurationShort(medSec);
+    highLabel = formatStressDurationShort(highSec);
+  } else {
+    const wRest = Math.max(5, 100 - stress * 1.15);
+    const wLow = Math.max(5, 65 - Math.abs(stress - 38) * 0.9);
+    const wMed = Math.max(4, 55 - Math.abs(stress - 63) * 0.95);
+    const wHigh = Math.max(2, stress > 50 ? (stress - 40) * 0.85 : stress * 0.12);
+    const wSum = wRest + wLow + wMed + wHigh;
+    restPct = Number(((wRest / wSum) * 100).toFixed(1));
+    lowPct = Number(((wLow / wSum) * 100).toFixed(1));
+    medPct = Number(((wMed / wSum) * 100).toFixed(1));
+    highPct = Number(Math.max(0, 100 - restPct - lowPct - medPct).toFixed(1));
+    restLabel = `${Math.round(restPct)}%`;
+    lowLabel = `${Math.round(lowPct)}%`;
+    medLabel = `${Math.round(medPct)}%`;
+    highLabel = `${Math.round(highPct)}%`;
+  }
+
+  const dotColor = stress <= 25 ? '#38bdf8' : stress <= 50 ? '#fbbf24' : stress <= 75 ? '#f97316' : '#f43f5e';
+  const peakText = stressMax !== null ? ` • Peak: ${Math.round(stressMax)}` : '';
 
   if (isHero) {
     return `
@@ -496,11 +582,11 @@ function buildStressCard(c, daily, isHero) {
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
-              <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span class="w-2 h-2 rounded-full" style="background-color: ${dotColor};"></span>
               <span>Stress</span>
             </div>
             <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${stress} <span class="text-sm font-sans font-normal text-zinc-500">/ 100</span></div>
-            <div class="text-[11px] text-zinc-400 mt-1">${qualifier} Stress Level</div>
+            <div class="text-[11px] text-zinc-400 mt-1">${qualifier} Stress Level${peakText}</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
             ${renderCardControls('stress', true)}
@@ -508,19 +594,30 @@ function buildStressCard(c, daily, isHero) {
           </div>
         </div>
 
-        <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
-          <div class="flex justify-between text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">
-            <span>Rest (0-25)</span>
-            <span>Low (26-50)</span>
-            <span>Med (51-75)</span>
-            <span>High (76-100)</span>
+        <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-2">
+          <div class="w-full bg-zinc-900 rounded-full h-2.5 overflow-hidden flex">
+            <div style="width: ${restPct}%; background-color: #38bdf8;" title="Rest: ${restLabel}"></div>
+            <div style="width: ${lowPct}%; background-color: #fbbf24;" title="Low: ${lowLabel}"></div>
+            <div style="width: ${medPct}%; background-color: #f97316;" title="Med: ${medLabel}"></div>
+            <div style="width: ${highPct}%; background-color: #f43f5e;" title="High: ${highLabel}"></div>
           </div>
-          <div class="w-full bg-zinc-800 rounded-full h-2 relative overflow-hidden flex">
-            <div class="w-1/4 bg-sky-500/30"></div>
-            <div class="w-1/4 bg-emerald-500/30"></div>
-            <div class="w-1/4 bg-amber-500/30"></div>
-            <div class="w-1/4 bg-rose-500/30"></div>
-            <div class="absolute top-0 bottom-0 w-2 bg-white rounded-full shadow" style="left: calc(${Math.min(98, Math.max(2, stress))}% - 4px)"></div>
+          <div class="grid grid-cols-4 gap-1 text-[10px] text-zinc-400 font-mono">
+            <div class="flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: #38bdf8;"></span>
+              <span class="truncate">Rest ${restLabel}</span>
+            </div>
+            <div class="flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: #fbbf24;"></span>
+              <span class="truncate">Low ${lowLabel}</span>
+            </div>
+            <div class="flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: #f97316;"></span>
+              <span class="truncate">Med ${medLabel}</span>
+            </div>
+            <div class="flex items-center space-x-1">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: #f43f5e;"></span>
+              <span class="truncate">High ${highLabel}</span>
+            </div>
           </div>
         </div>
       </div>

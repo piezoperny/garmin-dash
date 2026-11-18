@@ -46,6 +46,14 @@ def _find_db_file(base_dir: Path, filename: str) -> Optional[Path]:
     return None
 
 
+def _first_not_none(*values: Any) -> Any:
+    """Return the first value that is not None, preserving 0 and 0.0."""
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     cur = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND lower(name)=lower(?)",
@@ -196,21 +204,33 @@ def extract_garmindb_activities(garmindb_dir: Path) -> List[Dict[str, Any]]:
                 norm["avg_hr"] = 0
                 norm["max_hr"] = 0
 
-            if coords:
-                norm["gps_track"] = {
-                    "encoded_polyline": encode_polyline(coords),
-                    "point_count": len(coords),
-                    "start_latlng": [coords[0][0], coords[0][1]],
-                    "end_latlng": [coords[-1][0], coords[-1][1]],
-                }
+            is_strength = norm.get("sport") in ("strength", "weights")
+            if is_strength:
+                norm["gps_track"] = None
+                norm["telemetry_stream"] = None
+                norm["summary_polyline"] = None
+                norm["has_streams"] = False
+            else:
+                if coords:
+                    poly_str = encode_polyline(coords)
+                    norm["gps_track"] = {
+                        "polyline": poly_str,
+                        "encoded_polyline": poly_str,
+                        "point_count": len(coords),
+                        "start_latlng": [coords[0][0], coords[0][1]],
+                        "end_latlng": [coords[-1][0], coords[-1][1]],
+                    }
+                    norm["summary_polyline"] = poly_str
 
-            if hr_stream or elev_stream or cad_stream or speed_stream:
-                norm["telemetry_stream"] = {
-                    "hr": hr_stream,
-                    "elevation": elev_stream,
-                    "cadence": cad_stream,
-                    "speed": speed_stream,
-                }
+                if hr_stream or elev_stream or cad_stream or speed_stream:
+                    norm["telemetry_stream"] = {
+                        "hr": hr_stream,
+                        "elevation": elev_stream,
+                        "cadence": cad_stream,
+                        "speed": speed_stream,
+                    }
+
+                norm["has_streams"] = bool(norm.get("gps_track") or norm.get("telemetry_stream"))
 
             normalized_list.append(norm)
 
@@ -244,8 +264,9 @@ def extract_garmindb_wellness(garmindb_dir: Path) -> List[Dict[str, Any]]:
                         rec["steps"] = int(d["steps"])
                     if d.get("steps_goal") is not None:
                         rec["steps_goal"] = int(d["steps_goal"])
-                    if d.get("rhr_avg") is not None or d.get("rhr") is not None:
-                        rhr_v = int(float(d.get("rhr_avg") or d.get("rhr")))
+                    rhr_raw = _first_not_none(d.get("rhr_avg"), d.get("rhr"))
+                    if rhr_raw is not None:
+                        rhr_v = int(float(rhr_raw))
                         rec["resting_hr"] = rhr_v
                         rec["resting_heart_rate"] = rhr_v
                     if d.get("stress_avg") is not None and float(d["stress_avg"]) >= 0:
@@ -260,22 +281,25 @@ def extract_garmindb_wellness(garmindb_dir: Path) -> List[Dict[str, Any]]:
                         rec["charged"] = int(d["bb_charged"])
                     if d.get("sleep_avg") is not None:
                         s_sec = _time_str_to_seconds(d["sleep_avg"])
-                        if s_sec:
+                        if s_sec is not None:
                             rec["sleep_seconds"] = s_sec
                     if d.get("rem_sleep_avg") is not None:
                         rem_s = _time_str_to_seconds(d["rem_sleep_avg"])
                         if rem_s is not None:
                             rec["sleep_rem_seconds"] = rem_s
-                    if d.get("calories_avg") is not None or d.get("calories_total") is not None:
-                        cal_v = int(float(d.get("calories_total") or d.get("calories_avg")))
+                    cal_raw = _first_not_none(d.get("calories_total"), d.get("calories_avg"))
+                    if cal_raw is not None:
+                        cal_v = int(float(cal_raw))
                         rec["daily_calories"] = cal_v
                         rec["calories_total"] = cal_v
-                    if d.get("calories_active_avg") is not None or d.get("calories_active") is not None:
-                        acal_v = int(float(d.get("calories_active") or d.get("calories_active_avg")))
+                    acal_raw = _first_not_none(d.get("calories_active"), d.get("calories_active_avg"))
+                    if acal_raw is not None:
+                        acal_v = int(float(acal_raw))
                         rec["active_calories"] = acal_v
                         rec["calories_active"] = acal_v
-                    if d.get("calories_bmr_avg") is not None or d.get("calories_bmr") is not None:
-                        bcal_v = int(float(d.get("calories_bmr") or d.get("calories_bmr_avg")))
+                    bcal_raw = _first_not_none(d.get("calories_bmr"), d.get("calories_bmr_avg"))
+                    if bcal_raw is not None:
+                        bcal_v = int(float(bcal_raw))
                         rec["bmr_calories"] = bcal_v
                         rec["calories_bmr"] = bcal_v
                     if d.get("moderate_activity_time") is not None or d.get("vigorous_activity_time") is not None:
@@ -358,7 +382,9 @@ def run_garmindb_import(
     for act in imported_acts:
         act_id = str(act["id"])
         existing_acts[act_id] = act
-        manifest.record_activity(act_id, str(act.get("start_time") or act.get("date") or ""))
+        date_str = str(act.get("start_time") or act.get("date") or "")
+        manifest_year = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else None
+        manifest.record_activity(act_id, year=manifest_year)
 
         shard_obj = {
             "id": act_id,
@@ -371,15 +397,28 @@ def run_garmindb_import(
         shard_json = json.dumps(shard_obj, separators=(",", ":"))
         (local_streams_dir / f"{act_id}.json").write_text(shard_json, encoding="utf-8")
 
-        date_str = str(act.get("start_time") or act.get("date") or "")
-        year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
+        year_str = manifest_year or "unknown"
         storage.write_text_atomic(f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id}.json", shard_json)
 
     canonical_acts = reprocess_canonical_activities(list(existing_acts.values()))
     index_acts = []
     for act in canonical_acts:
         idx_copy = dict(act)
-        idx_copy["has_streams"] = bool(idx_copy.get("gps_track") or idx_copy.get("telemetry_stream") or idx_copy.get("has_streams"))
+        is_str = idx_copy.get("sport") in ("strength", "weights")
+        if is_str:
+            for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
+                idx_copy.pop(forbidden_key, None)
+            idx_copy["summary_polyline"] = None
+            idx_copy["has_streams"] = False
+        else:
+            gps_val = idx_copy.get("gps_track")
+            if not idx_copy.get("summary_polyline") and isinstance(gps_val, dict):
+                idx_copy["summary_polyline"] = (
+                    gps_val.get("polyline") or gps_val.get("encoded_polyline") or None
+                )
+            idx_copy["has_streams"] = bool(
+                idx_copy.get("gps_track") or idx_copy.get("telemetry_stream") or idx_copy.get("has_streams")
+            )
         idx_copy.pop("gps_track", None)
         idx_copy.pop("telemetry_stream", None)
         index_acts.append(idx_copy)
@@ -415,9 +454,33 @@ def run_garmindb_import(
         "daily": sorted_wellness,
     }
     rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
+    src_by_id = {str(a.get("id")): a for a in canonical_acts if isinstance(a, dict)}
     for act_item in rollup_dict.get("activities", []):
         if isinstance(act_item, dict):
-            act_item["has_streams"] = True
+            src_act = src_by_id.get(str(act_item.get("id")), {})
+            is_str = act_item.get("sport") in ("strength", "weights")
+            if is_str:
+                for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
+                    act_item.pop(forbidden_key, None)
+                act_item["summary_polyline"] = None
+                act_item["has_streams"] = False
+            else:
+                gps_val = act_item.get("gps_track") or src_act.get("gps_track")
+                if not act_item.get("summary_polyline"):
+                    if isinstance(gps_val, dict):
+                        act_item["summary_polyline"] = (
+                            gps_val.get("polyline") or gps_val.get("encoded_polyline") or None
+                        )
+                    elif src_act.get("summary_polyline"):
+                        act_item["summary_polyline"] = src_act.get("summary_polyline")
+                act_item["has_streams"] = bool(
+                    act_item.get("has_streams")
+                    or src_act.get("has_streams")
+                    or act_item.get("gps_track")
+                    or act_item.get("telemetry_stream")
+                    or src_act.get("gps_track")
+                    or src_act.get("telemetry_stream")
+                )
             act_item["gps_track"] = None
             act_item["telemetry_stream"] = None
 

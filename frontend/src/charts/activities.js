@@ -1747,15 +1747,37 @@ export function setupActivityEventListeners() {
 
   const reprocessBtn = document.getElementById('btn-reprocess-activities');
   if (reprocessBtn) {
-    reprocessBtn.addEventListener('click', () => {
+    reprocessBtn.addEventListener('click', async () => {
       const count = reprocessAllActivities();
-      const origHtml = reprocessBtn.innerHTML;
-      reprocessBtn.innerHTML = `<span class="text-emerald-400">✓ Reprocessed ${count}</span>`;
-      reprocessBtn.disabled = true;
-      setTimeout(() => {
-        reprocessBtn.innerHTML = origHtml;
-        reprocessBtn.disabled = false;
-      }, 2500);
+      const pat = (typeof localStorage !== 'undefined' ? localStorage.getItem('garmin_dash_gh_pat') : '') || '';
+      if (pat.trim()) {
+        reprocessBtn.disabled = true;
+        try {
+          const { runFastGarminSync } = await import('../main.js');
+          await runFastGarminSync({ forceRefresh: false });
+        } catch (err) {
+          const label = document.getElementById('table-sync-label');
+          if (label) label.textContent = 'Sync Failed';
+          setTimeout(() => {
+            if (label) label.textContent = 'Reprocess';
+          }, 2500);
+        } finally {
+          reprocessBtn.disabled = false;
+        }
+      } else {
+        const label = document.getElementById('table-sync-label');
+        if (label) {
+          label.textContent = `✓ Reprocessed ${count}`;
+          setTimeout(() => {
+            label.textContent = 'Reprocess';
+          }, 2500);
+        }
+        const syncModal = document.getElementById('garmin-sync-modal');
+        if (syncModal) {
+          syncModal.classList.remove('hidden');
+          syncModal.setAttribute('aria-hidden', 'false');
+        }
+      }
     });
   }
 

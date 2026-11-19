@@ -1051,6 +1051,26 @@ def save_remote_manifest(sftp_client: Any, manifest: SyncManifest) -> None:
 # Incremental Pull Engine
 # ---------------------------------------------------------------------------
 
+def _has_activity_summary_changed(summary: Dict[str, Any], existing_act: Dict[str, Any]) -> bool:
+    """Compare a Garmin activity summary against an existing canonical activity record."""
+    raw_start = str(summary.get("startTimeLocal") or summary.get("startTimeGMT") or "")[:16]
+    raw_name = str(summary.get("activityName") or "").strip()
+    raw_dist = round(float(summary.get("distance") or 0.0), 1)
+    raw_dur = round(float(summary.get("duration") or summary.get("movingDuration") or 0.0))
+
+    ex_start = str(existing_act.get("start_time") or existing_act.get("date") or "")[:16]
+    ex_name = str(existing_act.get("name") or existing_act.get("title") or "").strip()
+    ex_dist = round(float(existing_act.get("distance_meters") or 0.0), 1)
+    ex_dur = round(float(existing_act.get("duration_seconds") or existing_act.get("moving_time_seconds") or 0.0))
+
+    return (
+        raw_start != ex_start
+        or raw_name != ex_name
+        or abs(raw_dist - ex_dist) > 1.0
+        or abs(raw_dur - ex_dur) > 2
+    )
+
+
 def execute_incremental_pull(
     garmin_client: GarminClientProtocol,
     sftp_client: Any,
@@ -1058,13 +1078,16 @@ def execute_incremental_pull(
     staging_dir: Path,
     lookback_days: int = 90,
     force_refresh: bool = False,
+    reconcile_days: int = 14,
+    existing_acts_map: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     Incremental activity pull using high-water mark:
-    1. Determine query window: [last_sync - 24h, now] (or now - lookback_days if initial/forced).
+    1. Determine query window: [min(last_sync, now) - reconcile_days, now] (or now - lookback_days if initial/forced).
     2. Query activity summaries via garmin_client.
-    3. Filter out activities already recorded in manifest (unless force_refresh is True).
-    4. For each new activity:
+    3. Filter out unchanged activities already recorded in manifest (unless force_refresh is True).
+    4. Detect retroactive deletions within [start_ts + 86400, end_ts].
+    5. For each new/modified activity:
        - Fetch detail JSON & download .FIT binary.
        - Stage files in .raw_staging/activities/{YYYY}/{MM}/.
        - Upload to Hetzner SFTP and verify remote file size.
@@ -1073,13 +1096,15 @@ def execute_incremental_pull(
     now = int(time.time())
 
     if manifest.last_sync_timestamp > 0 and not force_refresh:
-        # 24-hour lookback buffer to capture delayed Garmin syncs
-        start_ts = max(0, manifest.last_sync_timestamp - 86400)
+        start_ts = max(0, min(manifest.last_sync_timestamp, now) - (reconcile_days * 86400))
     else:
         start_ts = max(0, now - (lookback_days * 86400))
 
     end_ts = now
-    logger.info(f"Querying Garmin activities in range {start_ts} to {end_ts} (lookback={lookback_days}d, force={force_refresh}).")
+    logger.info(
+        f"Querying Garmin activities in range {start_ts} to {end_ts} "
+        f"(lookback={lookback_days}d, reconcile={reconcile_days}d, force={force_refresh})."
+    )
 
     summaries = garmin_client.get_activities(start_ts, end_ts)
     logger.info(f"Retrieved {len(summaries)} activity candidates from Garmin API.")
@@ -1087,9 +1112,40 @@ def execute_incremental_pull(
     synced_id_set = set(manifest.synced_activity_ids)
     new_summaries = [
         s for s in summaries
-        if force_refresh or str(s.get("activityId")) not in synced_id_set
+        if force_refresh
+        or str(s.get("activityId")) not in synced_id_set
+        or (
+            existing_acts_map is not None
+            and str(s.get("activityId")) in existing_acts_map
+            and _has_activity_summary_changed(s, existing_acts_map[str(s.get("activityId"))])
+        )
     ]
-    logger.info(f"Found {len(new_summaries)} new activities requiring ingestion and archival.")
+    logger.info(f"Found {len(new_summaries)} new or modified activities requiring ingestion and archival.")
+
+    # Detect retroactive deletions within safe window [start_ts + 86400, end_ts]
+    if isinstance(summaries, list) and existing_acts_map is not None and not force_refresh:
+        returned_ids = {str(s.get("activityId")) for s in summaries if s.get("activityId") is not None}
+        safe_del_start = start_ts + 86400
+        for act_id, ex_act in list(existing_acts_map.items()):
+            ts_str = str(ex_act.get("start_time") or ex_act.get("date") or "")
+            if not ts_str:
+                continue
+            try:
+                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                ex_ts = int(dt.timestamp())
+            except Exception:
+                continue
+            if safe_del_start <= ex_ts <= end_ts and act_id not in returned_ids:
+                logger.info(
+                    f"Retroactive deletion detected: removing activity {act_id} ({ex_act.get('date')}) "
+                    "no longer present in Garmin Connect."
+                )
+                del existing_acts_map[act_id]
+                if act_id in manifest.synced_activity_ids:
+                    manifest.synced_activity_ids.remove(act_id)
+                manifest.total_synced_activities = len(manifest.synced_activity_ids)
 
     activities_dir = staging_dir / "activities"
     activities_dir.mkdir(parents=True, exist_ok=True)
@@ -1174,6 +1230,8 @@ def run_sync_pipeline(
     force_refresh: bool = False,
     reprocess_archive: bool = False,
     lookback_days: int = 90,
+    reconcile_days: int = 14,
+    fast_sync: bool = True,
     staging_dir: Union[Path, str] = Path(".raw_staging"),
     output_rollup: Union[Path, str] = Path(".staging/dashboard_rollup.json"),
     sftp_client: Optional[Any] = None,
@@ -1232,6 +1290,20 @@ def run_sync_pipeline(
         else:
             manifest = load_remote_manifest(active_sftp)
 
+        existing_acts_map: Dict[str, Dict[str, Any]] = {}
+        if not is_mock and not force_refresh:
+            for path_candidate in (REMOTE_INDEX_PATH, REMOTE_CANONICAL_PATH):
+                if active_sftp.file_exists(path_candidate):
+                    try:
+                        raw_existing = active_sftp.read_text(path_candidate)
+                        if raw_existing:
+                            for item in json.loads(raw_existing):
+                                act_key = str(item.get("id"))
+                                existing_acts_map[act_key] = item
+                            break
+                    except Exception as e:
+                        logger.warning(f"Could not read existing activities from {path_candidate}: {e}")
+
         if not is_mock and reprocess_archive:
             new_activities, count = [], 0
         else:
@@ -1242,6 +1314,8 @@ def run_sync_pipeline(
                 staging_dir=staging_dir_path,
                 lookback_days=lookback_days,
                 force_refresh=force_refresh,
+                reconcile_days=reconcile_days,
+                existing_acts_map=existing_acts_map if not is_mock else None,
             )
 
         # Compile Rollup Payload
@@ -1266,20 +1340,6 @@ def run_sync_pipeline(
             if reprocess_archive:
                 canonical_acts = reprocess_canonical_activities(canonical_acts)
         else:
-            existing_acts_map: Dict[str, Dict[str, Any]] = {}
-            if not force_refresh:
-                for path_candidate in (REMOTE_INDEX_PATH, REMOTE_CANONICAL_PATH):
-                    if active_sftp.file_exists(path_candidate):
-                        try:
-                            raw_existing = active_sftp.read_text(path_candidate)
-                            if raw_existing:
-                                for item in json.loads(raw_existing):
-                                    act_key = str(item.get("id"))
-                                    existing_acts_map[act_key] = item
-                                break
-                        except Exception as e:
-                            logger.warning(f"Could not read existing activities from {path_candidate}: {e}")
-
             local_streams_dir = output_rollup_path.parent / "streams"
             if reprocess_archive and local_streams_dir.exists():
                 shutil.rmtree(local_streams_dir, ignore_errors=True)
@@ -1374,12 +1434,27 @@ def run_sync_pipeline(
             canonical_acts = reprocess_canonical_activities(canonical_acts)
 
             # Stage any previously archived stream shards so dist/streams/ is complete on static deploy
+            changed_act_ids = {
+                str((p.get("summary") or {}).get("activityId") or p.get("id") or "")
+                for p in payloads_to_process
+            }
             for act in canonical_acts:
                 act_id_str = str(act.get("id") or "")
                 if not act_id_str:
                     continue
                 is_str_act = act.get("sport") in ("strength", "weights")
                 local_shard_file = local_streams_dir / f"{act_id_str}.json"
+                if (
+                    fast_sync
+                    and not force_refresh
+                    and not reprocess_archive
+                    and act_id_str not in changed_act_ids
+                    and (
+                        (Path("public/streams") / f"{act_id_str}.enc").exists()
+                        or (Path("dist/streams") / f"{act_id_str}.enc").exists()
+                    )
+                ):
+                    continue
                 date_str = str(act.get("start_time") or act.get("date") or "")
                 year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
                 month_str = date_str[5:7] if len(date_str) >= 7 and date_str[5:7].isdigit() else "01"
@@ -1701,12 +1776,16 @@ class IngestionCoordinator:
         staging_dir: Union[Path, str] = Path(".raw_staging"),
         output_rollup: Union[Path, str] = Path(".staging/dashboard_rollup.json"),
         lookback_days: int = 90,
+        reconcile_days: int = 14,
+        fast_sync: bool = True,
     ):
         self.garmin_client = garmin_client
         self.sftp_client = sftp_client
         self.staging_dir = Path(staging_dir)
         self.output_rollup = Path(output_rollup)
         self.lookback_days = lookback_days
+        self.reconcile_days = reconcile_days
+        self.fast_sync = fast_sync
 
     def run_sync(self, force_refresh: bool = False, mock_mode: bool = False, reprocess_archive: bool = False) -> int:
         return run_sync_pipeline(
@@ -1714,6 +1793,8 @@ class IngestionCoordinator:
             force_refresh=force_refresh,
             reprocess_archive=reprocess_archive,
             lookback_days=self.lookback_days,
+            reconcile_days=self.reconcile_days,
+            fast_sync=self.fast_sync,
             staging_dir=self.staging_dir,
             output_rollup=self.output_rollup,
             sftp_client=self.sftp_client,
@@ -1731,6 +1812,8 @@ def main() -> None:
     parser.add_argument("--force-refresh", action="store_true", help="Ignore high-water mark; re-sync full lookback window")
     parser.add_argument("--recalculate", "--reprocess-archive", dest="reprocess_archive", action="store_true", help="Retroactively reprocess and re-normalize all archived activities")
     parser.add_argument("--lookback-days", type=int, default=90, help="Initial lookback window in days (default: 90)")
+    parser.add_argument("--reconcile-days", type=int, default=None, help="Retroactive reconciliation window in days (default: 14 or RECONCILE_DAYS)")
+    parser.add_argument("--fast-sync", action="store_true", default=None, help="Fast incremental delta sync (only new/edited activities & last 3 days wellness)")
     parser.add_argument("--staging-dir", type=Path, default=Path(".raw_staging"), help="Temporary raw staging directory")
     parser.add_argument("--output-rollup", type=Path, default=Path(".staging/dashboard_rollup.json"), help="Output path for compiled rollup JSON")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
@@ -1748,12 +1831,22 @@ def main() -> None:
     env_mock = os.environ.get("FORCE_MOCK", "").lower() in ("true", "1", "yes") or args.mock
     env_force = os.environ.get("FORCE_REFRESH", "").lower() in ("true", "1", "yes") or args.force_refresh
     env_reprocess = os.environ.get("REPROCESS_ARCHIVE", "").lower() in ("true", "1", "yes") or args.reprocess_archive
+    env_reconcile_days = args.reconcile_days if args.reconcile_days is not None else int(os.environ.get("RECONCILE_DAYS", "14"))
+    env_fast_sync_str = os.environ.get("FAST_SYNC", "").lower()
+    if args.fast_sync is not None:
+        env_fast_sync = args.fast_sync
+    elif env_fast_sync_str in ("false", "0", "no"):
+        env_fast_sync = False
+    else:
+        env_fast_sync = True
 
     exit_code = run_sync_pipeline(
         mock_mode=env_mock,
         force_refresh=env_force,
         reprocess_archive=env_reprocess,
         lookback_days=args.lookback_days,
+        reconcile_days=env_reconcile_days,
+        fast_sync=env_fast_sync,
         staging_dir=args.staging_dir,
         output_rollup=args.output_rollup,
     )

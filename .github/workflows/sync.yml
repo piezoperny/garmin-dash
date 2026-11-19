@@ -16,6 +16,11 @@ on:
         required: false
         type: boolean
         default: false
+      fast_sync:
+        description: 'Fast incremental delta sync (only new/edited activities & last 3 days wellness)'
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: 'garmin-sync'
@@ -57,11 +62,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Step 5: Install frontend dependencies
+      # Step 5: Cache and install frontend dependencies
+      - name: Cache frontend node_modules
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
       - name: Install frontend dependencies
         run: |
           cd frontend
-          npm install
+          npm install --prefer-offline --no-audit
+
+      # Step 5b: Cache encrypted stream shards across runs for fast delta sync
+      - name: Cache public/streams/*.enc shards
+        uses: actions/cache@v4
+        with:
+          path: public/streams
+          key: garmin-streams-${{ github.run_id }}
+          restore-keys: |
+            garmin-streams-
 
       # Step 6: Ingest Garmin activities & archive to Google Drive / Hetzner SFTP
       - name: Ingest Garmin activities & archive to Google Drive / Hetzner SFTP
@@ -75,6 +97,7 @@ jobs:
           HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
           FORCE_MOCK: ${{ inputs.mock_mode || false }}
           FORCE_REFRESH: ${{ inputs.force_refresh || false }}
+          FAST_SYNC: ${{ inputs.fast_sync != false }}
         run: |
           python -m src.ingestion.sync
 

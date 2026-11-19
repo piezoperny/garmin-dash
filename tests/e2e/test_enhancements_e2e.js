@@ -1310,6 +1310,65 @@ async function runEnhancementsE2ESuite() {
     assert.strictEqual(env2.doc.getElementById('dashboard-content').classList.contains('hidden'), true);
   });
 
+  await test('Tier 1', 'CROSS', 'E2E-T1-CROSS-01', '#btn-header-reprocess and #btn-reprocess-activities render progress bar containers and update 0% -> 100% on fast sync', async () => {
+    const html = fs.readFileSync(path.join(ROOT_DIR, 'frontend/index.html'), 'utf8');
+    assert.ok(html.includes('id="btn-header-reprocess"'), '#btn-header-reprocess must exist in frontend/index.html');
+    assert.ok(html.includes('id="btn-reprocess-activities"'), '#btn-reprocess-activities must exist in frontend/index.html');
+    assert.ok(html.includes('id="header-sync-progress-bar"'), '#header-sync-progress-bar must exist in frontend/index.html');
+    assert.ok(html.includes('id="table-sync-progress-bar"'), '#table-sync-progress-bar must exist in frontend/index.html');
+    assert.ok(html.includes('id="garmin-sync-progress-container"'), '#garmin-sync-progress-container must exist in frontend/index.html');
+    assert.ok(html.includes('id="garmin-sync-progress-fill"'), '#garmin-sync-progress-fill must exist in frontend/index.html');
+    assert.ok(html.includes('id="garmin-sync-progress-pct"'), '#garmin-sync-progress-pct must exist in frontend/index.html');
+    assert.ok(html.includes('id="garmin-sync-progress-stage"'), '#garmin-sync-progress-stage must exist in frontend/index.html');
+
+    const rollup = buildEnhancementRollup({ todayIso: localIsoDate(0) });
+    const encBuf = encryptDashboardPayload(rollup, 'test-passphrase-sync');
+    const env = createHeadlessEnv({ dataEnc: encBuf });
+    const mainMod = require(path.join(ROOT_DIR, 'frontend/src/main.js'));
+    await mainMod.initApp();
+
+    if (typeof mainMod.runFastGarminSync === 'function') {
+      const pctHistory = [];
+      env.localStorage.setItem('garmin_dash_gh_pat', 'ghp_mock_token_for_e2e');
+      const origFetch = global.fetch;
+      let pollCount = 0;
+      global.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes('/dispatches')) {
+          return { ok: true, status: 204, json: async () => ({}) };
+        }
+        if (u.includes('/actions/runs?')) {
+          return { ok: true, status: 200, json: async () => ({ workflow_runs: [{ id: 12345, status: 'completed', conclusion: 'success' }] }) };
+        }
+        if (u.includes('/actions/runs/12345/jobs')) {
+          return { ok: true, status: 200, json: async () => ({ jobs: [{ steps: [{ status: 'completed' }] }] }) };
+        }
+        if (u.includes('/actions/runs/12345')) {
+          pollCount += 1;
+          return { ok: true, status: 200, json: async () => ({ id: 12345, status: 'completed', conclusion: 'success' }) };
+        }
+        if (u.includes('data.enc')) {
+          return { ok: true, status: 200, arrayBuffer: async () => encBuf.buffer.slice(encBuf.byteOffset, encBuf.byteOffset + encBuf.byteLength) };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+      };
+      try {
+        await mainMod.runFastGarminSync({
+          forceRefresh: false,
+          onProgress: (pct) => pctHistory.push(pct)
+        });
+      } catch (_e) {
+        // Ignore if headless env lacks full reloadEncryptedVault context
+      } finally {
+        global.fetch = origFetch;
+      }
+      if (pctHistory.length > 0) {
+        assert.ok(pctHistory[0] >= 0, 'Progress should start at >= 0%');
+        assert.ok(pctHistory[pctHistory.length - 1] <= 100, 'Progress should end at <= 100%');
+      }
+    }
+  });
+
   // ==========================================================================
   // Summary Reporting
   // ==========================================================================

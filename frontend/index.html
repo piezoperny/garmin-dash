@@ -137,11 +137,13 @@
           <button
             id="btn-header-reprocess"
             type="button"
-            title="Reprocess activities & recompute weekly duration/load"
-            class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#130d21] hover:bg-[#1b132e] text-zinc-300 hover:text-emerald-400 border border-[#2d2147] hover:border-emerald-500/50 text-xs font-semibold transition"
+            data-sync-trigger="true"
+            title="Sync activities from Garmin Connect &amp; recompute weekly duration/load"
+            class="relative overflow-hidden flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#130d21] hover:bg-[#1b132e] text-zinc-300 hover:text-emerald-400 border border-[#2d2147] hover:border-emerald-500/50 text-xs font-semibold transition"
           >
             <span>↻</span>
-            <span>Reprocess</span>
+            <span id="header-sync-label">Sync Activities</span>
+            <div id="header-sync-progress-bar" class="absolute bottom-0 left-0 h-0.5 w-0 bg-gradient-to-r from-purple-500 to-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.7)] transition-all duration-300"></div>
           </button>
 
           <!-- Lock Dashboard Button -->
@@ -412,11 +414,12 @@
             <button
               id="btn-reprocess-activities"
               type="button"
-              title="Re-analyze all activities using the latest telemetry & metric algorithms"
-              class="bg-[#130d21] hover:bg-[#1b132e] border border-[#2d2147] hover:border-emerald-500/50 rounded-lg px-3 py-1.5 text-xs text-zinc-300 hover:text-emerald-400 transition-colors flex items-center gap-1.5"
+              title="Re-analyze all activities using the latest telemetry &amp; sync Garmin Connect"
+              class="relative overflow-hidden bg-[#130d21] hover:bg-[#1b132e] border border-[#2d2147] hover:border-emerald-500/50 rounded-lg px-3 py-1.5 text-xs text-zinc-300 hover:text-emerald-400 transition-colors flex items-center gap-1.5"
             >
               <span>↻</span>
-              <span>Reprocess</span>
+              <span id="table-sync-label">Reprocess</span>
+              <div id="table-sync-progress-bar" class="absolute bottom-0 left-0 h-0.5 w-0 bg-gradient-to-r from-purple-500 to-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.7)] transition-all duration-300"></div>
             </button>
           </div>
         </div>
@@ -1003,6 +1006,16 @@
 
         <div id="garmin-sync-status" class="hidden rounded-xl p-3 text-xs border border-[#2d2147] bg-[#1b132e] text-purple-200 font-mono">
           Ready.
+        </div>
+
+        <div id="garmin-sync-progress-container" class="hidden space-y-2 pt-1">
+          <div class="flex items-center justify-between text-[11px] font-mono">
+            <span id="garmin-sync-progress-stage" class="text-purple-200 truncate pr-2">Initializing...</span>
+            <span id="garmin-sync-progress-pct" class="text-emerald-400 font-semibold shrink-0">0%</span>
+          </div>
+          <div class="w-full h-2 rounded-full bg-[#0b0714] border border-[#2d2147] overflow-hidden">
+            <div id="garmin-sync-progress-fill" class="h-full w-0 bg-gradient-to-r from-purple-500 to-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.6)] transition-all duration-300"></div>
+          </div>
         </div>
       </div>
 

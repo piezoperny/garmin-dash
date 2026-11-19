@@ -7,7 +7,7 @@ Reads GarminDB SQLite files:
 - garmin.db / garmin_summary.db / garmin_monitoring.db (days_summary, daily_summary, sleep, stress, resting_hr)
 
 Enforces strict data integrity: zero synthetic or estimated values. Missing fields are stored as None.
-Uploads sharded archive to Google Drive ('My Drive/Drive/health/garmin-dash') and/or Hetzner SFTP.
+Uploads sharded archive to Google Drive ('My Drive/Drive/[04] health/garmin-dash') and/or Hetzner SFTP.
 """
 
 from __future__ import annotations

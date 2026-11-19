@@ -91,7 +91,7 @@ jobs:
           GARMIN_API_KEY: ${{ secrets.GARMIN_API_KEY }}
           GARMIN_CLIENT_SECRET: ${{ secrets.GARMIN_CLIENT_SECRET }}
           GDRIVE_CREDENTIALS_JSON: ${{ secrets.GDRIVE_CREDENTIALS_JSON }}
-          GDRIVE_ROOT_PATH: Drive/health/garmin-dash
+          GDRIVE_ROOT_PATH: "Drive/[04] health/garmin-dash"
           HETZNER_HOST: ${{ secrets.HETZNER_HOST }}
           HETZNER_USER: ${{ secrets.HETZNER_USER }}
           HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}

@@ -1,6 +1,6 @@
 """
 src/ingestion/gdrive_client.py
-Native Google Drive storage client targeting 'My Drive/Drive/health/garmin-dash'
+Native Google Drive storage client targeting 'My Drive/Drive/[04] health/garmin-dash'
 and CompositeStorageClient for primary + backup redundancy (Google Drive + Hetzner SFTP).
 """
 
@@ -28,7 +28,7 @@ from src.ingestion.sftp_client import (
 logger = logging.getLogger(__name__)
 
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
-DEFAULT_GDRIVE_ROOT_PATH = "Drive/health/garmin-dash"
+DEFAULT_GDRIVE_ROOT_PATH = "Drive/[04] health/garmin-dash"
 
 
 @dataclass
@@ -50,7 +50,7 @@ class GDriveConfig:
 class GoogleDriveStorageClient:
     """
     Google Drive storage client implementing SFTPClientProtocol.
-    Points directly to 'My Drive/Drive/health/garmin-dash' without rclone.
+    Points directly to 'My Drive/Drive/[04] health/garmin-dash' without rclone.
     Supports:
       1. Google Apps Script Web App URL (https://script.google.com/macros/s/.../exec) — zero-config personal Drive!
       2. OAuth2 Authorized User / Service Account JSON.

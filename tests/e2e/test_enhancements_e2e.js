@@ -1355,7 +1355,7 @@ async function runEnhancementsE2ESuite() {
       try {
         await mainMod.runFastGarminSync({
           forceRefresh: false,
-          onProgress: (pct) => pctHistory.push(pct)
+          onProgress: (arg) => pctHistory.push(typeof arg === 'number' ? arg : (arg && typeof arg.pct === 'number' ? arg.pct : 0))
         });
       } catch (_e) {
         // Ignore if headless env lacks full reloadEncryptedVault context

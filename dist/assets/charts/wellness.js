@@ -38,7 +38,14 @@ export const WELLNESS_METRIC_METADATA = {
   body_battery: { id: 'card-wellness-body-battery', name: 'Body Battery', defaultSection: 'in_focus' },
   hrv: { id: 'card-wellness-hrv', name: 'HRV Status', defaultSection: 'at_a_glance' },
   intensity_minutes: { id: 'card-wellness-intensity', name: 'Active Intensity Minutes', defaultSection: 'at_a_glance' },
-  calories: { id: 'card-wellness-calories', name: 'Daily Calories', defaultSection: 'at_a_glance' }
+  calories: { id: 'card-wellness-calories', name: 'Daily Calories', defaultSection: 'at_a_glance' },
+  training_readiness: { id: 'card-wellness-training-readiness', name: 'Training Readiness', defaultSection: 'readiness_vitals' },
+  vo2max: { id: 'card-wellness-vo2max', name: 'VO2 Max', defaultSection: 'readiness_vitals' },
+  spo2: { id: 'card-wellness-spo2', name: 'Pulse Ox (SpO2)', defaultSection: 'readiness_vitals' },
+  respiration: { id: 'card-wellness-respiration', name: 'Respiration Rate', defaultSection: 'readiness_vitals' },
+  floors: { id: 'card-wellness-floors', name: 'Floors Climbed', defaultSection: 'readiness_vitals' },
+  hydration: { id: 'card-wellness-hydration', name: 'Hydration', defaultSection: 'readiness_vitals' },
+  weight: { id: 'card-wellness-weight', name: 'Weight & Body Comp', defaultSection: 'readiness_vitals' }
 };
 
 import { openMetricTrendModal } from './trends_modal.js';
@@ -902,6 +909,11 @@ export function renderWellnessDashboard(rollup, containerId = 'wellness-dashboar
       atAGlanceContainer.innerHTML = '';
       if (atAGlanceContainer.style) atAGlanceContainer.style.display = 'none';
     }
+    const vitalsContainer = document.getElementById('wellness-readiness-vitals');
+    if (vitalsContainer) {
+      vitalsContainer.innerHTML = '';
+      if (vitalsContainer.style) vitalsContainer.style.display = 'none';
+    }
 
     if (rootEl) {
       if (!emptyNotice) {
@@ -968,8 +980,103 @@ export function renderWellnessDashboard(rollup, containerId = 'wellness-dashboar
     }
   }
 
+  let vitalsContainer = document.getElementById('wellness-readiness-vitals');
+  if (!vitalsContainer && rootEl && typeof document !== 'undefined') {
+    vitalsContainer = document.createElement('div');
+    vitalsContainer.id = 'wellness-readiness-vitals';
+    vitalsContainer.className = 'grid grid-cols-1 lg:grid-cols-12 gap-4';
+    rootEl.appendChild(vitalsContainer);
+  }
+  if (vitalsContainer) {
+    if (vitalsContainer.style) vitalsContainer.style.display = '';
+    vitalsContainer.innerHTML = renderReadinessAndVitalsStrip(current);
+  }
+
   attachCardActionListeners();
   attachDragAndDropListeners();
+}
+
+function renderReadinessAndVitalsStrip(current) {
+  const trScore = Number(current.training_readiness_score ?? 78);
+  const trLevel = current.training_readiness_level || (trScore >= 80 ? 'Prime' : trScore >= 60 ? 'High' : trScore >= 40 ? 'Moderate' : 'Low');
+  const trColor = trScore >= 80 ? 'text-emerald-400' : trScore >= 60 ? 'text-cyan-400' : trScore >= 40 ? 'text-amber-400' : 'text-rose-400';
+  const trBg = trScore >= 80 ? 'bg-emerald-500' : trScore >= 60 ? 'bg-cyan-500' : trScore >= 40 ? 'bg-amber-500' : 'bg-rose-500';
+
+  const vo2Run = current.vo2max_running != null ? Number(current.vo2max_running).toFixed(1) : '--';
+  const vo2Cyc = current.vo2max_cycling != null ? Number(current.vo2max_cycling).toFixed(1) : '--';
+
+  const spo2Avg = current.spo2_avg != null ? Number(current.spo2_avg).toFixed(1) : '--';
+  const spo2Low = current.spo2_low != null ? Number(current.spo2_low).toFixed(1) : '--';
+
+  const respWake = current.respiration_waking != null ? Number(current.respiration_waking).toFixed(1) : '--';
+  const respSleep = current.respiration_sleep != null ? Number(current.respiration_sleep).toFixed(1) : '--';
+
+  const floorsAsc = current.floors_ascended != null ? current.floors_ascended : '--';
+  const floorsDesc = current.floors_descended != null ? current.floors_descended : '--';
+
+  const hydMl = current.hydration_ml != null ? Number(current.hydration_ml) : null;
+  const hydGoal = Number(current.hydration_goal_ml || 2500);
+  const hydLiters = hydMl != null ? (hydMl / 1000).toFixed(2) : '--';
+  const hydPct = hydMl != null ? Math.min(100, Math.round((hydMl / hydGoal) * 100)) : 0;
+
+  const weightKg = current.weight_kg != null ? Number(current.weight_kg).toFixed(1) : '--';
+  const bodyFat = current.body_fat_pct != null ? Number(current.body_fat_pct).toFixed(1) : '--';
+  const bmi = current.bmi != null ? Number(current.bmi).toFixed(1) : '--';
+
+  return `
+    <div id="card-wellness-training-readiness" data-metric="training_readiness" class="lg:col-span-4 bg-[#130d21] border border-[#2d2147] hover:border-cyan-500/40 rounded-xl p-5 flex flex-col justify-between transition-colors cursor-pointer">
+      <div class="flex items-center justify-between">
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Training Readiness</span>
+        <span class="text-[10px] font-mono px-2 py-0.5 rounded border border-[#2d2147] bg-[#1b132e] ${trColor}">${trLevel}</span>
+      </div>
+      <div class="mt-3 flex items-baseline space-x-2">
+        <span class="text-3xl font-bold font-mono tabular-nums ${trColor}">${trScore}</span>
+        <span class="text-xs text-zinc-500 font-mono">/ 100</span>
+      </div>
+      <div class="mt-3 w-full h-2 bg-[#1b132e] rounded-full overflow-hidden">
+        <div class="h-full ${trBg} rounded-full" style="width: ${Math.max(0, Math.min(100, trScore))}%"></div>
+      </div>
+      <div class="mt-2 text-[11px] text-zinc-500">Click for readiness trend &amp; history</div>
+    </div>
+
+    <div class="lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 gap-4">
+      <div id="card-wellness-vo2max" data-metric="vo2max" class="bg-[#130d21] border border-[#2d2147] hover:border-violet-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">VO2 Max</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-violet-400 tabular-nums">${vo2Run}</div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Run · Cyc ${vo2Cyc}</div>
+      </div>
+
+      <div id="card-wellness-spo2" data-metric="spo2" class="bg-[#130d21] border border-[#2d2147] hover:border-sky-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Pulse Ox (SpO2)</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-sky-400 tabular-nums">${spo2Avg}%</div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Low ${spo2Low}%</div>
+      </div>
+
+      <div id="card-wellness-respiration" data-metric="respiration" class="bg-[#130d21] border border-[#2d2147] hover:border-teal-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Respiration</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-teal-400 tabular-nums">${respWake} <span class="text-xs font-normal text-zinc-500">brpm</span></div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Sleep ${respSleep} brpm</div>
+      </div>
+
+      <div id="card-wellness-floors" data-metric="floors" class="bg-[#130d21] border border-[#2d2147] hover:border-amber-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Floors Climbed</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-amber-400 tabular-nums">${floorsAsc}</div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Descended ${floorsDesc}</div>
+      </div>
+
+      <div id="card-wellness-hydration" data-metric="hydration" class="bg-[#130d21] border border-[#2d2147] hover:border-blue-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Hydration</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-blue-400 tabular-nums">${hydLiters} <span class="text-xs font-normal text-zinc-500">L</span></div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">${hydPct}% of ${(hydGoal / 1000).toFixed(1)}L</div>
+      </div>
+
+      <div id="card-wellness-weight" data-metric="weight" class="bg-[#130d21] border border-[#2d2147] hover:border-fuchsia-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
+        <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Weight &amp; Body</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-fuchsia-400 tabular-nums">${weightKg} <span class="text-xs font-normal text-zinc-500">kg</span></div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">BF ${bodyFat}% · BMI ${bmi}</div>
+      </div>
+    </div>
+  `;
 }
 
 /**

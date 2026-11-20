@@ -780,6 +780,82 @@ export class Chart {
     } else if (isRangeBar) {
       for (const ds of datasets) {
         if (ds.hidden) continue;
+
+        const bg = ds.backgroundCurve;
+        if (bg && bg.enabled !== false && Array.isArray(bg.daySamples)) {
+          const curvePoints = [];
+          for (let i = 0; i < labels.length; i++) {
+            const samples = bg.daySamples[i];
+            if (!Array.isArray(samples)) continue;
+            for (const s of samples) {
+              const frac = toFiniteNumber(s?.frac ?? s?.t);
+              const val = toFiniteNumber(s?.value ?? s?.v);
+              if (frac === null || val === null) continue;
+              const x = getX(i) + (frac - 0.5) * xStep;
+              const clampedVal = Math.max(minY, Math.min(maxY, val));
+              const y = padding.top + ((maxY - clampedVal) / ySpanSafe) * chartH;
+              curvePoints.push({ x, y });
+            }
+          }
+
+          if (curvePoints.length >= 2) {
+            const traceCurve = () => {
+              ctx.moveTo(curvePoints[0].x, curvePoints[0].y);
+              for (let k = 0; k < curvePoints.length - 1; k++) {
+                const p0 = curvePoints[k];
+                const p1 = curvePoints[k + 1];
+                if (typeof ctx.bezierCurveTo === 'function') {
+                  const cx = (p0.x + p1.x) / 2;
+                  ctx.bezierCurveTo(cx, p0.y, cx, p1.y, p1.x, p1.y);
+                } else {
+                  ctx.lineTo(p1.x, p1.y);
+                }
+              }
+            };
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(padding.left, padding.top, chartW, chartH);
+            if (typeof ctx.clip === 'function') {
+              ctx.clip();
+            }
+
+            // 1. Background area fill
+            ctx.beginPath();
+            traceCurve();
+            ctx.lineTo(curvePoints[curvePoints.length - 1].x, padding.top + chartH);
+            ctx.lineTo(curvePoints[0].x, padding.top + chartH);
+            ctx.closePath();
+            if (typeof ctx.createLinearGradient === 'function') {
+              const fillGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
+              fillGrad.addColorStop(0, bg.fillTopColor || 'rgba(56, 189, 248, 0.16)');
+              fillGrad.addColorStop(1, bg.fillBottomColor || 'rgba(168, 85, 247, 0.02)');
+              ctx.fillStyle = fillGrad;
+            } else {
+              ctx.fillStyle = bg.fillTopColor || 'rgba(56, 189, 248, 0.12)';
+            }
+            ctx.fill();
+
+            // 2. Continuous Bezier wave stroke
+            ctx.beginPath();
+            traceCurve();
+            if (typeof ctx.createLinearGradient === 'function') {
+              const strokeGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
+              strokeGrad.addColorStop(0, bg.strokeTopColor || '#38bdf8');
+              strokeGrad.addColorStop(1, bg.strokeBottomColor || '#a855f7');
+              ctx.strokeStyle = strokeGrad;
+            } else {
+              ctx.strokeStyle = bg.fallbackColor || bg.strokeBottomColor || '#a855f7';
+            }
+            ctx.lineWidth = typeof bg.lineWidth === 'number' ? bg.lineWidth : 2.2;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.stroke();
+
+            ctx.restore();
+          }
+        }
+
         const pillarW = typeof ds.pillarWidth === 'number'
           ? Math.max(2, ds.pillarWidth)
           : Math.max(2, Math.min(14, xStep * 0.48));
@@ -1151,6 +1227,17 @@ export class Chart {
             ctx.beginPath();
             ctx.arc(startX + 3.5, currentY, 3.5, 0, Math.PI * 2);
             ctx.fill();
+            ctx.stroke();
+          } else if (item.shape === 'line' || item.shape === 'wave') {
+            ctx.strokeStyle = item.strokeColor || item.color || '#a855f7';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(startX, currentY);
+            if (typeof ctx.bezierCurveTo === 'function') {
+              ctx.bezierCurveTo(startX + 2.5, currentY - 3, startX + 5.5, currentY + 3, startX + 8, currentY);
+            } else {
+              ctx.lineTo(startX + 8, currentY);
+            }
             ctx.stroke();
           } else {
             ctx.fillStyle = item.fillColor || item.color || '#38bdf8';

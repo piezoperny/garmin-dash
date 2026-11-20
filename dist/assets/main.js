@@ -51,8 +51,18 @@ import {
   initTrendsModal,
   openMetricTrendModal
 } from './charts/trends_modal.js';
+import {
+  initCalendar,
+  renderCalendar,
+  openCalendarModal,
+  closeCalendarModal
+} from './charts/calendar.js';
+import {
+  renderPRTrophyCase,
+  renderConsistencyHeatmap
+} from './charts/achievements.js';
 
-export { openMetricTrendModal, initTrendsModal };
+export { openMetricTrendModal, initTrendsModal, openCalendarModal, closeCalendarModal, renderPRTrophyCase, renderConsistencyHeatmap };
 
 const CUSTOMIZATION_STORAGE_KEY = 'garmin_dash_customization';
 
@@ -202,6 +212,28 @@ function renderDashboard(rollup) {
 
   // 0a. Today's / Latest Activity Hero Banner (top of homepage)
   renderTodayActivityBanner(rollup.activities || [], activeUnit);
+
+  // 0a-2. Training & Wellness Calendar (Inline + Modal)
+  initCalendar({ onOpenMetricTrend: openMetricTrendModal });
+  renderCalendar(rollup, activeUnit);
+
+  // 0a-3. Personal Records Trophy Case & 365-Day Consistency Heatmap
+  renderPRTrophyCase(rollup, activeUnit);
+  renderConsistencyHeatmap(rollup, null, {
+    onSelectDate: (dateStr) => {
+      const calBtn = document.querySelector(`[data-cal-date="${dateStr}"]`);
+      if (calBtn) calBtn.click();
+    }
+  });
+  const modalHeatmapEl = document.getElementById('calendar-modal-heatmap-card');
+  if (modalHeatmapEl) {
+    renderConsistencyHeatmap(rollup, modalHeatmapEl, {
+      onSelectDate: (dateStr) => {
+        const calBtn = document.querySelector(`[data-cal-date="${dateStr}"]`);
+        if (calBtn) calBtn.click();
+      }
+    });
+  }
 
   // 0b. Health & Fitness Dashboard (Garmin Connect Web Layout: In Focus & At a Glance)
   renderWellnessDashboard(rollup);

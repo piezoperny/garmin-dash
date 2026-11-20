@@ -2150,7 +2150,16 @@ export function renderTodayActivityBanner(activities, unit = 'km') {
             ${hasToday ? `${todaysActs.length} TODAY` : 'LATEST ACTIVITY'}
           </span>
         </div>
-        ${!hasToday ? '<span class="text-[11px] text-zinc-400">No activities recorded today yet</span>' : ''}
+        <div class="flex items-center space-x-2.5">
+          ${!hasToday ? '<span class="hidden sm:inline text-[11px] text-zinc-400">No activities recorded today yet</span>' : ''}
+          <button
+            type="button"
+            data-open-calendar="true"
+            class="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/30 transition"
+          >
+            View Calendar
+          </button>
+        </div>
       </div>
       <div class="space-y-3">
         ${cardsHtml}

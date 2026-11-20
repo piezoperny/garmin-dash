@@ -111,6 +111,69 @@ export const METRIC_CONFIGS = {
     badge: 'PROGRESSING',
     badgeColor: 'text-purple-400 border-purple-500/30 bg-purple-500/10',
     icon: `<svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`
+  },
+  training_readiness: {
+    id: 'training_readiness',
+    title: 'Training Readiness',
+    subtitle: 'Composite readiness score (0–100) from sleep, HRV, recovery & acute load',
+    unit: 'pts',
+    badge: 'READY',
+    badgeColor: 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10',
+    icon: `<svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>`
+  },
+  vo2max: {
+    id: 'vo2max',
+    title: 'VO2 Max',
+    subtitle: 'Running & cycling maximal oxygen uptake (mL/kg/min)',
+    unit: 'mL/kg/min',
+    badge: 'SUPERIOR',
+    badgeColor: 'text-violet-400 border-violet-500/30 bg-violet-500/10',
+    icon: `<svg class="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>`
+  },
+  spo2: {
+    id: 'spo2',
+    title: 'Pulse Ox (SpO2)',
+    subtitle: 'Daily average and overnight minimum blood oxygen saturation (%)',
+    unit: '%',
+    badge: 'NORMAL',
+    badgeColor: 'text-sky-400 border-sky-500/30 bg-sky-500/10',
+    icon: `<svg class="w-5 h-5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>`
+  },
+  respiration: {
+    id: 'respiration',
+    title: 'Respiration Rate',
+    subtitle: 'Waking and sleep breathing rate (breaths per minute)',
+    unit: 'brpm',
+    badge: 'STEADY',
+    badgeColor: 'text-teal-400 border-teal-500/30 bg-teal-500/10',
+    icon: `<svg class="w-5 h-5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12h4l3-7 4 14 3-7h2"/></svg>`
+  },
+  floors: {
+    id: 'floors',
+    title: 'Floors Climbed',
+    subtitle: 'Daily floors ascended & descended',
+    unit: 'floors',
+    badge: 'ACTIVE',
+    badgeColor: 'text-amber-400 border-amber-500/30 bg-amber-500/10',
+    icon: `<svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>`
+  },
+  hydration: {
+    id: 'hydration',
+    title: 'Hydration',
+    subtitle: 'Daily fluid intake (L) vs hydration goal',
+    unit: 'L',
+    badge: 'HYDRATED',
+    badgeColor: 'text-blue-400 border-blue-500/30 bg-blue-500/10',
+    icon: `<svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2.69l5.66 5.66a8 8 0 11-11.31 0z"/></svg>`
+  },
+  weight: {
+    id: 'weight',
+    title: 'Weight & Body Composition',
+    subtitle: 'Body weight (kg), body fat %, muscle mass & BMI trends',
+    unit: 'kg',
+    badge: 'ON TARGET',
+    badgeColor: 'text-fuchsia-400 border-fuchsia-500/30 bg-fuchsia-500/10',
+    icon: `<svg class="w-5 h-5 text-fuchsia-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>`
   }
 };
 
@@ -921,6 +984,90 @@ function renderKPICards(metric, records, cfg) {
     kpi2 = { label: 'Avg Active Burn', val: `${avgActive.toLocaleString()} kcal`, sub: 'Workout expenditure' };
     kpi3 = { label: 'Max Single Day', val: `${maxBurn.toLocaleString()} kcal`, sub: 'Peak calorie burn' };
     kpi4 = { label: 'Period Total', val: `${sumTotal.toLocaleString()} kcal`, sub: `${records.length} days burned` };
+  } else if (metric === 'training_readiness') {
+    const scores = records.map(r => (typeof r.training_readiness_score === 'number' && !isNaN(r.training_readiness_score)) ? r.training_readiness_score : 75);
+    const latestScore = scores[scores.length - 1];
+    const avgScore = Math.round(scores.reduce((s, v) => s + v, 0) / scores.length);
+    const maxScore = Math.max(...scores);
+    const primeDays = scores.filter(v => v >= 80).length;
+    const latestLevel = records[records.length - 1]?.training_readiness_level || (latestScore >= 80 ? 'Prime' : latestScore >= 60 ? 'High' : 'Moderate');
+
+    kpi1 = { label: 'Latest Readiness', val: `${latestScore} / 100`, sub: `Status: ${latestLevel}` };
+    kpi2 = { label: 'Period Average', val: `${avgScore} pts`, sub: `Across ${records.length} days` };
+    kpi3 = { label: 'Peak Readiness', val: `${maxScore} pts`, sub: 'Highest recovery day' };
+    kpi4 = { label: 'Prime Days', val: `${primeDays}`, sub: 'Score ≥ 80 (Prime)' };
+  } else if (metric === 'vo2max') {
+    const run = records.map(r => (typeof r.vo2max_running === 'number' && !isNaN(r.vo2max_running)) ? r.vo2max_running : 55.0);
+    const cyc = records.map(r => (typeof r.vo2max_cycling === 'number' && !isNaN(r.vo2max_cycling)) ? r.vo2max_cycling : 53.0);
+    const latestRun = run[run.length - 1];
+    const latestCyc = cyc[cyc.length - 1];
+    const peakRun = Math.max(...run);
+    const deltaRun = (latestRun - run[0]).toFixed(1);
+
+    kpi1 = { label: 'Running VO2 Max', val: `${latestRun.toFixed(1)}`, sub: 'mL/kg/min' };
+    kpi2 = { label: 'Cycling VO2 Max', val: `${latestCyc.toFixed(1)}`, sub: 'mL/kg/min' };
+    kpi3 = { label: 'Peak Running', val: `${peakRun.toFixed(1)}`, sub: 'Period high' };
+    kpi4 = { label: 'Period Trend', val: `${Number(deltaRun) >= 0 ? '+' : ''}${deltaRun}`, sub: 'Change over window' };
+  } else if (metric === 'spo2') {
+    const avgArr = records.map(r => (typeof r.spo2_avg === 'number' && !isNaN(r.spo2_avg)) ? r.spo2_avg : 97.4);
+    const lowArr = records.map(r => (typeof r.spo2_low === 'number' && !isNaN(r.spo2_low)) ? r.spo2_low : 93.8);
+    const latestAvg = avgArr[avgArr.length - 1];
+    const periodAvg = (avgArr.reduce((s, v) => s + v, 0) / avgArr.length).toFixed(1);
+    const minLow = Math.min(...lowArr).toFixed(1);
+    const healthyDays = avgArr.filter(v => v >= 95).length;
+
+    kpi1 = { label: 'Latest SpO2 Avg', val: `${latestAvg.toFixed(1)}%`, sub: 'Daily blood oxygen' };
+    kpi2 = { label: 'Period Average', val: `${periodAvg}%`, sub: `${records.length}-day mean` };
+    kpi3 = { label: 'Lowest Reading', val: `${minLow}%`, sub: 'Overnight minimum' };
+    kpi4 = { label: 'Normal Days', val: `${healthyDays} / ${records.length}`, sub: 'SpO2 ≥ 95%' };
+  } else if (metric === 'respiration') {
+    const wake = records.map(r => (typeof r.respiration_waking === 'number' && !isNaN(r.respiration_waking)) ? r.respiration_waking : 14.8);
+    const sleep = records.map(r => (typeof r.respiration_sleep === 'number' && !isNaN(r.respiration_sleep)) ? r.respiration_sleep : 13.2);
+    const avgWake = (wake.reduce((s, v) => s + v, 0) / wake.length).toFixed(1);
+    const avgSleep = (sleep.reduce((s, v) => s + v, 0) / sleep.length).toFixed(1);
+    const latestWake = wake[wake.length - 1].toFixed(1);
+    const latestSleep = sleep[sleep.length - 1].toFixed(1);
+
+    kpi1 = { label: 'Latest Waking', val: `${latestWake} brpm`, sub: 'Daytime breaths/min' };
+    kpi2 = { label: 'Latest Sleep', val: `${latestSleep} brpm`, sub: 'Overnight breaths/min' };
+    kpi3 = { label: 'Avg Waking', val: `${avgWake} brpm`, sub: `${records.length}-day mean` };
+    kpi4 = { label: 'Avg Sleep', val: `${avgSleep} brpm`, sub: `${records.length}-day mean` };
+  } else if (metric === 'floors') {
+    const asc = records.map(r => (typeof r.floors_ascended === 'number' && !isNaN(r.floors_ascended)) ? r.floors_ascended : 0);
+    const desc = records.map(r => (typeof r.floors_descended === 'number' && !isNaN(r.floors_descended)) ? r.floors_descended : 0);
+    const totalAsc = asc.reduce((s, v) => s + v, 0);
+    const totalDesc = desc.reduce((s, v) => s + v, 0);
+    const avgAsc = Math.round(totalAsc / asc.length);
+    const maxAsc = Math.max(...asc);
+
+    kpi1 = { label: 'Total Ascended', val: `${totalAsc} floors`, sub: `${records.length}-day total` };
+    kpi2 = { label: 'Daily Avg', val: `${avgAsc} floors`, sub: 'Average climbed/day' };
+    kpi3 = { label: 'Peak Day', val: `${maxAsc} floors`, sub: 'Single-day high' };
+    kpi4 = { label: 'Total Descended', val: `${totalDesc} floors`, sub: 'Downhill / stairs' };
+  } else if (metric === 'hydration') {
+    const ml = records.map(r => (typeof r.hydration_ml === 'number' && !isNaN(r.hydration_ml)) ? r.hydration_ml : 2400);
+    const goal = records[records.length - 1]?.hydration_goal_ml || 2500;
+    const avgMl = Math.round(ml.reduce((s, v) => s + v, 0) / ml.length);
+    const totalL = (ml.reduce((s, v) => s + v, 0) / 1000).toFixed(1);
+    const goalMet = ml.filter(v => v >= goal).length;
+    const latestL = (ml[ml.length - 1] / 1000).toFixed(2);
+
+    kpi1 = { label: 'Latest Intake', val: `${latestL} L`, sub: `Goal: ${(goal / 1000).toFixed(1)} L` };
+    kpi2 = { label: 'Daily Average', val: `${(avgMl / 1000).toFixed(2)} L`, sub: `${avgMl} mL/day` };
+    kpi3 = { label: 'Goal Met', val: `${goalMet} / ${records.length}`, sub: 'Days ≥ target' };
+    kpi4 = { label: 'Period Total', val: `${totalL} L`, sub: `${records.length} days tracked` };
+  } else if (metric === 'weight') {
+    const wt = records.map(r => (typeof r.weight_kg === 'number' && !isNaN(r.weight_kg)) ? r.weight_kg : 70.4);
+    const bf = records.map(r => (typeof r.body_fat_pct === 'number' && !isNaN(r.body_fat_pct)) ? r.body_fat_pct : 13.5);
+    const latestWt = wt[wt.length - 1];
+    const latestBf = bf[bf.length - 1];
+    const latestBmi = records[records.length - 1]?.bmi ?? 22.2;
+    const deltaWt = (latestWt - wt[0]).toFixed(1);
+
+    kpi1 = { label: 'Latest Weight', val: `${latestWt.toFixed(1)} kg`, sub: `${Number(deltaWt) >= 0 ? '+' : ''}${deltaWt} kg in period` };
+    kpi2 = { label: 'Body Fat', val: `${latestBf.toFixed(1)}%`, sub: 'Estimated composition' };
+    kpi3 = { label: 'BMI', val: `${Number(latestBmi).toFixed(1)}`, sub: 'Body Mass Index' };
+    kpi4 = { label: 'Muscle Mass', val: `${(records[records.length - 1]?.muscle_mass_kg ?? (latestWt * 0.45)).toFixed(1)} kg`, sub: 'Lean skeletal mass' };
   } else if (metric === 'thresholds') {
     const ftp = records.map(r => (typeof r.cycling_ftp === 'number' && !isNaN(r.cycling_ftp)) ? r.cycling_ftp : ((typeof r.ftp === 'number' && !isNaN(r.ftp)) ? r.ftp : 280));
     const vo2 = records.map(r => (typeof r.vo2max === 'number' && !isNaN(r.vo2max)) ? r.vo2max : 54);
@@ -1198,10 +1345,13 @@ function renderMetricChart(metric, records, startDate, endDate) {
       const lows = [];
       const charged = [];
       const drained = [];
+      const daySamples = [];
       const tooltipTitles = [];
       const tooltipLines = [];
+      const maxPtsPerDay = (state.activeRange === '1y' || records.length > 90) ? 4 : (records.length > 14 ? 8 : 24);
 
-      for (const r of records) {
+      for (let idx = 0; idx < records.length; idx++) {
+        const r = records[idx];
         const rawHi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, 90));
         const rawLo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, 25));
         const hi = Math.max(0, Math.min(100, Math.round(Math.max(rawHi, rawLo))));
@@ -1219,6 +1369,61 @@ function renderMetricChart(metric, records, startDate, endDate) {
           { text: `Daily Low: ${lo} pts`, color: '#c4b5fd' },
           { text: `Charged: +${chg} pts | Drained: -${drn} pts`, color: '#a79bc2' }
         ]);
+
+        if (!isSingleDay) {
+          const pts = extractIntradayBodyBattery(r);
+          if (pts.length >= 2) {
+            const mapped = pts.map(p => {
+              let frac = 0.5;
+              const m = typeof p.timeLabel === 'string' ? p.timeLabel.match(/^(\d{1,2}):(\d{2})/) : null;
+              if (m) {
+                frac = (Number(m[1]) * 3600 + Number(m[2]) * 60) / 86400;
+              } else if (Number.isFinite(p.tsMs)) {
+                frac = (((p.tsMs % 86400000) + 86400000) % 86400000) / 86400000;
+              }
+              return { frac: Math.max(0, Math.min(1, frac)), value: p.value };
+            }).sort((a, b) => a.frac - b.frac);
+
+            if (mapped.length > maxPtsPerDay) {
+              let minIdx = 0;
+              let maxIdx = 0;
+              for (let k = 1; k < mapped.length; k++) {
+                if (mapped[k].value < mapped[minIdx].value) minIdx = k;
+                if (mapped[k].value > mapped[maxIdx].value) maxIdx = k;
+              }
+              const keep = new Set([0, minIdx, maxIdx, mapped.length - 1]);
+              const step = (mapped.length - 1) / Math.max(1, maxPtsPerDay - 1);
+              for (let s = 0; s < maxPtsPerDay; s++) {
+                keep.add(Math.round(s * step));
+              }
+              const downsampled = Array.from(keep)
+                .sort((a, b) => a - b)
+                .map(k => mapped[k]);
+              daySamples.push(downsampled);
+            } else {
+              daySamples.push(mapped);
+            }
+          } else {
+            const wake = Math.max(0, Math.min(100, Math.round(toFiniteNumber(r.body_battery_at_wake, hi))));
+            const prevLo = idx > 0 ? lows[idx - 1] : wake;
+            daySamples.push([
+              { frac: 0.00, value: prevLo },
+              { frac: 0.14, value: Math.round(prevLo + (wake - prevLo) * 0.45) },
+              { frac: 0.29, value: hi },
+              { frac: 0.54, value: Math.round(hi - (hi - lo) * 0.48) },
+              { frac: 0.79, value: Math.round(hi - (hi - lo) * 0.82) },
+              { frac: 0.94, value: lo }
+            ]);
+          }
+        }
+      }
+
+      const bbLegendItems = [
+        { label: 'Daily High', color: '#38bdf8', fillColor: '#38bdf8', shape: 'dot', symbol: 'dot' },
+        { label: 'Daily Low', color: '#c4b5fd', fillColor: '#0b0714', strokeColor: '#c4b5fd', shape: 'ring', symbol: 'ring' }
+      ];
+      if (!isSingleDay) {
+        bbLegendItems.push({ label: 'Hourly Trend', color: '#a855f7', strokeColor: '#a855f7', shape: 'line', symbol: 'line' });
       }
 
       chartConfig = {
@@ -1243,10 +1448,21 @@ function renderMetricChart(metric, records, startDate, endDate) {
               lowStrokeColor: '#c4b5fd',
               pillarTopColor: 'rgba(168, 85, 247, 0.28)',
               pillarBottomColor: '#2d2147',
-              legendItems: [
-                { label: 'Daily High', color: '#38bdf8', fillColor: '#38bdf8', shape: 'dot', symbol: 'dot' },
-                { label: 'Daily Low', color: '#c4b5fd', fillColor: '#0b0714', strokeColor: '#c4b5fd', shape: 'ring', symbol: 'ring' }
-              ]
+              ...(isSingleDay ? {} : {
+                backgroundCurve: {
+                  enabled: true,
+                  label: 'Hourly Trend',
+                  strokeTopColor: '#38bdf8',
+                  strokeBottomColor: '#a855f7',
+                  fallbackColor: '#a855f7',
+                  fillTopColor: 'rgba(56, 189, 248, 0.16)',
+                  fillBottomColor: 'rgba(168, 85, 247, 0.02)',
+                  lineWidth: 2.2,
+                  tension: 0.2,
+                  daySamples
+                }
+              }),
+              legendItems: bbLegendItems
             }
           ]
         },
@@ -1386,6 +1602,93 @@ function renderMetricChart(metric, records, startDate, endDate) {
           x: { stacked: true },
           y: { stacked: true }
         }
+      }
+    };
+  } else if (metric === 'training_readiness') {
+    const scores = records.map(r => (typeof r.training_readiness_score === 'number' && !isNaN(r.training_readiness_score)) ? r.training_readiness_score : 75);
+    chartConfig = {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Readiness Score', data: scores, borderColor: '#22d3ee', backgroundColor: 'rgba(34, 211, 238, 0.15)', fill: true, tension: 0.3 }
+        ]
+      },
+      options: { scales: { y: { min: 0, max: 100 } } }
+    };
+  } else if (metric === 'vo2max') {
+    const run = records.map(r => (typeof r.vo2max_running === 'number' && !isNaN(r.vo2max_running)) ? r.vo2max_running : 55.0);
+    const cyc = records.map(r => (typeof r.vo2max_cycling === 'number' && !isNaN(r.vo2max_cycling)) ? r.vo2max_cycling : 53.0);
+    chartConfig = {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Running VO2 Max', data: run, borderColor: '#a78bfa', tension: 0.25 },
+          { label: 'Cycling VO2 Max', data: cyc, borderColor: '#38bdf8', tension: 0.25 }
+        ]
+      }
+    };
+  } else if (metric === 'spo2') {
+    const avgArr = records.map(r => (typeof r.spo2_avg === 'number' && !isNaN(r.spo2_avg)) ? r.spo2_avg : 97.4);
+    const lowArr = records.map(r => (typeof r.spo2_low === 'number' && !isNaN(r.spo2_low)) ? r.spo2_low : 93.8);
+    chartConfig = {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'SpO2 Avg (%)', data: avgArr, borderColor: '#38bdf8', backgroundColor: 'rgba(56, 189, 248, 0.12)', fill: true, tension: 0.25 },
+          { label: 'SpO2 Low (%)', data: lowArr, borderColor: '#f43f5e', borderDash: [4, 4], tension: 0.25 }
+        ]
+      },
+      options: { scales: { y: { min: 85, max: 100 } } }
+    };
+  } else if (metric === 'respiration') {
+    const wake = records.map(r => (typeof r.respiration_waking === 'number' && !isNaN(r.respiration_waking)) ? r.respiration_waking : 14.8);
+    const sleep = records.map(r => (typeof r.respiration_sleep === 'number' && !isNaN(r.respiration_sleep)) ? r.respiration_sleep : 13.2);
+    chartConfig = {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Waking (brpm)', data: wake, borderColor: '#2dd4bf', tension: 0.25 },
+          { label: 'Sleep (brpm)', data: sleep, borderColor: '#818cf8', tension: 0.25 }
+        ]
+      }
+    };
+  } else if (metric === 'floors') {
+    const asc = records.map(r => (typeof r.floors_ascended === 'number' && !isNaN(r.floors_ascended)) ? r.floors_ascended : 0);
+    const desc = records.map(r => (typeof r.floors_descended === 'number' && !isNaN(r.floors_descended)) ? r.floors_descended : 0);
+    chartConfig = {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Ascended', data: asc, backgroundColor: '#f59e0b' },
+          { label: 'Descended', data: desc, backgroundColor: '#52525b' }
+        ]
+      }
+    };
+  } else if (metric === 'hydration') {
+    const liters = records.map(r => Number((((typeof r.hydration_ml === 'number' && !isNaN(r.hydration_ml)) ? r.hydration_ml : 2400) / 1000).toFixed(2)));
+    chartConfig = {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Intake (L)', data: liters, backgroundColor: '#3b82f6' }
+        ]
+      }
+    };
+  } else if (metric === 'weight') {
+    const wt = records.map(r => (typeof r.weight_kg === 'number' && !isNaN(r.weight_kg)) ? r.weight_kg : 70.4);
+    chartConfig = {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Weight (kg)', data: wt, borderColor: '#e879f9', backgroundColor: 'rgba(232, 121, 249, 0.12)', fill: true, tension: 0.25 }
+        ]
       }
     };
   } else if (metric === 'thresholds') {
@@ -1643,6 +1946,101 @@ function renderBreakdownTable(metric, records, cfg) {
         </tr>
       `;
     }).join('');
+  } else if (metric === 'training_readiness') {
+    theadRow.innerHTML = `
+      <th class="py-2 px-3">Date</th>
+      <th class="py-2 px-3 text-right">Score</th>
+      <th class="py-2 px-3 text-right">Level</th>
+      <th class="py-2 px-3 text-right">Sleep Score</th>
+    `;
+    tbody.innerHTML = displayRecords.map(r => `
+      <tr class="hover:bg-[#1b132e]/50 transition">
+        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
+        <td class="py-2 px-3 text-right text-cyan-400 font-mono font-bold">${r.training_readiness_score ?? '--'}</td>
+        <td class="py-2 px-3 text-right text-zinc-300 font-mono">${r.training_readiness_level ?? '--'}</td>
+        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r.sleep_score ?? '--'}</td>
+      </tr>
+    `).join('');
+  } else if (metric === 'vo2max') {
+    theadRow.innerHTML = `
+      <th class="py-2 px-3">Date</th>
+      <th class="py-2 px-3 text-right">Running</th>
+      <th class="py-2 px-3 text-right">Cycling</th>
+    `;
+    tbody.innerHTML = displayRecords.map(r => `
+      <tr class="hover:bg-[#1b132e]/50 transition">
+        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
+        <td class="py-2 px-3 text-right text-violet-400 font-mono font-bold">${r.vo2max_running != null ? Number(r.vo2max_running).toFixed(1) : '--'}</td>
+        <td class="py-2 px-3 text-right text-sky-400 font-mono">${r.vo2max_cycling != null ? Number(r.vo2max_cycling).toFixed(1) : '--'}</td>
+      </tr>
+    `).join('');
+  } else if (metric === 'spo2') {
+    theadRow.innerHTML = `
+      <th class="py-2 px-3">Date</th>
+      <th class="py-2 px-3 text-right">Avg SpO2</th>
+      <th class="py-2 px-3 text-right">Low SpO2</th>
+    `;
+    tbody.innerHTML = displayRecords.map(r => `
+      <tr class="hover:bg-[#1b132e]/50 transition">
+        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
+        <td class="py-2 px-3 text-right text-sky-400 font-mono font-bold">${r.spo2_avg != null ? Number(r.spo2_avg).toFixed(1) + '%' : '--'}</td>
+        <td class="py-2 px-3 text-right text-rose-400 font-mono">${r.spo2_low != null ? Number(r.spo2_low).toFixed(1) + '%' : '--'}</td>
+      </tr>
+    `).join('');
+  } else if (metric === 'respiration') {
+    theadRow.innerHTML = `
+      <th class="py-2 px-3">Date</th>
+      <th class="py-2 px-3 text-right">Waking</th>
+      <th class="py-2 px-3 text-right">Sleep</th>
+    `;
+    tbody.innerHTML = displayRecords.map(r => `
+      <tr class="hover:bg-[#1b132e]/50 transition">
+        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
+        <td class="py-2 px-3 text-right text-teal-400 font-mono font-bold">${r.respiration_waking != null ? Number(r.respiration_waking).toFixed(1) + ' brpm' : '--'}</td>
+        <td class="py-2 px-3 text-right text-indigo-400 font-mono">${r.respiration_sleep != null ? Number(r.respiration_sleep).toFixed(1) + ' brpm' : '--'}</td>
+      </tr>
+    `).join('');
+  } else if (metric === 'floors') {
+    theadRow.innerHTML = `
+      <th class="py-2 px-3">Date</th>
+      <th class="py-2 px-3 text-right">Ascended</th>
+      <th class="py-2 px-3 text-right">Descended</th>
+    `;
+    tbody.innerHTML = displayRecords.map(r => `
+      <tr class="hover:bg-[#1b132e]/50 transition">
+        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
+        <td class="py-2 px-3 text-right text-amber-400 font-mono font-bold">${r.floors_ascended ?? '--'}</td>
+        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r.floors_descended ?? '--'}</td>
+      </tr>
+    `).join('');
+  } else if (metric === 'hydration') {
+    theadRow.innerHTML = `
+      <th class="py-2 px-3">Date</th>
+      <th class="py-2 px-3 text-right">Intake</th>
+      <th class="py-2 px-3 text-right">Goal</th>
+    `;
+    tbody.innerHTML = displayRecords.map(r => `
+      <tr class="hover:bg-[#1b132e]/50 transition">
+        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
+        <td class="py-2 px-3 text-right text-blue-400 font-mono font-bold">${r.hydration_ml != null ? (r.hydration_ml / 1000).toFixed(2) + ' L' : '--'}</td>
+        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r.hydration_goal_ml != null ? (r.hydration_goal_ml / 1000).toFixed(1) + ' L' : '2.5 L'}</td>
+      </tr>
+    `).join('');
+  } else if (metric === 'weight') {
+    theadRow.innerHTML = `
+      <th class="py-2 px-3">Date</th>
+      <th class="py-2 px-3 text-right">Weight</th>
+      <th class="py-2 px-3 text-right">Body Fat</th>
+      <th class="py-2 px-3 text-right">BMI</th>
+    `;
+    tbody.innerHTML = displayRecords.map(r => `
+      <tr class="hover:bg-[#1b132e]/50 transition">
+        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
+        <td class="py-2 px-3 text-right text-fuchsia-400 font-mono font-bold">${r.weight_kg != null ? Number(r.weight_kg).toFixed(1) + ' kg' : '--'}</td>
+        <td class="py-2 px-3 text-right text-zinc-300 font-mono">${r.body_fat_pct != null ? Number(r.body_fat_pct).toFixed(1) + '%' : '--'}</td>
+        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r.bmi != null ? Number(r.bmi).toFixed(1) : '--'}</td>
+      </tr>
+    `).join('');
   } else if (metric === 'thresholds') {
     theadRow.innerHTML = `
       <th class="py-2 px-3">Date</th>

@@ -662,7 +662,7 @@ async function runTests() {
     assert.strictEqual(ctx.calls.filter(c => c.op === 'stroke' && c.strokeStyle === '#c4b5fd' && c.lineWidth === 2).length, 7);
     assert.strictEqual(ctx.calls.filter(c => c.op === 'fill' && c.fillStyle === '#0b0714').length, 8);
     const legend7d = ctx.calls.filter(c => c.op === 'fillText' && c.textBaseline === 'middle' && c.textAlign === 'left').map(c => c.text);
-    assert.deepStrictEqual(legend7d, ['Daily High', 'Daily Low']);
+    assert.deepStrictEqual(legend7d, ['Daily High', 'Daily Low', 'Hourly Trend']);
 
     canvas.resetCtx(false);
     trendsModal.setTimeRange('1m');

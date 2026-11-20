@@ -1061,6 +1061,7 @@ def generate_wellness_dataset(
 
     w_rng = random.Random(seed + 88888)
     w_extra_rng = random.Random(seed + 99999)
+    w_m3_rng = random.Random(seed + 77777)
     rest_hr_base = int(athlete_profile.get("rest_hr") or 48)
     bmr_base = int(athlete_profile.get("bmr") or 1730)
 
@@ -1175,6 +1176,33 @@ def generate_wellness_dataset(
         stress_max = min(99, max(stress_level + 20, 48 + int(day_tss * 0.2) + w_extra_rng.randint(0, 12)))
         bb_at_wake = min(100, max(bb_low, bb_high - w_extra_rng.randint(0, 5)))
 
+        # M3 Training Readiness & Expanded Vitals (isolated w_m3_rng)
+        tr_base = int(round((sleep_score * 0.35) + (min(100, hrv_night * 1.3) * 0.30) + (bb_at_wake * 0.35) - (day_tss * 0.08)))
+        training_readiness_score = max(5, min(99, tr_base + w_m3_rng.randint(-4, 4)))
+        if training_readiness_score >= 80:
+            training_readiness_level = "Prime"
+        elif training_readiness_score >= 60:
+            training_readiness_level = "High"
+        elif training_readiness_score >= 40:
+            training_readiness_level = "Moderate"
+        else:
+            training_readiness_level = "Low"
+
+        vo2max_running = round(54.5 + (day_offset * 0.015) + w_m3_rng.uniform(-0.3, 0.3), 1)
+        vo2max_cycling = round(52.5 + (day_offset * 0.012) + w_m3_rng.uniform(-0.3, 0.3), 1)
+        spo2_avg = round(w_m3_rng.uniform(96.0, 98.8), 1)
+        spo2_low = round(max(89.0, spo2_avg - w_m3_rng.uniform(2.0, 4.5)), 1)
+        respiration_waking = round(w_m3_rng.uniform(13.5, 16.5), 1)
+        respiration_sleep = round(w_m3_rng.uniform(12.2, 14.8), 1)
+        floors_ascended = 0 if is_unrecorded else w_m3_rng.randint(4, 22)
+        floors_descended = 0 if is_unrecorded else max(0, floors_ascended - w_m3_rng.randint(-2, 3))
+        hydration_goal_ml = 2500
+        hydration_ml = 0 if is_unrecorded else (w_m3_rng.randint(1900, 3200) + int((day_dur_sec / 60.0) * 6))
+        weight_kg = round(70.8 - (day_offset * 0.008) + w_m3_rng.uniform(-0.35, 0.35), 1)
+        bmi = round(weight_kg / (1.78 ** 2), 1)
+        body_fat_pct = round(13.5 + w_m3_rng.uniform(-0.4, 0.4), 1)
+        muscle_mass_kg = round(weight_kg * 0.45 + w_m3_rng.uniform(-0.2, 0.2), 1)
+
         rec = {
             "date": date_str,
             "steps": total_steps,
@@ -1229,6 +1257,22 @@ def generate_wellness_dataset(
             "calories_total": daily_cal,
             "calories_active": act_cal,
             "calories_bmr": bmr_base,
+            "training_readiness_score": training_readiness_score,
+            "training_readiness_level": training_readiness_level,
+            "vo2max_running": vo2max_running,
+            "vo2max_cycling": vo2max_cycling,
+            "spo2_avg": spo2_avg,
+            "spo2_low": spo2_low,
+            "respiration_waking": respiration_waking,
+            "respiration_sleep": respiration_sleep,
+            "floors_ascended": floors_ascended,
+            "floors_descended": floors_descended,
+            "hydration_ml": hydration_ml,
+            "hydration_goal_ml": hydration_goal_ml,
+            "weight_kg": weight_kg,
+            "bmi": bmi,
+            "body_fat_pct": body_fat_pct,
+            "muscle_mass_kg": muscle_mass_kg,
         }
 
         if day_offset >= num_days - 14:
@@ -1304,6 +1348,22 @@ def generate_wellness_dataset(
         "calories_total": latest.get("calories_total", 2410),
         "calories_active": latest.get("calories_active", 680),
         "calories_bmr": latest.get("calories_bmr", 1730),
+        "training_readiness_score": latest.get("training_readiness_score", 78),
+        "training_readiness_level": latest.get("training_readiness_level", "High"),
+        "vo2max_running": latest.get("vo2max_running", 55.2),
+        "vo2max_cycling": latest.get("vo2max_cycling", 53.0),
+        "spo2_avg": latest.get("spo2_avg", 97.4),
+        "spo2_low": latest.get("spo2_low", 93.8),
+        "respiration_waking": latest.get("respiration_waking", 14.8),
+        "respiration_sleep": latest.get("respiration_sleep", 13.2),
+        "floors_ascended": latest.get("floors_ascended", 12),
+        "floors_descended": latest.get("floors_descended", 10),
+        "hydration_ml": latest.get("hydration_ml", 2650),
+        "hydration_goal_ml": latest.get("hydration_goal_ml", 2500),
+        "weight_kg": latest.get("weight_kg", 70.4),
+        "bmi": latest.get("bmi", 22.2),
+        "body_fat_pct": latest.get("body_fat_pct", 13.4),
+        "muscle_mass_kg": latest.get("muscle_mass_kg", 31.7),
     }
     if "intraday_body_battery" in latest:
         current_snapshot["intraday_body_battery"] = latest["intraday_body_battery"]

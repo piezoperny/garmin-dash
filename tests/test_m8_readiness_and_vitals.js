@@ -150,6 +150,8 @@ const {
   METRIC_CONFIGS,
   initTrendsModal,
   openMetricTrendModal,
+  resolveVo2MaxSeries,
+  renderVo2MaxChartConfig,
 } = await import('../frontend/src/charts/trends_modal.js');
 
 let passed = 0;
@@ -275,6 +277,73 @@ for (const m of M3_METRICS) {
     assert.ok(tbody && tbody.querySelectorAll('tr').length > 0, `Expected table rows for ${m}`);
   });
 }
+
+test('M3-VO2MAX-01: resolveVo2MaxSeries backfills and interpolates sparse records without 55.0/53.0 flatline', () => {
+  const sparseRecords = [
+    { date: '2026-11-01', vo2max_running: null, vo2max_cycling: null },
+    { date: '2026-11-02', vo2max_running: 51.2, vo2max_cycling: 49.0 },
+    { date: '2026-11-03', vo2max_running: null, vo2max_cycling: null },
+    { date: '2026-11-04', vo2max_running: 52.0, vo2max_cycling: 50.0 },
+    { date: '2026-11-05', vo2max_running: null, vo2max_cycling: null },
+  ];
+  const sparseRollup = {
+    physiological: {
+      threshold_trends: [{ date: '2026-11-01', vo2max: 50.8 }],
+    },
+    training_load: {
+      daily: [
+        { date: '2026-11-01', ctl: 40 },
+        { date: '2026-11-02', ctl: 42 },
+        { date: '2026-11-03', ctl: 44 },
+        { date: '2026-11-04', ctl: 46 },
+        { date: '2026-11-05', ctl: 51 },
+      ],
+    },
+  };
+
+  const { run, cyc, resolvedRecords } = resolveVo2MaxSeries(sparseRecords, sparseRollup);
+  assert.equal(run.length, 5);
+  assert.equal(cyc.length, 5);
+  assert.equal(run[0], 50.8);
+  assert.equal(run[2], 51.6);
+  assert.ok(run[4] > 52.0, `Expected trailing CTL-aware carry-forward > 52.0, got ${run[4]}`);
+  assert.ok(run.every(v => typeof v === 'number' && !isNaN(v)), 'All run values must be numbers');
+  assert.ok(cyc.every(v => typeof v === 'number' && !isNaN(v)), 'All cyc values must be numbers');
+  assert.ok(resolvedRecords.every(r => r.vo2max_running != null && r.vo2max_cycling != null), 'No null values in resolvedRecords');
+});
+
+test('M3-VO2MAX-02: renderVo2MaxChartConfig configures zoomed Y-axis and openMetricTrendModal renders non-empty table values', () => {
+  const sparseRollup = {
+    wellness: {
+      daily: [
+        { date: '2026-11-18', vo2max_running: 51.5, vo2max_cycling: 49.5 },
+        { date: '2026-11-19', vo2max_running: null, vo2max_cycling: null },
+        { date: '2026-11-20', vo2max_running: 52.5, vo2max_cycling: 50.5 },
+      ],
+    },
+    training_load: {
+      daily: [
+        { date: '2026-11-18', ctl: 45 },
+        { date: '2026-11-19', ctl: 47 },
+        { date: '2026-11-20', ctl: 49 },
+      ],
+    },
+  };
+
+  const cfg = renderVo2MaxChartConfig(
+    sparseRollup.wellness.daily.map(d => d.date),
+    sparseRollup.wellness.daily,
+    sparseRollup
+  );
+  const yScale = cfg?.options?.scales?.y;
+  assert.ok(yScale, 'Expected options.scales.y to be configured for vo2max');
+  assert.ok(yScale.min >= 20 && yScale.min > 0, `Expected zoomed y.min >= 20, got ${yScale.min}`);
+  assert.ok(yScale.max <= 55, `Expected zoomed y.max <= 55, got ${yScale.max}`);
+
+  openMetricTrendModal('vo2max', sparseRollup);
+  const tbody = document.getElementById('trend-table-body');
+  assert.ok(!tbody.innerHTML.includes('--'), 'Expected resolved VO2max values instead of "--" in table');
+});
 
 console.log('\n======================================================================');
 console.log(`Milestone 3 Test Suite Results: ${passed} passed, ${failed} failed (Total: ${passed + failed})`);

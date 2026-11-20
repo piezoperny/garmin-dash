@@ -99,8 +99,11 @@ class TestGarminTelemetryParsing(unittest.TestCase):
         }
         act = normalize_garmin_activity(strength_payload)
         self.assertEqual(act["sport"], "strength")
-        self.assertIsNone(act.get("telemetry_stream"))
+        self.assertIsNotNone(act.get("telemetry_stream"))
+        self.assertEqual(act["telemetry_stream"]["hr"], [120, 130])
+        self.assertEqual(act["telemetry_stream"]["time"], [0, 60])
         self.assertIsNone(act.get("gps_track"))
+        self.assertIsNone(act.get("summary_polyline"))
         self.assertEqual(act["distance_meters"], 0.0)
 
 

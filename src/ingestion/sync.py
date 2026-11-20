@@ -888,9 +888,16 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if sport in ("strength", "weights"):
         gps_track = None
-        telemetry_stream = None
         summary_polyline = None
-        has_streams = False
+        if isinstance(telemetry_stream, dict) and isinstance(telemetry_stream.get("hr"), list) and len(telemetry_stream["hr"]) > 0:
+            telemetry_stream = {
+                "time": list(telemetry_stream.get("time") or list(range(len(telemetry_stream["hr"])))),
+                "hr": list(telemetry_stream["hr"]),
+            }
+            has_streams = True
+        else:
+            telemetry_stream = None
+            has_streams = False
     else:
         summary_polyline = (
             (gps_track.get("polyline") or gps_track.get("encoded_polyline"))

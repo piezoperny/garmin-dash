@@ -37,6 +37,58 @@ export const WELLNESS_LAYERS = [
   { id: 'rhr_stress', label: 'RHR & Stress', icon: '❤️' }
 ];
 
+const CALENDAR_COLLAPSED_KEY = 'garmin_dash_calendar_collapsed';
+const CUSTOMIZATION_KEY = 'garmin_dash_customization';
+
+export function loadCalendarCollapsedState() {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    const raw = localStorage.getItem(CALENDAR_COLLAPSED_KEY);
+    if (raw === 'true' || raw === '1') return true;
+    if (raw === 'false' || raw === '0') return false;
+    const custRaw = localStorage.getItem(CUSTOMIZATION_KEY);
+    if (custRaw) {
+      const parsed = JSON.parse(custRaw);
+      if (typeof parsed?.calendar_collapsed === 'boolean') {
+        return parsed.calendar_collapsed;
+      }
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return false;
+}
+
+export function saveCalendarCollapsedState(collapsed) {
+  const val = Boolean(collapsed);
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(CALENDAR_COLLAPSED_KEY, val ? 'true' : 'false');
+    const custRaw = localStorage.getItem(CUSTOMIZATION_KEY);
+    let cust = {};
+    if (custRaw) {
+      try { cust = JSON.parse(custRaw) || {}; } catch { cust = {}; }
+    }
+    cust.calendar_collapsed = val;
+    localStorage.setItem(CUSTOMIZATION_KEY, JSON.stringify(cust));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function applyCalendarCollapsedState(collapsed) {
+  const val = Boolean(collapsed);
+  const inlineBody = document.getElementById('calendar-inline-body');
+  if (inlineBody) {
+    inlineBody.classList.toggle('hidden', val);
+  }
+  const toggleBtn = document.getElementById('btn-toggle-inline-calendar');
+  if (toggleBtn) {
+    toggleBtn.textContent = val ? 'Expand' : 'Collapse';
+    toggleBtn.setAttribute('aria-expanded', val ? 'false' : 'true');
+  }
+}
+
 // Shared reactive calendar state
 const calendarState = {
   year: null,
@@ -44,7 +96,7 @@ const calendarState = {
   selectedDate: null,
   sportFilter: 'All',
   activeLayers: new Set(['body_battery', 'sleep', 'steps', 'rhr_stress']),
-  inlineCollapsed: false,
+  inlineCollapsed: loadCalendarCollapsedState(),
   modalOpen: false,
   rollup: null,
   unit: 'metric',
@@ -111,6 +163,7 @@ export function formatCalendarDistance(meters, unit = 'metric') {
 }
 
 function getActivityDistanceMeters(act) {
+  if (typeof act?.distance_meters === 'number') return act.distance_meters;
   if (typeof act?.distance_m === 'number') return act.distance_m;
   if (typeof act?.distance_km === 'number') return act.distance_km * 1000;
   if (typeof act?.distance === 'number') return act.distance;
@@ -118,6 +171,8 @@ function getActivityDistanceMeters(act) {
 }
 
 function getActivityDurationSec(act) {
+  if (typeof act?.duration_seconds === 'number') return act.duration_seconds;
+  if (typeof act?.moving_time_seconds === 'number') return act.moving_time_seconds;
   if (typeof act?.duration_s === 'number') return act.duration_s;
   if (typeof act?.duration_sec === 'number') return act.duration_sec;
   if (typeof act?.duration_min === 'number') return act.duration_min * 60;
@@ -126,6 +181,7 @@ function getActivityDurationSec(act) {
 }
 
 function getActivityElevationM(act) {
+  if (typeof act?.elevation_gain_meters === 'number') return act.elevation_gain_meters;
   if (typeof act?.elevation_gain_m === 'number') return act.elevation_gain_m;
   if (typeof act?.elevation_m === 'number') return act.elevation_m;
   return 0;
@@ -514,7 +570,7 @@ function renderSelectedDayDetailHTML() {
             <div class="flex items-center space-x-3 min-w-0">
               <span class="px-2 py-1 rounded-lg text-xs font-semibold border ${getSportPillStyle(cat)}">${getSportEmoji(cat)} ${cat}</span>
               <div class="min-w-0">
-                <div class="text-sm font-semibold text-white truncate">${act.name || cat}</div>
+                <div class="text-sm font-semibold text-white truncate">${act.title || act.name || cat}</div>
                 <div class="text-[11px] text-zinc-400 font-mono">${selectedDate}</div>
               </div>
             </div>
@@ -529,11 +585,16 @@ function renderSelectedDayDetailHTML() {
       }).join('')
     : `<div class="text-xs text-zinc-500 py-2">No ${sportFilter !== 'All' ? sportFilter.toLowerCase() + ' ' : ''}activities recorded on ${selectedDate}.</div>`;
 
+  const sleepMinutes = dayWellness
+    ? (dayWellness.sleep_duration_min ?? (typeof dayWellness.sleep_seconds === 'number' ? Math.round(dayWellness.sleep_seconds / 60) : null))
+    : null;
+  const stressVal = dayWellness ? (dayWellness.stress_level ?? dayWellness.stress_avg ?? '--') : '--';
+
   const wellnessPillsHtml = dayWellness ? `
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2">
       <div class="p-2.5 rounded-xl bg-[#130d21] border border-[#2d2147]">
         <div class="text-[10px] font-mono uppercase text-zinc-400">🌙 Sleep</div>
-        <div class="text-sm font-semibold text-purple-300 font-mono mt-0.5">${dayWellness.sleep_score ?? '--'} <span class="text-[11px] text-zinc-400">${formatSleepDuration(dayWellness.sleep_duration_min)}</span></div>
+        <div class="text-sm font-semibold text-purple-300 font-mono mt-0.5">${dayWellness.sleep_score ?? '--'} <span class="text-[11px] text-zinc-400">${formatSleepDuration(sleepMinutes)}</span></div>
       </div>
       <div class="p-2.5 rounded-xl bg-[#130d21] border border-[#2d2147]">
         <div class="text-[10px] font-mono uppercase text-zinc-400">⚡ Body Battery</div>
@@ -545,7 +606,7 @@ function renderSelectedDayDetailHTML() {
       </div>
       <div class="p-2.5 rounded-xl bg-[#130d21] border border-[#2d2147]">
         <div class="text-[10px] font-mono uppercase text-zinc-400">❤️ RHR / Stress</div>
-        <div class="text-sm font-semibold text-rose-300 font-mono mt-0.5">${dayWellness.resting_hr ?? '--'} bpm • ${dayWellness.stress_avg ?? '--'}</div>
+        <div class="text-sm font-semibold text-rose-300 font-mono mt-0.5">${dayWellness.resting_hr ?? '--'} bpm • ${stressVal}</div>
       </div>
     </div>
   ` : '';
@@ -714,13 +775,11 @@ export function initCalendar({ onOpenMetricTrend } = {}) {
 
   const toggleInlineBtn = document.getElementById('btn-toggle-inline-calendar');
   if (toggleInlineBtn) {
+    applyCalendarCollapsedState(calendarState.inlineCollapsed);
     toggleInlineBtn.addEventListener('click', () => {
       calendarState.inlineCollapsed = !calendarState.inlineCollapsed;
-      const inlineBody = document.getElementById('calendar-inline-body');
-      if (inlineBody) {
-        inlineBody.classList.toggle('hidden', calendarState.inlineCollapsed);
-      }
-      toggleInlineBtn.textContent = calendarState.inlineCollapsed ? 'Expand' : 'Collapse';
+      saveCalendarCollapsedState(calendarState.inlineCollapsed);
+      applyCalendarCollapsedState(calendarState.inlineCollapsed);
       if (!calendarState.inlineCollapsed) {
         rerenderActiveCalendars();
       }
@@ -783,6 +842,8 @@ export function renderCalendar(rollup, unit = 'metric') {
 
   const section = document.getElementById('calendar-section');
   if (section) section.classList.remove('hidden');
+
+  applyCalendarCollapsedState(calendarState.inlineCollapsed);
 
   rerenderActiveCalendars();
 }

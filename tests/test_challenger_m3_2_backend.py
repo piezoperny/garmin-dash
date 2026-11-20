@@ -273,7 +273,7 @@ class TestAdversarialSyncTelemetry(unittest.TestCase):
             self.assertEqual(norm["id"], str(p["summary"]["activityId"]))
 
     def test_strength_activity_telemetry_suppressed(self):
-        """Strength activities must suppress telemetry_stream and gps_track even when detail metrics exist."""
+        """Strength activities must suppress gps_track and summary_polyline while preserving HR telemetry_stream."""
         payload = {
             "summary": {
                 "activityId": 999,
@@ -294,8 +294,12 @@ class TestAdversarialSyncTelemetry(unittest.TestCase):
         }
         norm = normalize_garmin_activity(payload)
         self.assertEqual(norm["sport"], "strength")
-        self.assertIsNone(norm.get("telemetry_stream"), "Strength activity must not have telemetry_stream")
+        stream = norm.get("telemetry_stream")
+        self.assertIsNotNone(stream, "Strength activity should preserve HR telemetry_stream")
+        self.assertEqual(stream.get("hr"), [125, 135])
+        self.assertEqual(stream.get("time"), [0.0, 10.0])
         self.assertIsNone(norm.get("gps_track"), "Strength activity must not have gps_track")
+        self.assertIsNone(norm.get("summary_polyline"), "Strength activity must not have summary_polyline")
         self.assertEqual(norm["distance_meters"], 0.0)
 
 

@@ -997,8 +997,7 @@ function renderKPICards(metric, records, cfg) {
     kpi3 = { label: 'Peak Readiness', val: `${maxScore} pts`, sub: 'Highest recovery day' };
     kpi4 = { label: 'Prime Days', val: `${primeDays}`, sub: 'Score ≥ 80 (Prime)' };
   } else if (metric === 'vo2max') {
-    const run = records.map(r => (typeof r.vo2max_running === 'number' && !isNaN(r.vo2max_running)) ? r.vo2max_running : 55.0);
-    const cyc = records.map(r => (typeof r.vo2max_cycling === 'number' && !isNaN(r.vo2max_cycling)) ? r.vo2max_cycling : 53.0);
+    const { run, cyc } = resolveVo2MaxSeries(records, state.activeRollup);
     const latestRun = run[run.length - 1];
     const latestCyc = cyc[cyc.length - 1];
     const peakRun = Math.max(...run);
@@ -1156,6 +1155,134 @@ function computeRollingBaselineBand(records, valueGetter, minSd = 3, windowSize 
   });
 
   return { yMinSeries, yMaxSeries, meanSeries, periodMean, periodSd };
+}
+
+export function resolveVo2MaxSeries(records, rollup) {
+  if (!Array.isArray(records) || records.length === 0) {
+    return { run: [], cyc: [], resolvedRecords: [] };
+  }
+
+  const thresholdMap = new Map();
+  const rawTrends = rollup?.physiological?.threshold_trends;
+  if (Array.isArray(rawTrends)) {
+    for (const t of rawTrends) {
+      if (t?.date && typeof t.vo2max === 'number' && !isNaN(t.vo2max)) {
+        thresholdMap.set(t.date, t.vo2max);
+      }
+    }
+  }
+
+  const ctlMap = new Map();
+  const tlDaily = rollup?.training_load?.daily;
+  if (Array.isArray(tlDaily)) {
+    for (const d of tlDaily) {
+      if (d?.date && typeof d.ctl === 'number' && !isNaN(d.ctl)) {
+        ctlMap.set(d.date, d.ctl);
+      }
+    }
+  }
+
+  const interpolateSeries = (rawVals, fallbackBase) => {
+    const n = rawVals.length;
+    const result = new Array(n).fill(null);
+    const anchors = [];
+    for (let i = 0; i < n; i++) {
+      if (typeof rawVals[i] === 'number' && !isNaN(rawVals[i])) {
+        anchors.push(i);
+        result[i] = rawVals[i];
+      }
+    }
+
+    if (anchors.length === 0) {
+      const base = typeof fallbackBase === 'number' && !isNaN(fallbackBase) ? fallbackBase : 50.0;
+      const firstCtl = ctlMap.get(records[0]?.date);
+      for (let i = 0; i < n; i++) {
+        const ctl = ctlMap.get(records[i]?.date);
+        const delta = (typeof ctl === 'number' && typeof firstCtl === 'number') ? (ctl - firstCtl) * 0.08 : 0;
+        result[i] = Math.round(Math.min(90, Math.max(20, base + delta)) * 10) / 10;
+      }
+      return result;
+    }
+
+    const firstIdx = anchors[0];
+    const firstVal = result[firstIdx];
+    const firstCtl = ctlMap.get(records[firstIdx]?.date);
+    for (let i = 0; i < firstIdx; i++) {
+      const ctl = ctlMap.get(records[i]?.date);
+      const delta = (typeof ctl === 'number' && typeof firstCtl === 'number') ? (ctl - firstCtl) * 0.08 : 0;
+      result[i] = Math.round(Math.min(90, Math.max(20, firstVal + delta)) * 10) / 10;
+    }
+
+    for (let a = 0; a < anchors.length - 1; a++) {
+      const i0 = anchors[a];
+      const i1 = anchors[a + 1];
+      const v0 = result[i0];
+      const v1 = result[i1];
+      const span = i1 - i0;
+      for (let i = i0 + 1; i < i1; i++) {
+        const frac = (i - i0) / span;
+        result[i] = Math.round((v0 + (v1 - v0) * frac) * 10) / 10;
+      }
+    }
+
+    const lastIdx = anchors[anchors.length - 1];
+    const lastVal = result[lastIdx];
+    const lastCtl = ctlMap.get(records[lastIdx]?.date);
+    for (let i = lastIdx + 1; i < n; i++) {
+      const ctl = ctlMap.get(records[i]?.date);
+      const delta = (typeof ctl === 'number' && typeof lastCtl === 'number') ? (ctl - lastCtl) * 0.08 : 0;
+      result[i] = Math.round(Math.min(90, Math.max(20, lastVal + delta)) * 10) / 10;
+    }
+
+    return result.map(v => Math.round(v * 10) / 10);
+  };
+
+  const rawRun = records.map(r => {
+    if (typeof r.vo2max_running === 'number' && !isNaN(r.vo2max_running)) return r.vo2max_running;
+    if (r?.date && thresholdMap.has(r.date)) return thresholdMap.get(r.date);
+    return null;
+  });
+  const athleteVo2 = rollup?.athlete?.vo2max;
+  const run = interpolateSeries(rawRun, athleteVo2);
+
+  const rawCyc = records.map(r => (typeof r.vo2max_cycling === 'number' && !isNaN(r.vo2max_cycling)) ? r.vo2max_cycling : null);
+  const hasCycAnchor = rawCyc.some(v => v !== null);
+  const cyc = hasCycAnchor
+    ? interpolateSeries(rawCyc, typeof athleteVo2 === 'number' ? athleteVo2 - 2.0 : 48.0)
+    : run.map(v => Math.round(Math.max(20, v - 2.0) * 10) / 10);
+
+  const resolvedRecords = records.map((r, i) => ({
+    ...r,
+    vo2max_running: run[i],
+    vo2max_cycling: cyc[i]
+  }));
+
+  return { run, cyc, resolvedRecords };
+}
+
+export function renderVo2MaxChartConfig(labels, records, rollup) {
+  const { run, cyc } = resolveVo2MaxSeries(records, rollup);
+  const allVals = [...run, ...cyc].filter(v => typeof v === 'number' && !isNaN(v));
+  const minVal = allVals.length ? Math.min(...allVals) : 45;
+  const maxVal = allVals.length ? Math.max(...allVals) : 60;
+  return {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Running VO2 Max', data: run, borderColor: '#a78bfa', tension: 0.25 },
+        { label: 'Cycling VO2 Max', data: cyc, borderColor: '#38bdf8', tension: 0.25 }
+      ]
+    },
+    options: {
+      scales: {
+        y: {
+          min: Math.max(20, Math.floor(minVal - 2.0)),
+          max: Math.ceil(maxVal + 2.0)
+        }
+      }
+    }
+  };
 }
 
 /**
@@ -1617,18 +1744,7 @@ function renderMetricChart(metric, records, startDate, endDate) {
       options: { scales: { y: { min: 0, max: 100 } } }
     };
   } else if (metric === 'vo2max') {
-    const run = records.map(r => (typeof r.vo2max_running === 'number' && !isNaN(r.vo2max_running)) ? r.vo2max_running : 55.0);
-    const cyc = records.map(r => (typeof r.vo2max_cycling === 'number' && !isNaN(r.vo2max_cycling)) ? r.vo2max_cycling : 53.0);
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Running VO2 Max', data: run, borderColor: '#a78bfa', tension: 0.25 },
-          { label: 'Cycling VO2 Max', data: cyc, borderColor: '#38bdf8', tension: 0.25 }
-        ]
-      }
-    };
+    chartConfig = renderVo2MaxChartConfig(labels, records, state.activeRollup);
   } else if (metric === 'spo2') {
     const avgArr = records.map(r => (typeof r.spo2_avg === 'number' && !isNaN(r.spo2_avg)) ? r.spo2_avg : 97.4);
     const lowArr = records.map(r => (typeof r.spo2_low === 'number' && !isNaN(r.spo2_low)) ? r.spo2_low : 93.8);
@@ -1962,12 +2078,14 @@ function renderBreakdownTable(metric, records, cfg) {
       </tr>
     `).join('');
   } else if (metric === 'vo2max') {
+    const { resolvedRecords } = resolveVo2MaxSeries(records, state.activeRollup);
+    const displayVo2Records = [...resolvedRecords].reverse();
     theadRow.innerHTML = `
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Running</th>
       <th class="py-2 px-3 text-right">Cycling</th>
     `;
-    tbody.innerHTML = displayRecords.map(r => `
+    tbody.innerHTML = displayVo2Records.map(r => `
       <tr class="hover:bg-[#1b132e]/50 transition">
         <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
         <td class="py-2 px-3 text-right text-violet-400 font-mono font-bold">${r.vo2max_running != null ? Number(r.vo2max_running).toFixed(1) : '--'}</td>

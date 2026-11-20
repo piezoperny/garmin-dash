@@ -588,6 +588,24 @@ class SyntheticDatasetGenerator:
                 max_hr=max_hr,
                 act_seed=self.seed * 10000 + act_id_counter,
             )
+            if sport in ("strength", "weights") and telemetry_stream is None and duration_sec > 0:
+                step = max(10, duration_sec // 120)
+                times = list(range(0, duration_sec + 1, step))
+                num_sets = max(6, min(14, duration_sec // 270))
+                valley_hr = max(60, avg_hr - 14)
+                peak_hr = min(max_hr, max(avg_hr + 12, max_hr - 4))
+                amp = max(8, peak_hr - valley_hr)
+                hrs = []
+                for t in times:
+                    frac = t / max(1, duration_sec)
+                    # Warmup ramp in first 10%, then work-set peaks & rest valleys
+                    warmup = min(1.0, frac / 0.10)
+                    cycle = 0.5 - 0.5 * math.cos(2.0 * math.pi * num_sets * frac)
+                    # Sharpen work-set peaks slightly
+                    wave = cycle ** 1.3
+                    hr_val = int(round(valley_hr + warmup * amp * wave))
+                    hrs.append(max(50, min(max_hr, hr_val)))
+                telemetry_stream = {"time": times, "hr": hrs}
 
             act_record = {
                 "id": act_id,
@@ -1693,14 +1711,24 @@ def compile_rollup(
         tsb_val = snap["tsb"] if snap else act.get("tsb")
 
         gps_val = None if is_strength else act.get("gps_track")
-        tel_val = None if is_strength else act.get("telemetry_stream")
+        raw_tel = act.get("telemetry_stream")
+        if is_strength:
+            if isinstance(raw_tel, dict) and isinstance(raw_tel.get("hr"), list) and len(raw_tel["hr"]) > 0:
+                tel_val = {
+                    "time": list(raw_tel.get("time") or list(range(len(raw_tel["hr"])))),
+                    "hr": list(raw_tel["hr"]),
+                }
+            else:
+                tel_val = None
+        else:
+            tel_val = raw_tel
         if is_strength:
             summary_polyline = None
         elif isinstance(gps_val, dict):
             summary_polyline = gps_val.get("polyline") or gps_val.get("encoded_polyline") or act.get("summary_polyline")
         else:
             summary_polyline = act.get("summary_polyline")
-        has_streams = False if is_strength else bool(act.get("has_streams") or gps_val or tel_val)
+        has_streams = bool(act.get("has_streams") or gps_val or tel_val)
 
         clean_act = {
             "id": act.get("id", ""),

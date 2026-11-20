@@ -145,4 +145,31 @@ const dateBtns = mockContainer.querySelectorAll('[data-heatmap-date]');
 dateBtns[0].click();
 assert.equal(selectedDate, '2026-08-02');
 
+// M1: computeConsistencyData with canonical rollup.wellness.daily and sleep_seconds fallback
+const m1Rollup = {
+  activities: [],
+  wellness: {
+    daily: [
+      { date: '2026-08-01', steps: 12000, steps_goal: 10000, sleep_score: 90 },
+      { date: '2026-08-02', steps: 6000, steps_goal: 10000, sleep_seconds: 28800 }
+    ]
+  }
+};
+const m1StepsData = computeConsistencyData(m1Rollup, 'steps', '2026-08-02');
+const m1StepsDays = m1StepsData.weeks.flat();
+const day1Steps = m1StepsDays.find(d => d && d.dateStr === '2026-08-01');
+const day2Steps = m1StepsDays.find(d => d && d.dateStr === '2026-08-02');
+assert.equal(day1Steps.steps, 12000);
+assert.ok(day1Steps.level >= 3, `Expected steps level >= 3 for 12000/10000, got ${day1Steps.level}`);
+assert.equal(day2Steps.steps, 6000);
+assert.ok(day2Steps.level >= 1, `Expected steps level >= 1 for 6000/10000, got ${day2Steps.level}`);
+
+const m1SleepData = computeConsistencyData(m1Rollup, 'sleep', '2026-08-02');
+const m1SleepDays = m1SleepData.weeks.flat();
+const day1Sleep = m1SleepDays.find(d => d && d.dateStr === '2026-08-01');
+const day2Sleep = m1SleepDays.find(d => d && d.dateStr === '2026-08-02');
+assert.equal(day1Sleep.sleepScore, 90);
+assert.equal(day2Sleep.sleepScore, 85);
+assert.ok(day2Sleep.level >= 3, `Expected sleep level >= 3 for 85 sleepScore, got ${day2Sleep.level}`);
+
 console.log('[PASS] M4 Personal Records & 365-Day Consistency Heatmap tests passed.');

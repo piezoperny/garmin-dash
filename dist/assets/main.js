@@ -66,6 +66,45 @@ export { openMetricTrendModal, initTrendsModal, openCalendarModal, closeCalendar
 
 const CUSTOMIZATION_STORAGE_KEY = 'garmin_dash_customization';
 
+export const DEFAULT_SECTION_ORDER = [
+  'today-activity-section',
+  'calendar-section',
+  'health-fitness-dashboard',
+  'endurance-training-section',
+  'physiological-distribution-section',
+  'card-activities',
+  'card-backup-vault'
+];
+
+const SECTION_LABELS = {
+  'today-activity-section': "Today's Activities",
+  'calendar-section': 'Training & Wellness Calendar',
+  'health-fitness-dashboard': 'Health & Fitness',
+  'endurance-training-section': 'Endurance & Training Load',
+  'physiological-distribution-section': 'Physiological Distribution',
+  'card-activities': 'Activity Drill-Down',
+  'card-backup-vault': 'Hetzner Multi-Year Backup Vault'
+};
+
+function normalizeSectionOrder(order) {
+  if (!Array.isArray(order)) return [...DEFAULT_SECTION_ORDER];
+  const validSet = new Set(DEFAULT_SECTION_ORDER);
+  const seen = new Set();
+  const normalized = [];
+  for (const id of order) {
+    if (validSet.has(id) && !seen.has(id)) {
+      seen.add(id);
+      normalized.push(id);
+    }
+  }
+  for (const id of DEFAULT_SECTION_ORDER) {
+    if (!seen.has(id)) {
+      normalized.push(id);
+    }
+  }
+  return normalized;
+}
+
 // Application State
 let activeRollup = null;
 let activeUnit = 'km'; // 'km' or 'mi'
@@ -73,6 +112,7 @@ let activeSportFilter = 'all'; // 'all', 'running', 'cycling', 'strength', etc.
 let activeCustomization = {
   wellness_layout: JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT)),
   hidden_cards: [],
+  section_order: [...DEFAULT_SECTION_ORDER],
   thresholds: {
     max_hr: null,
     lthr: null,
@@ -95,6 +135,7 @@ export function loadCustomizationPreferences() {
       activeCustomization = {
         wellness_layout: loadWellnessLayout(),
         hidden_cards: Array.isArray(parsed.hidden_cards) ? parsed.hidden_cards : [],
+        section_order: normalizeSectionOrder(parsed.section_order),
         thresholds: {
           max_hr: Number(parsed.thresholds?.max_hr) > 0 ? Number(parsed.thresholds.max_hr) : null,
           lthr: Number(parsed.thresholds?.lthr) > 0 ? Number(parsed.thresholds.lthr) : null,
@@ -143,6 +184,33 @@ function applyCardVisibility() {
       el.classList.add('hidden');
     } else {
       el.classList.remove('hidden');
+    }
+  });
+}
+
+/**
+ * Reorders direct child sections inside #dashboard-main according to activeCustomization.section_order
+ * and applies section-level visibility.
+ */
+export function applySectionOrder() {
+  const dashboardMain = document.getElementById('dashboard-main');
+  if (!dashboardMain || typeof dashboardMain.appendChild !== 'function') return;
+
+  const order = normalizeSectionOrder(activeCustomization.section_order);
+  const hiddenSet = new Set(activeCustomization.hidden_cards || []);
+
+  order.forEach(sectionId => {
+    const el = document.getElementById(sectionId);
+    if (!el) return;
+    if (el.parentNode === dashboardMain) {
+      dashboardMain.appendChild(el);
+    }
+    if (sectionId !== 'today-activity-section') {
+      if (hiddenSet.has(sectionId)) {
+        el.classList.add('hidden');
+      } else {
+        el.classList.remove('hidden');
+      }
     }
   });
 }
@@ -208,6 +276,7 @@ function renderDashboard(rollup) {
 
   loadCustomizationPreferences();
   applyCardVisibility();
+  applySectionOrder();
   syncDynamicSportFilterButtons(rollup.activities || []);
 
   // 0a. Today's / Latest Activity Hero Banner (top of homepage)
@@ -499,6 +568,73 @@ function setupCustomizationModalListeners() {
     if (maxHrInput) maxHrInput.value = activeCustomization.thresholds?.max_hr || '';
     if (lthrInput) lthrInput.value = activeCustomization.thresholds?.lthr || '';
     if (ftpInput) ftpInput.value = activeCustomization.thresholds?.cycling_ftp || '';
+
+    const sectionOrderList = document.getElementById('customize-section-order-list');
+    if (sectionOrderList) {
+      let draftOrder = normalizeSectionOrder(activeCustomization.section_order);
+      const hiddenDraft = new Set(activeCustomization.hidden_cards || []);
+
+      const renderSectionOrderRows = () => {
+        sectionOrderList.innerHTML = '';
+        draftOrder.forEach((sectionId, idx) => {
+          const row = document.createElement('div');
+          row.className = 'flex items-center justify-between p-2 rounded-lg bg-[#1b132e]/60 border border-[#2d2147]';
+          row.setAttribute('data-section-id', sectionId);
+
+          const label = document.createElement('label');
+          label.className = 'flex items-center space-x-2.5 cursor-pointer flex-1';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.setAttribute('data-section-visible', sectionId);
+          cb.checked = !hiddenDraft.has(sectionId);
+          cb.className = 'rounded border-zinc-700 bg-zinc-900 text-emerald-500';
+          cb.addEventListener('change', () => {
+            if (cb.checked) hiddenDraft.delete(sectionId);
+            else hiddenDraft.add(sectionId);
+          });
+          const span = document.createElement('span');
+          span.className = 'text-zinc-200';
+          span.textContent = SECTION_LABELS[sectionId] || sectionId;
+          label.appendChild(cb);
+          label.appendChild(span);
+
+          const btns = document.createElement('div');
+          btns.className = 'flex items-center space-x-1';
+
+          const upBtn = document.createElement('button');
+          upBtn.type = 'button';
+          upBtn.textContent = '↑';
+          upBtn.disabled = idx === 0;
+          upBtn.className = 'px-2 py-0.5 rounded bg-[#130d21] border border-[#3b2b5e] text-zinc-300 hover:text-white disabled:opacity-30';
+          upBtn.addEventListener('click', () => {
+            if (idx > 0) {
+              [draftOrder[idx - 1], draftOrder[idx]] = [draftOrder[idx], draftOrder[idx - 1]];
+              renderSectionOrderRows();
+            }
+          });
+
+          const downBtn = document.createElement('button');
+          downBtn.type = 'button';
+          downBtn.textContent = '↓';
+          downBtn.disabled = idx === draftOrder.length - 1;
+          downBtn.className = 'px-2 py-0.5 rounded bg-[#130d21] border border-[#3b2b5e] text-zinc-300 hover:text-white disabled:opacity-30';
+          downBtn.addEventListener('click', () => {
+            if (idx < draftOrder.length - 1) {
+              [draftOrder[idx], draftOrder[idx + 1]] = [draftOrder[idx + 1], draftOrder[idx]];
+              renderSectionOrderRows();
+            }
+          });
+
+          btns.appendChild(upBtn);
+          btns.appendChild(downBtn);
+          row.appendChild(label);
+          row.appendChild(btns);
+          sectionOrderList.appendChild(row);
+        });
+      };
+
+      renderSectionOrderRows();
+    }
   };
 
   if (openBtn) {
@@ -545,9 +681,25 @@ function setupCustomizationModalListeners() {
       const lthrVal = Number(document.getElementById('input-custom-lthr')?.value || 0);
       const ftpVal = Number(document.getElementById('input-custom-ftp')?.value || 0);
 
+      const sectionOrderList = document.getElementById('customize-section-order-list');
+      const newSectionOrder = [];
+      if (sectionOrderList && sectionOrderList.querySelectorAll) {
+        sectionOrderList.querySelectorAll('[data-section-id]').forEach(row => {
+          const sid = row.getAttribute('data-section-id');
+          if (sid) newSectionOrder.push(sid);
+        });
+        sectionOrderList.querySelectorAll('[data-section-visible]').forEach(cb => {
+          const sid = cb.getAttribute('data-section-visible');
+          if (!cb.checked && sid && !hidden.includes(sid)) {
+            hidden.push(sid);
+          }
+        });
+      }
+
       activeCustomization = {
         wellness_layout: newWellnessLayout,
         hidden_cards: hidden,
+        section_order: newSectionOrder.length > 0 ? normalizeSectionOrder(newSectionOrder) : normalizeSectionOrder(activeCustomization.section_order),
         thresholds: {
           max_hr: maxHrVal >= 120 ? maxHrVal : null,
           lthr: lthrVal >= 100 ? lthrVal : null,
@@ -561,6 +713,7 @@ function setupCustomizationModalListeners() {
         renderDashboard(activeRollup);
       } else {
         applyCardVisibility();
+        applySectionOrder();
       }
     });
   }
@@ -570,6 +723,7 @@ function setupCustomizationModalListeners() {
       activeCustomization = {
         wellness_layout: JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT)),
         hidden_cards: [],
+        section_order: [...DEFAULT_SECTION_ORDER],
         thresholds: { max_hr: null, lthr: null, cycling_ftp: null }
       };
       saveCustomizationPreferences();
@@ -579,6 +733,7 @@ function setupCustomizationModalListeners() {
         renderDashboard(activeRollup);
       } else {
         applyCardVisibility();
+        applySectionOrder();
       }
     });
   }
@@ -603,6 +758,8 @@ function toggleDistanceUnit() {
  * Initializes Application and checks for reload bypass.
  */
 export async function initApp() {
+  loadCustomizationPreferences();
+  applySectionOrder();
   setupActivityEventListeners();
   setupCustomizationModalListeners();
   setupWellnessEventListeners();

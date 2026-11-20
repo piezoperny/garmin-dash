@@ -284,7 +284,11 @@ export function renderPRTrophyCase(rollup, unit = 'km') {
  */
 export function computeConsistencyData(rollup, mode = 'tss', referenceDateStr = null) {
   const activities = Array.isArray(rollup?.activities) ? rollup.activities : [];
-  const wellness = Array.isArray(rollup?.daily_wellness) ? rollup.daily_wellness : [];
+  const wellness = Array.isArray(rollup?.wellness?.daily)
+    ? rollup.wellness.daily
+    : (Array.isArray(rollup?.daily_wellness)
+        ? rollup.daily_wellness
+        : (Array.isArray(rollup?.wellness_daily) ? rollup.wellness_daily : []));
 
   const dailyMap = new Map();
 
@@ -306,6 +310,7 @@ export function computeConsistencyData(rollup, mode = 'tss', referenceDateStr = 
     if (w.steps_goal != null && Number(w.steps_goal) > 0) entry.stepsGoal = Number(w.steps_goal);
     if (w.sleep_score != null) entry.sleepScore = Math.max(entry.sleepScore, Number(w.sleep_score) || 0);
     else if (w.sleep_hours != null) entry.sleepScore = Math.max(entry.sleepScore, Math.round((Number(w.sleep_hours) || 0) * 12));
+    else if (w.sleep_seconds != null) entry.sleepScore = Math.max(entry.sleepScore, Math.min(100, Math.round((Number(w.sleep_seconds) / 28800) * 85)));
     if (entry.tss === 0 && w.training_load != null) entry.tss = Number(w.training_load) || 0;
     dailyMap.set(d, entry);
   }

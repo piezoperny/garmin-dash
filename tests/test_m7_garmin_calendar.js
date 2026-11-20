@@ -112,4 +112,57 @@ for (const id of [
 const activitiesJs = fs.readFileSync(path.join(rootDir, 'frontend', 'src', 'charts', 'activities.js'), 'utf8');
 assert.ok(activitiesJs.includes('data-open-calendar="true"'), 'activities.js missing View Calendar button');
 
+// 6. M1: Canonical rollup property names (distance_meters, duration_seconds, moving_time_seconds, elevation_gain_meters)
+const canonicalRollup = {
+  activities: [
+    {
+      id: 'act-canon-1',
+      start_time: '2026-03-10T07:00:00Z',
+      sport: 'running',
+      title: 'Canonical Morning Run',
+      distance_meters: 12500,
+      duration_seconds: 3600,
+      elevation_gain_meters: 145
+    },
+    {
+      id: 'act-canon-2',
+      start_time: '2026-03-11T08:00:00Z',
+      sport: 'cycling',
+      title: 'Canonical Ride',
+      distance_meters: 30000,
+      moving_time_seconds: 5400,
+      elevation_gain_meters: 420
+    }
+  ],
+  wellness: {
+    daily: [
+      { date: '2026-03-10', sleep_seconds: 27000, sleep_score: 88, stress_level: 24, steps: 11200 }
+    ]
+  }
+};
+const canonicalWeeks = buildCalendarWeeks(2026, 2, canonicalRollup.activities, canonicalRollup.wellness.daily, 'All');
+const canonicalWeek2 = canonicalWeeks.find(w => w.summary.activityCount === 2);
+assert.ok(canonicalWeek2, 'Expected canonical week with 2 activities');
+assert.equal(canonicalWeek2.summary.totalDistanceMeters, 42500);
+assert.equal(canonicalWeek2.summary.totalDurationSec, 9000);
+assert.equal(canonicalWeek2.summary.totalElevationM, 565);
+
+// 7. M1: Persistent calendar collapse state in localStorage
+const { loadCalendarCollapsedState, saveCalendarCollapsedState } = await import('../frontend/src/charts/calendar.js');
+const store = new Map();
+globalThis.localStorage = {
+  getItem: (k) => (store.has(k) ? store.get(k) : null),
+  setItem: (k, v) => store.set(k, String(v))
+};
+assert.equal(loadCalendarCollapsedState(), false);
+saveCalendarCollapsedState(true);
+assert.equal(loadCalendarCollapsedState(), true);
+assert.equal(store.get('garmin_dash_calendar_collapsed'), 'true');
+assert.equal(JSON.parse(store.get('garmin_dash_customization')).calendar_collapsed, true);
+saveCalendarCollapsedState(false);
+assert.equal(loadCalendarCollapsedState(), false);
+assert.equal(store.get('garmin_dash_calendar_collapsed'), 'false');
+assert.equal(JSON.parse(store.get('garmin_dash_customization')).calendar_collapsed, false);
+delete globalThis.localStorage;
+
 console.log('[PASS] M2 Garmin Connect Calendar tests passed.');

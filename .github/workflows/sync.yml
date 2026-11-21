@@ -151,6 +151,22 @@ jobs:
         with:
           path: 'dist'
 
+      # Step 12b: Wait for Pages artifact metadata to propagate in GitHub API
+      - name: Wait for Pages artifact propagation
+        run: |
+          for i in $(seq 1 12); do
+            COUNT=$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+              | python -c "import sys, json; data = json.load(sys.stdin); print(sum(1 for a in data.get('artifacts', []) if a.get('name') == 'github-pages'))" 2>/dev/null || echo "0")
+            if [ "$COUNT" -ge 1 ]; then
+              echo "Pages artifact indexed after attempt $i."
+              exit 0
+            fi
+            echo "Waiting for github-pages artifact metadata (attempt $i/12)..."
+            sleep 5
+          done
+          echo "Proceeding to deploy-pages after propagation wait."
+
       # Step 13: Deploy to GitHub Pages
       - name: Deploy to GitHub Pages
         id: deployment

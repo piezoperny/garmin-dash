@@ -80,10 +80,10 @@ export async function decodeMaybeGzipJson(decryptedBuffer) {
   if (rawBytes.length >= 2 && rawBytes[0] === 0x1f && rawBytes[1] === 0x8b) {
     if (typeof DecompressionStream !== 'undefined') {
       const ds = new DecompressionStream('gzip');
+      const readPromise = new Response(ds.readable).arrayBuffer();
       const writer = ds.writable.getWriter();
-      await writer.write(rawBytes);
-      await writer.close();
-      const outBuf = await new Response(ds.readable).arrayBuffer();
+      const writePromise = writer.write(rawBytes).then(() => writer.close());
+      const [outBuf] = await Promise.all([readPromise, writePromise]);
       plainBytes = new Uint8Array(outBuf);
     } else if (typeof process !== 'undefined' && process.versions?.node) {
       const zlib = await import('node:zlib');

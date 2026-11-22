@@ -130,7 +130,25 @@ async function run() {
   assert.deepEqual(loaded999.telemetry_stream.hr, [111]);
   console.log('  ✓ T-PACK-04: Legacy ./streams/<id>.enc fallback works seamlessly');
 
-  console.log('\n=== Packed Stream Web Results: 4 passed, 0 failed ===\n');
+  // Test large multi-megabyte Gzip payload (>3 MB uncompressed) to verify zero backpressure deadlock
+  const largeActivities = Array.from({ length: 5000 }, (_, i) => ({
+    id: String(i + 1),
+    name: `Long Endurance Activity #${i + 1} with detailed metadata`,
+    sport: i % 2 === 0 ? 'running' : 'cycling',
+    date: '2026-01-01',
+    distance_meters: 12345.6,
+    duration_seconds: 3600,
+    summary_polyline: 'a'.repeat(400)
+  }));
+  const largeJson = Buffer.from(JSON.stringify({ activities: largeActivities }), 'utf-8');
+  assert.ok(largeJson.byteLength > 2_500_000, 'Test payload must exceed 2.5 MB uncompressed');
+  const largeGz = zlib.gzipSync(largeJson);
+  const largeEnc = encryptWire(largeGz, key, salt);
+  const largeDec = await decryptWithRawKey(rawKeyBase64, largeEnc);
+  assert.equal(largeDec.activities.length, 5000);
+  console.log(`  ✓ T-PACK-05: Large Gzip payload (${(largeJson.byteLength / 1024 / 1024).toFixed(2)} MB) decompressed without deadlock`);
+
+  console.log('\n=== Packed Stream Web Results: 5 passed, 0 failed ===\n');
 }
 
 run().catch((err) => {

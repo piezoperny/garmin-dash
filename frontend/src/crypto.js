@@ -69,6 +69,36 @@ function getSubtleCrypto() {
 }
 
 /**
+ * Decodes decrypted bytes (auto-detecting Gzip magic header 0x1f 0x8b) and parses JSON.
+ * @param {ArrayBuffer|Uint8Array} decryptedBuffer
+ * @returns {Promise<object>}
+ */
+export async function decodeMaybeGzipJson(decryptedBuffer) {
+  const rawBytes = decryptedBuffer instanceof Uint8Array ? decryptedBuffer : new Uint8Array(decryptedBuffer);
+  let plainBytes = rawBytes;
+
+  if (rawBytes.length >= 2 && rawBytes[0] === 0x1f && rawBytes[1] === 0x8b) {
+    if (typeof DecompressionStream !== 'undefined') {
+      const ds = new DecompressionStream('gzip');
+      const writer = ds.writable.getWriter();
+      await writer.write(rawBytes);
+      await writer.close();
+      const outBuf = await new Response(ds.readable).arrayBuffer();
+      plainBytes = new Uint8Array(outBuf);
+    } else if (typeof process !== 'undefined' && process.versions?.node) {
+      const zlib = await import('node:zlib');
+      plainBytes = new Uint8Array(zlib.gunzipSync(rawBytes));
+    } else {
+      throw new Error('Gzip decompression is not supported in this browser.');
+    }
+  }
+
+  const dec = new TextDecoder('utf-8');
+  const jsonText = dec.decode(plainBytes);
+  return JSON.parse(jsonText);
+}
+
+/**
  * Decrypts a binary data.enc payload using user-provided master passphrase.
  * 
  * @param {string} passphrase - User master passphrase
@@ -134,12 +164,10 @@ export async function decryptDashboardPayload(passphrase, wireData) {
     throw new Error('Authentication failed. Invalid passphrase or corrupted data.');
   }
 
-  // 5. Decode UTF-8 and parse JSON rollup
-  const dec = new TextDecoder('utf-8');
-  const jsonText = dec.decode(decryptedBuffer);
+  // 5. Decompress (if gzip) & parse JSON rollup
   let payload;
   try {
-    payload = JSON.parse(jsonText);
+    payload = await decodeMaybeGzipJson(decryptedBuffer);
   } catch (err) {
     throw new Error('Authentication failed. Invalid passphrase or corrupted data.');
   }
@@ -197,7 +225,5 @@ export async function decryptWithRawKey(rawKeyBase64, wireData) {
     throw new Error('Authentication failed. Invalid passphrase or corrupted data.');
   }
 
-  const dec = new TextDecoder('utf-8');
-  const jsonText = dec.decode(decryptedBuffer);
-  return JSON.parse(jsonText);
+  return await decodeMaybeGzipJson(decryptedBuffer);
 }

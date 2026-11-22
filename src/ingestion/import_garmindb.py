@@ -353,145 +353,213 @@ def run_garmindb_import(
     garmindb_dir: Path,
     output_rollup: Path = Path(".staging/dashboard_rollup.json"),
     encrypt_output: bool = False,
+    vault_mode: str = "auto",
 ) -> int:
-    """Imports GarminDB activities & wellness into remote sharded storage and local rollup."""
+    """Imports GarminDB activities & wellness into remote sharded/Parquet storage and local rollup."""
+    from src.ingestion.cleanup import purge_directory
+    from src.storage.parquet_vault import ParquetVault, VaultManifest
+
     storage = get_storage_client(force_mock=False)
-    manifest = load_remote_manifest(storage)
+    vault_work_dir = output_rollup.parent.parent / ".vault_work"
+    parquet_vault = ParquetVault(work_dir=vault_work_dir, storage_client=storage)
+    use_parquet = vault_mode == "parquet" or (vault_mode == "auto" and parquet_vault.has_remote_vault())
 
-    imported_acts = extract_garmindb_activities(garmindb_dir)
-    imported_wellness = extract_garmindb_wellness(garmindb_dir)
-    logger.info(
-        f"Extracted {len(imported_acts)} activities and {len(imported_wellness)} daily wellness records from GarminDB."
-    )
+    try:
+        imported_acts = extract_garmindb_activities(garmindb_dir)
+        imported_wellness = extract_garmindb_wellness(garmindb_dir)
+        logger.info(
+            f"Extracted {len(imported_acts)} activities and {len(imported_wellness)} daily wellness records from GarminDB."
+        )
 
-    existing_acts: Dict[str, Dict[str, Any]] = {}
-    for path_cand in (REMOTE_INDEX_PATH, REMOTE_CANONICAL_PATH):
-        if storage.file_exists(path_cand):
-            try:
-                raw = storage.read_text(path_cand)
-                if raw:
-                    for item in json.loads(raw):
-                        existing_acts[str(item.get("id"))] = item
-                    break
-            except Exception as e:
-                logger.warning(f"Could not read existing index {path_cand}: {e}")
+        local_streams_dir = output_rollup.parent / "streams"
+        local_streams_dir.mkdir(parents=True, exist_ok=True)
 
-    local_streams_dir = output_rollup.parent / "streams"
-    local_streams_dir.mkdir(parents=True, exist_ok=True)
-
-    for act in imported_acts:
-        act_id = str(act["id"])
-        existing_acts[act_id] = act
-        date_str = str(act.get("start_time") or act.get("date") or "")
-        manifest_year = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else None
-        manifest.record_activity(act_id, year=manifest_year)
-
-        shard_obj = {
-            "id": act_id,
-            "gps_track": act.get("gps_track"),
-            "telemetry_stream": act.get("telemetry_stream"),
-            "splits": act.get("splits", []),
-            "laps": act.get("laps", []),
-            "hr_zones": act.get("hr_zones", {}),
-        }
-        shard_json = json.dumps(shard_obj, separators=(",", ":"))
-        (local_streams_dir / f"{act_id}.json").write_text(shard_json, encoding="utf-8")
-
-        year_str = manifest_year or "unknown"
-        storage.write_text_atomic(f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id}.json", shard_json)
-
-    canonical_acts = reprocess_canonical_activities(list(existing_acts.values()))
-    index_acts = []
-    for act in canonical_acts:
-        idx_copy = dict(act)
-        is_str = idx_copy.get("sport") in ("strength", "weights")
-        if is_str:
-            for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
-                idx_copy.pop(forbidden_key, None)
-            idx_copy["summary_polyline"] = None
-            idx_copy["has_streams"] = False
-        else:
-            gps_val = idx_copy.get("gps_track")
-            if not idx_copy.get("summary_polyline") and isinstance(gps_val, dict):
-                idx_copy["summary_polyline"] = (
-                    gps_val.get("polyline") or gps_val.get("encoded_polyline") or None
-                )
-            idx_copy["has_streams"] = bool(
-                idx_copy.get("gps_track") or idx_copy.get("telemetry_stream") or idx_copy.get("has_streams")
+        if use_parquet:
+            v_manifest = parquet_vault.load_manifest()
+            manifest = SyncManifest(
+                last_sync_timestamp=v_manifest.last_sync_timestamp,
+                last_sync_datetime=v_manifest.last_sync_datetime or "",
+                total_synced_activities=v_manifest.total_synced_activities,
+                synced_activity_ids=list(v_manifest.synced_activity_ids),
             )
-        idx_copy.pop("gps_track", None)
-        idx_copy.pop("telemetry_stream", None)
-        index_acts.append(idx_copy)
+            existing_acts = {
+                str(a["id"]): a
+                for a in parquet_vault.load_activities(pull_remote=True)
+                if isinstance(a, dict) and a.get("id") is not None
+            }
+            streams_by_year: Dict[str, Dict[str, Any]] = {}
+            for act in imported_acts:
+                act_id = str(act["id"])
+                existing_acts[act_id] = act
+                date_str = str(act.get("start_time") or act.get("date") or "")
+                year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
+                manifest.record_activity(act_id, year=year_str)
+                v_manifest.record_activity(act_id, year=year_str)
+                shard_obj = {
+                    "id": act_id,
+                    "gps_track": act.get("gps_track"),
+                    "telemetry_stream": act.get("telemetry_stream"),
+                    "splits": act.get("splits", []),
+                    "laps": act.get("laps", []),
+                    "hr_zones": act.get("hr_zones", {}),
+                }
+                (local_streams_dir / f"{act_id}.json").write_text(
+                    json.dumps(shard_obj, separators=(",", ":")), encoding="utf-8"
+                )
+                if year_str not in streams_by_year:
+                    streams_by_year[year_str] = parquet_vault.load_year_streams(year_str, pull_remote=True)
+                streams_by_year[year_str][act_id] = shard_obj
 
-    storage.write_text_atomic(REMOTE_INDEX_PATH, json.dumps(index_acts, indent=2))
-    storage.write_text_atomic(REMOTE_CANONICAL_PATH, json.dumps(index_acts, indent=2))
-    save_remote_manifest(storage, manifest)
+            for yr_str, y_map in sorted(streams_by_year.items()):
+                v_manifest.stream_years[yr_str] = parquet_vault.save_year_streams(yr_str, y_map, push_remote=True)
 
-    wellness_map: Dict[str, Dict[str, Any]] = {}
-    if storage.file_exists(REMOTE_WELLNESS_PATH):
-        try:
-            raw_w = storage.read_text(REMOTE_WELLNESS_PATH)
-            if raw_w:
-                for w in json.loads(raw_w):
-                    if isinstance(w, dict) and w.get("date"):
-                        wellness_map[str(w["date"])] = w
-        except Exception:
-            pass
+            canonical_acts = reprocess_canonical_activities(list(existing_acts.values()))
+            parquet_vault.save_activities(canonical_acts, push_remote=True)
 
-    for w in imported_wellness:
-        d_key = str(w["date"])
-        merged = dict(wellness_map.get(d_key, {}))
-        for k, v in w.items():
-            if v is not None:
-                merged[k] = v
-        wellness_map[d_key] = merged
+            wellness_map: Dict[str, Dict[str, Any]] = {
+                str(w["date"])[:10]: w
+                for w in parquet_vault.load_wellness(pull_remote=True)
+                if isinstance(w, dict) and w.get("date")
+            }
+            for w in imported_wellness:
+                d_key = str(w["date"])[:10]
+                merged = dict(wellness_map.get(d_key, {}))
+                for k, v in w.items():
+                    if v is not None:
+                        merged[k] = v
+                wellness_map[d_key] = merged
+            sorted_wellness = [wellness_map[k] for k in sorted(wellness_map.keys())]
+            v_manifest.total_wellness_days = parquet_vault.save_wellness(sorted_wellness, push_remote=True)
+            parquet_vault.save_manifest(v_manifest)
+        else:
+            manifest = load_remote_manifest(storage)
+            existing_acts = {}
+            for path_cand in (REMOTE_INDEX_PATH, REMOTE_CANONICAL_PATH):
+                if storage.file_exists(path_cand):
+                    try:
+                        raw = storage.read_text(path_cand)
+                        if raw:
+                            for item in json.loads(raw):
+                                existing_acts[str(item.get("id"))] = item
+                            break
+                    except Exception as e:
+                        logger.warning(f"Could not read existing index {path_cand}: {e}")
 
-    sorted_wellness = [wellness_map[k] for k in sorted(wellness_map.keys())]
-    storage.write_text_atomic(REMOTE_WELLNESS_PATH, json.dumps(sorted_wellness, indent=2))
+            for act in imported_acts:
+                act_id = str(act["id"])
+                existing_acts[act_id] = act
+                date_str = str(act.get("start_time") or act.get("date") or "")
+                manifest_year = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else None
+                manifest.record_activity(act_id, year=manifest_year)
 
-    wellness_payload = {
-        "current": sorted_wellness[-1] if sorted_wellness else {},
-        "daily": sorted_wellness,
-    }
-    rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
-    src_by_id = {str(a.get("id")): a for a in canonical_acts if isinstance(a, dict)}
-    for act_item in rollup_dict.get("activities", []):
-        if isinstance(act_item, dict):
-            src_act = src_by_id.get(str(act_item.get("id")), {})
-            is_str = act_item.get("sport") in ("strength", "weights")
-            if is_str:
-                for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
-                    act_item.pop(forbidden_key, None)
-                act_item["summary_polyline"] = None
-                act_item["has_streams"] = False
-            else:
-                gps_val = act_item.get("gps_track") or src_act.get("gps_track")
-                if not act_item.get("summary_polyline"):
-                    if isinstance(gps_val, dict):
-                        act_item["summary_polyline"] = (
+                shard_obj = {
+                    "id": act_id,
+                    "gps_track": act.get("gps_track"),
+                    "telemetry_stream": act.get("telemetry_stream"),
+                    "splits": act.get("splits", []),
+                    "laps": act.get("laps", []),
+                    "hr_zones": act.get("hr_zones", {}),
+                }
+                shard_json = json.dumps(shard_obj, separators=(",", ":"))
+                (local_streams_dir / f"{act_id}.json").write_text(shard_json, encoding="utf-8")
+
+                year_str = manifest_year or "unknown"
+                storage.write_text_atomic(f"{REMOTE_STREAMS_DIR}/{year_str}/{act_id}.json", shard_json)
+
+            canonical_acts = reprocess_canonical_activities(list(existing_acts.values()))
+            index_acts = []
+            for act in canonical_acts:
+                idx_copy = dict(act)
+                is_str = idx_copy.get("sport") in ("strength", "weights")
+                if is_str:
+                    for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
+                        idx_copy.pop(forbidden_key, None)
+                    idx_copy["summary_polyline"] = None
+                    idx_copy["has_streams"] = False
+                else:
+                    gps_val = idx_copy.get("gps_track")
+                    if not idx_copy.get("summary_polyline") and isinstance(gps_val, dict):
+                        idx_copy["summary_polyline"] = (
                             gps_val.get("polyline") or gps_val.get("encoded_polyline") or None
                         )
-                    elif src_act.get("summary_polyline"):
-                        act_item["summary_polyline"] = src_act.get("summary_polyline")
-                act_item["has_streams"] = bool(
-                    act_item.get("has_streams")
-                    or src_act.get("has_streams")
-                    or act_item.get("gps_track")
-                    or act_item.get("telemetry_stream")
-                    or src_act.get("gps_track")
-                    or src_act.get("telemetry_stream")
-                )
-            act_item["gps_track"] = None
-            act_item["telemetry_stream"] = None
+                    idx_copy["has_streams"] = bool(
+                        idx_copy.get("gps_track") or idx_copy.get("telemetry_stream") or idx_copy.get("has_streams")
+                    )
+                idx_copy.pop("gps_track", None)
+                idx_copy.pop("telemetry_stream", None)
+                index_acts.append(idx_copy)
 
-    output_rollup.parent.mkdir(parents=True, exist_ok=True)
-    output_rollup.write_text(json.dumps(rollup_dict, indent=2), encoding="utf-8")
+            storage.write_text_atomic(REMOTE_INDEX_PATH, json.dumps(index_acts, indent=2))
+            storage.write_text_atomic(REMOTE_CANONICAL_PATH, json.dumps(index_acts, indent=2))
+            save_remote_manifest(storage, manifest)
 
-    if encrypt_output:
-        from src.encryption.encrypt import build_and_encrypt_rollup
-        build_and_encrypt_rollup(input_file=output_rollup, verify=True)
+            wellness_map = {}
+            if storage.file_exists(REMOTE_WELLNESS_PATH):
+                try:
+                    raw_w = storage.read_text(REMOTE_WELLNESS_PATH)
+                    if raw_w:
+                        for w in json.loads(raw_w):
+                            if isinstance(w, dict) and w.get("date"):
+                                wellness_map[str(w["date"])] = w
+                except Exception:
+                    pass
 
-    return 0
+            for w in imported_wellness:
+                d_key = str(w["date"])
+                merged = dict(wellness_map.get(d_key, {}))
+                for k, v in w.items():
+                    if v is not None:
+                        merged[k] = v
+                wellness_map[d_key] = merged
+
+            sorted_wellness = [wellness_map[k] for k in sorted(wellness_map.keys())]
+            storage.write_text_atomic(REMOTE_WELLNESS_PATH, json.dumps(sorted_wellness, indent=2))
+
+        wellness_payload = {
+            "current": sorted_wellness[-1] if sorted_wellness else {},
+            "daily": sorted_wellness,
+        }
+        rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
+        src_by_id = {str(a.get("id")): a for a in canonical_acts if isinstance(a, dict)}
+        for act_item in rollup_dict.get("activities", []):
+            if isinstance(act_item, dict):
+                src_act = src_by_id.get(str(act_item.get("id")), {})
+                is_str = act_item.get("sport") in ("strength", "weights")
+                if is_str:
+                    for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
+                        act_item.pop(forbidden_key, None)
+                    act_item["summary_polyline"] = None
+                    act_item["has_streams"] = False
+                else:
+                    gps_val = act_item.get("gps_track") or src_act.get("gps_track")
+                    if not act_item.get("summary_polyline"):
+                        if isinstance(gps_val, dict):
+                            act_item["summary_polyline"] = (
+                                gps_val.get("polyline") or gps_val.get("encoded_polyline") or None
+                            )
+                        elif src_act.get("summary_polyline"):
+                            act_item["summary_polyline"] = src_act.get("summary_polyline")
+                    act_item["has_streams"] = bool(
+                        act_item.get("has_streams")
+                        or src_act.get("has_streams")
+                        or act_item.get("gps_track")
+                        or act_item.get("telemetry_stream")
+                        or src_act.get("gps_track")
+                        or src_act.get("telemetry_stream")
+                    )
+                act_item["gps_track"] = None
+                act_item["telemetry_stream"] = None
+
+        output_rollup.parent.mkdir(parents=True, exist_ok=True)
+        output_rollup.write_text(json.dumps(rollup_dict, indent=2), encoding="utf-8")
+
+        if encrypt_output:
+            from src.encryption.encrypt import build_and_encrypt_rollup
+            build_and_encrypt_rollup(input_file=output_rollup, verify=True)
+
+        return 0
+    finally:
+        purge_directory(vault_work_dir, remove_dir=True)
 
 
 def main() -> None:
@@ -499,10 +567,11 @@ def main() -> None:
     parser.add_argument("--garmindb-dir", type=Path, required=True, help="Path to GarminDB directory or DBs folder")
     parser.add_argument("--output-rollup", type=Path, default=Path(".staging/dashboard_rollup.json"))
     parser.add_argument("--encrypt", action="store_true", help="Encrypt rollup and stream shards immediately")
+    parser.add_argument("--vault-mode", choices=["auto", "parquet", "legacy"], default="auto", help="Target vault format")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    sys.exit(run_garmindb_import(args.garmindb_dir, args.output_rollup, args.encrypt))
+    sys.exit(run_garmindb_import(args.garmindb_dir, args.output_rollup, args.encrypt, vault_mode=args.vault_mode))
 
 
 if __name__ == "__main__":

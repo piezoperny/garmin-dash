@@ -16,13 +16,14 @@ Responsibilities:
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import logging
 import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from src.encryption.crypto_engine import (
     PBKDF2_ITERATIONS,
@@ -50,10 +51,12 @@ def build_and_encrypt_rollup(
     verify: bool = False,
     purge_input: bool = True,
     iterations: int = PBKDF2_ITERATIONS,
+    compress: bool = True,
+    pack_streams: bool = True,
 ) -> Path:
     """
-    Compiles, encrypts, and packages fitness data rollup into data.enc
-    and any sharded activity stream payloads into streams/<id>.enc.
+    Compiles, compresses, encrypts, and packages fitness data rollup into data.enc
+    and yearly encrypted stream packfiles into streams/streams_YYYY.pack.
 
     Returns:
         Path to generated data.enc binary artifact.
@@ -92,31 +95,112 @@ def build_and_encrypt_rollup(
         with open(input_path, "r", encoding="utf-8") as f:
             rollup_data = json.load(f)
 
-    # 3. Serialize and Encrypt
-    logger.info("Serializing rollup to compact UTF-8 JSON...")
-    plaintext_bytes = json.dumps(rollup_data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    plaintext_size_kb = len(plaintext_bytes) / 1024.0
-    logger.info(f"Encrypting {plaintext_size_kb:.2f} KB payload with AES-256-GCM (PBKDF2 {iterations:,} iterations)...")
-
-    wire_bytes = encrypt_payload(
-        data=plaintext_bytes,
-        passphrase=resolved_passphrase,
-        iterations=iterations,
-    )
-    logger.info(f"Generated binary wire payload: {len(wire_bytes)} bytes.")
-
-    # 4. Resolve Output Path and Write Atomically
     target_path = Path(output_file) if output_file else DEFAULT_OUTPUT_ENC
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Atomic write to temporary file first
+    # Derive shared key once so data.enc and stream packfiles share the same salt & session key
+    salt = os.urandom(SALT_SIZE)
+    shared_key = derive_key(resolved_passphrase, salt, iterations=iterations)
+
+    # 2b. Pack & encrypt sharded activity stream files into yearly streams/streams_YYYY.pack
+    streams_staging = input_path.parent / "streams" if input_file else DEFAULT_STAGING_STREAMS_DIR
+    if streams_staging.exists() and streams_staging.is_dir():
+        out_streams_dir = target_path.parent / "streams"
+        out_streams_dir.mkdir(parents=True, exist_ok=True)
+
+        if pack_streams:
+            act_year_map: Dict[str, str] = {}
+            for act in rollup_data.get("activities", []):
+                if isinstance(act, dict) and act.get("id") is not None:
+                    ds = str(act.get("start_time") or act.get("date") or "")
+                    yr = ds[:4] if len(ds) >= 4 and ds[:4].isdigit() else "unknown"
+                    act_year_map[str(act["id"])] = yr
+
+            files_by_year: Dict[str, List[Path]] = {}
+            for shard_file in sorted(streams_staging.glob("*.json")):
+                yr = act_year_map.get(shard_file.stem, "unknown")
+                files_by_year.setdefault(yr, []).append(shard_file)
+
+            pack_index: Dict[str, Dict[str, Any]] = dict(rollup_data.get("stream_pack_index") or {})
+            packed_count = 0
+            for yr, shard_files in sorted(files_by_year.items()):
+                pack_path = out_streams_dir / f"streams_{yr}.pack"
+                tmp_pack = pack_path.with_suffix(".pack.tmp")
+                offset = 0
+                with open(tmp_pack, "wb") as pf:
+                    for shard_file in shard_files:
+                        shard_bytes = shard_file.read_bytes()
+                        if compress:
+                            shard_bytes = gzip.compress(shard_bytes, compresslevel=6, mtime=0)
+                        enc_chunk = encrypt_with_key(shard_bytes, key=shared_key, salt=salt)
+                        pf.write(enc_chunk)
+                        pack_index[shard_file.stem] = {
+                            "year": yr,
+                            "offset": offset,
+                            "length": len(enc_chunk),
+                        }
+                        offset += len(enc_chunk)
+                        packed_count += 1
+                if pack_path.exists():
+                    pack_path.unlink()
+                tmp_pack.rename(pack_path)
+
+                if output_file is None or target_path == DEFAULT_OUTPUT_ENC:
+                    for mirror_dir in [Path("dist"), Path("frontend"), Path("frontend/public")]:
+                        if mirror_dir.exists() and mirror_dir.is_dir() and mirror_dir != target_path.parent:
+                            m_streams = mirror_dir / "streams"
+                            m_streams.mkdir(parents=True, exist_ok=True)
+                            shutil.copyfile(pack_path, m_streams / f"streams_{yr}.pack")
+
+            if packed_count > 0:
+                rollup_data["stream_pack_index"] = pack_index
+                logger.info(
+                    f"Packed & encrypted {packed_count} activity streams into {len(files_by_year)} yearly packfile(s) under {out_streams_dir}"
+                )
+        else:
+            shard_count = 0
+            for shard_file in streams_staging.glob("*.json"):
+                shard_bytes = shard_file.read_bytes()
+                if compress:
+                    shard_bytes = gzip.compress(shard_bytes, compresslevel=6, mtime=0)
+                enc_shard = encrypt_with_key(shard_bytes, key=shared_key, salt=salt)
+                enc_target = out_streams_dir / f"{shard_file.stem}.enc"
+                enc_target.write_bytes(enc_shard)
+                shard_count += 1
+                if output_file is None or target_path == DEFAULT_OUTPUT_ENC:
+                    for mirror_dir in [Path("dist"), Path("frontend"), Path("frontend/public")]:
+                        if mirror_dir.exists() and mirror_dir.is_dir() and mirror_dir != target_path.parent:
+                            m_streams = mirror_dir / "streams"
+                            m_streams.mkdir(parents=True, exist_ok=True)
+                            shutil.copyfile(enc_target, m_streams / f"{shard_file.stem}.enc")
+            if shard_count > 0:
+                logger.info(f"Encrypted {shard_count} activity stream shards to {out_streams_dir}")
+
+    # 3. Serialize, Optionally Gzip-Compress, and Encrypt data.enc
+    logger.info("Serializing rollup to compact UTF-8 JSON...")
+    plaintext_bytes = json.dumps(rollup_data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    payload_bytes = gzip.compress(plaintext_bytes, compresslevel=6, mtime=0) if compress else plaintext_bytes
+    plaintext_size_kb = len(plaintext_bytes) / 1024.0
+    payload_size_kb = len(payload_bytes) / 1024.0
+    logger.info(
+        f"Encrypting {payload_size_kb:.2f} KB payload (raw JSON {plaintext_size_kb:.2f} KB, "
+        f"gzip={'on' if compress else 'off'}) with AES-256-GCM (PBKDF2 {iterations:,} iterations)..."
+    )
+
+    wire_bytes = encrypt_with_key(
+        data=payload_bytes,
+        key=shared_key,
+        salt=salt,
+    )
+    logger.info(f"Generated binary wire payload: {len(wire_bytes)} bytes.")
+
+    # 4. Write Atomically
     temp_target = target_path.with_suffix(".tmp")
     with open(temp_target, "wb") as f:
         f.write(wire_bytes)
         f.flush()
         os.fsync(f.fileno())
 
-    # Atomic rename/replace
     if target_path.exists():
         target_path.unlink()
     temp_target.rename(target_path)
@@ -130,29 +214,6 @@ def build_and_encrypt_rollup(
                 shutil.copyfile(target_path, mirror_path)
                 logger.info(f"Mirrored data.enc to {mirror_path}")
 
-    # 4b. Encrypt sharded activity stream files (.staging/streams/*.json -> streams/*.enc)
-    streams_staging = input_path.parent / "streams" if input_file else DEFAULT_STAGING_STREAMS_DIR
-    if streams_staging.exists() and streams_staging.is_dir():
-        salt = wire_bytes[:SALT_SIZE]
-        shared_key = derive_key(resolved_passphrase, salt, iterations=iterations)
-        out_streams_dir = target_path.parent / "streams"
-        out_streams_dir.mkdir(parents=True, exist_ok=True)
-        shard_count = 0
-        for shard_file in streams_staging.glob("*.json"):
-            shard_bytes = shard_file.read_bytes()
-            enc_shard = encrypt_with_key(shard_bytes, key=shared_key, salt=salt)
-            enc_target = out_streams_dir / f"{shard_file.stem}.enc"
-            enc_target.write_bytes(enc_shard)
-            shard_count += 1
-            if output_file is None or target_path == DEFAULT_OUTPUT_ENC:
-                for mirror_dir in [Path("dist"), Path("frontend"), Path("frontend/public")]:
-                    if mirror_dir.exists() and mirror_dir.is_dir() and mirror_dir != target_path.parent:
-                        m_streams = mirror_dir / "streams"
-                        m_streams.mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(enc_target, m_streams / f"{shard_file.stem}.enc")
-        if shard_count > 0:
-            logger.info(f"Encrypted {shard_count} activity stream shards to {out_streams_dir}")
-
     # 5. In-Memory Roundtrip Verification
     if verify:
         logger.info("Executing in-memory verification roundtrip...")
@@ -164,6 +225,8 @@ def build_and_encrypt_rollup(
             passphrase=resolved_passphrase,
             iterations=iterations,
         )
+        if len(decrypted_raw) >= 2 and decrypted_raw[:2] == b"\x1f\x8b":
+            decrypted_raw = gzip.decompress(decrypted_raw)
         decrypted_dict = json.loads(decrypted_raw.decode("utf-8"))
 
         if decrypted_dict != rollup_data:
@@ -237,6 +300,16 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Do not purge unencrypted input files after encryption (defaults to purging).",
     )
     parser.add_argument(
+        "--no-compress",
+        action="store_true",
+        help="Disable Gzip compression before AES-256-GCM encryption.",
+    )
+    parser.add_argument(
+        "--no-pack-streams",
+        action="store_true",
+        help="Write individual streams/<id>.enc shards instead of yearly streams_YYYY.pack.",
+    )
+    parser.add_argument(
         "--iterations",
         type=int,
         default=PBKDF2_ITERATIONS,
@@ -261,6 +334,8 @@ def main() -> int:
             verify=args.verify,
             purge_input=not args.no_purge,
             iterations=args.iterations,
+            compress=not args.no_compress,
+            pack_streams=not args.no_pack_streams,
         )
         return 0
     except Exception as e:

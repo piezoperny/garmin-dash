@@ -35,6 +35,12 @@ let bannerRenderGeneration = 0;
 
 const shardCache = new Map();
 const inFlightShards = new Map();
+const packFileCache = new Map();
+let streamPackIndex = {};
+
+export function setStreamPackIndex(indexObj) {
+  streamPackIndex = indexObj && typeof indexObj === 'object' ? indexObj : {};
+}
 
 export function escapeHtml(str) {
   if (str === null || str === undefined) return '';
@@ -77,8 +83,48 @@ function syncActivityShardState(actId, shard, targetAct = null) {
   }
 }
 
+async function fetchEncryptedShardBytes(idStr) {
+  const packEntry = streamPackIndex && streamPackIndex[idStr];
+  if (
+    packEntry &&
+    typeof packEntry.year === 'string' &&
+    Number.isFinite(packEntry.offset) &&
+    Number.isFinite(packEntry.length) &&
+    packEntry.length >= 44
+  ) {
+    const packUrl = `./streams/streams_${encodeURIComponent(packEntry.year)}.pack`;
+    if (packFileCache.has(packUrl)) {
+      const fullBytes = packFileCache.get(packUrl);
+      return fullBytes.subarray(packEntry.offset, packEntry.offset + packEntry.length);
+    }
+
+    const endByte = packEntry.offset + packEntry.length - 1;
+    const res = await fetch(packUrl, {
+      headers: { Range: `bytes=${packEntry.offset}-${endByte}` }
+    });
+    if (res && res.ok) {
+      const buf = await res.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      if (res.status === 206 || bytes.byteLength === packEntry.length) {
+        return bytes;
+      }
+      // Server returned 200 OK (full packfile); cache and slice
+      if (bytes.byteLength >= packEntry.offset + packEntry.length) {
+        packFileCache.set(packUrl, bytes);
+        return bytes.subarray(packEntry.offset, packEntry.offset + packEntry.length);
+      }
+    }
+  }
+
+  // Fallback to legacy per-activity shard
+  const res = await fetch(`./streams/${encodeURIComponent(idStr)}.enc`);
+  if (!res || !res.ok) return null;
+  const buf = await res.arrayBuffer();
+  return new Uint8Array(buf);
+}
+
 /**
- * Fetches and decrypts a sharded activity stream payload (./streams/<id>.enc).
+ * Fetches and decrypts a sharded activity stream payload (via yearly .pack Range request or legacy ./streams/<id>.enc).
  * Resolves to null gracefully on missing key, network/404 failure, <44B wire, or decrypt error.
  * @param {string|number} actId
  * @param {object|null} targetAct
@@ -118,17 +164,12 @@ export async function loadActivityStreamShard(actId, targetAct = null) {
 
   const promise = (async () => {
     try {
-      const res = await fetch(`./streams/${encodeURIComponent(idStr)}.enc`);
-      if (!res || !res.ok) {
+      const encBytes = await fetchEncryptedShardBytes(idStr);
+      if (!encBytes || encBytes.byteLength < 44) {
         syncActivityShardState(idStr, null, targetAct);
         return null;
       }
-      const buf = await res.arrayBuffer();
-      if (!buf || buf.byteLength < 44) {
-        syncActivityShardState(idStr, null, targetAct);
-        return null;
-      }
-      const shard = await decryptWithRawKey(rawKey, new Uint8Array(buf));
+      const shard = await decryptWithRawKey(rawKey, encBytes);
       if (!shard || typeof shard !== 'object') {
         syncActivityShardState(idStr, null, targetAct);
         return null;

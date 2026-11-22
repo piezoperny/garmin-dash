@@ -24,6 +24,8 @@ PROHIBITED_PATTERNS = [
     "*.gpx",
     "*_summary.json",
     "dashboard_rollup.json",
+    "*.parquet",
+    "*.duckdb",
     "*.tmp",
 ]
 
@@ -232,6 +234,7 @@ def main() -> None:
     if not args.verify_only:
         purge_raw_staging(args.staging_dir, secure=args.secure)
         purge_rollup(args.workspace_root / ".staging" / "dashboard_rollup.json", secure=args.secure)
+        purge_directory(args.workspace_root / ".vault_work", secure=args.secure, remove_dir=True)
 
     is_clean, violations = verify_clean_workspace(args.workspace_root)
 

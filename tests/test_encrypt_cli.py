@@ -3,6 +3,7 @@ tests/test_encrypt_cli.py
 Unit and integration test suite for src.encryption.encrypt CLI and orchestrator.
 """
 
+import gzip
 import json
 import os
 import shutil
@@ -63,6 +64,8 @@ class TestEncryptCLI(unittest.TestCase):
         with open(target, "rb") as f:
             wire_bytes = f.read()
         decrypted_raw = decrypt_payload(wire_bytes, self.sample_passphrase, iterations=1000)
+        if decrypted_raw[:2] == b"\x1f\x8b":
+            decrypted_raw = gzip.decompress(decrypted_raw)
         decrypted_dict = json.loads(decrypted_raw.decode("utf-8"))
         self.assertIn("activities", decrypted_dict)
         self.assertGreater(len(decrypted_dict["activities"]), 0)
@@ -145,6 +148,8 @@ class TestEncryptCLI(unittest.TestCase):
             self.assertTrue(target.exists())
             with open(target, "rb") as f:
                 decrypted = decrypt_payload(f.read(), env_pass, iterations=1000)
+            if decrypted[:2] == b"\x1f\x8b":
+                decrypted = gzip.decompress(decrypted)
             self.assertIn("activities", json.loads(decrypted.decode("utf-8")))
 
     def test_parse_args_options(self):

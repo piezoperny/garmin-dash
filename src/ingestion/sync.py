@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
-from src.ingestion.cleanup import purge_raw_staging, purge_rollup, verify_clean_workspace
+from src.ingestion.cleanup import purge_directory, purge_raw_staging, purge_rollup, verify_clean_workspace
 from src.ingestion.garmin_client import (
     GarminAPIError,
     GarminAuthError,
@@ -1087,6 +1087,8 @@ def execute_incremental_pull(
     force_refresh: bool = False,
     reconcile_days: int = 14,
     existing_acts_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    archive_individual_files: bool = True,
+    raw_files_out: Optional[Dict[str, Dict[str, bytes]]] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     Incremental activity pull using high-water mark:
@@ -1182,23 +1184,27 @@ def execute_incremental_pull(
         combined_payload = {"summary": summary, "details": details}
         backed_up_formats = ["json"]
 
-        # 2. Stage & Upload JSON summary
-        local_json_path = local_subfolder / f"{activity_id}_summary.json"
-        with open(local_json_path, "w", encoding="utf-8") as f:
-            json.dump(combined_payload, f, indent=2)
+        # 2. Stage & Upload JSON summary (legacy mode only)
+        if archive_individual_files:
+            local_json_path = local_subfolder / f"{activity_id}_summary.json"
+            with open(local_json_path, "w", encoding="utf-8") as f:
+                json.dump(combined_payload, f, indent=2)
 
-        remote_json_path = f"{remote_subfolder}/{activity_id}_summary.json"
-        sftp_client.put_file(local_json_path, remote_json_path)
+            remote_json_path = f"{remote_subfolder}/{activity_id}_summary.json"
+            sftp_client.put_file(local_json_path, remote_json_path)
 
         # 3. Download, Stage & Upload .FIT file
         fit_bytes = garmin_client.download_fit_file(activity_id)
         if fit_bytes:
-            local_fit_path = local_subfolder / f"{activity_id}.fit"
-            with open(local_fit_path, "wb") as f:
-                f.write(fit_bytes)
+            if archive_individual_files:
+                local_fit_path = local_subfolder / f"{activity_id}.fit"
+                with open(local_fit_path, "wb") as f:
+                    f.write(fit_bytes)
 
-            remote_fit_path = f"{remote_subfolder}/{activity_id}.fit"
-            sftp_client.put_file(local_fit_path, remote_fit_path)
+                remote_fit_path = f"{remote_subfolder}/{activity_id}.fit"
+                sftp_client.put_file(local_fit_path, remote_fit_path)
+            elif raw_files_out is not None:
+                raw_files_out.setdefault(year_str, {})[f"{activity_id}.fit"] = fit_bytes
             backed_up_formats.append("fit")
 
         # 4. Download, Stage & Upload .GPX file (outdoor activities)
@@ -1209,12 +1215,15 @@ def execute_incremental_pull(
             gpx_bytes = garmin_client.fetch_gpx_file(activity_id)
 
         if gpx_bytes:
-            local_gpx_path = local_subfolder / f"{activity_id}.gpx"
-            with open(local_gpx_path, "wb") as f:
-                f.write(gpx_bytes)
+            if archive_individual_files:
+                local_gpx_path = local_subfolder / f"{activity_id}.gpx"
+                with open(local_gpx_path, "wb") as f:
+                    f.write(gpx_bytes)
 
-            remote_gpx_path = f"{remote_subfolder}/{activity_id}.gpx"
-            sftp_client.put_file(local_gpx_path, remote_gpx_path)
+                remote_gpx_path = f"{remote_subfolder}/{activity_id}.gpx"
+                sftp_client.put_file(local_gpx_path, remote_gpx_path)
+            elif raw_files_out is not None:
+                raw_files_out.setdefault(year_str, {})[f"{activity_id}.gpx"] = gpx_bytes
             backed_up_formats.append("gpx")
 
         # 5. Mark synced in manifest with multi-year and format accounting
@@ -1243,18 +1252,21 @@ def run_sync_pipeline(
     output_rollup: Union[Path, str] = Path(".staging/dashboard_rollup.json"),
     sftp_client: Optional[Any] = None,
     garmin_client: Optional[GarminClientProtocol] = None,
+    storage_backend: Optional[str] = None,
 ) -> int:
     """
     Main ingestion execution coordinator:
-    1. Initialize SFTP and Garmin clients (Live or Mock based on mode/credentials).
-    2. Execute incremental activity pull and SFTP archival (or offline archive walk when reprocess_archive=True).
-    3. Invoke Rollup Compiler to generate dashboard_rollup.json.
-    4. Guarantee complete purging of .raw_staging/ in finally block.
+    1. Initialize SFTP/GDrive and Garmin clients (Live or Mock based on mode/credentials).
+    2. Detect storage backend ('parquet' DuckDB/Parquet vault vs 'legacy' JSON archive).
+    3. Execute incremental activity pull and archival (or offline archive walk when reprocess_archive=True).
+    4. Invoke Rollup Compiler to generate dashboard_rollup.json.
+    5. Guarantee complete purging of .raw_staging/ and .vault_work/ in finally block.
     """
     start_time = time.time()
     staging_dir_path = Path(staging_dir).resolve()
     staging_dir_path.mkdir(parents=True, exist_ok=True)
     output_rollup_path = Path(output_rollup).resolve()
+    vault_work_path = (staging_dir_path.parent / ".vault_work").resolve()
 
     # Determine execution mode
     credentials = GarminCredentials.from_env()
@@ -1264,6 +1276,8 @@ def run_sync_pipeline(
     is_mock = mock_mode or (not has_storage) or (
         credentials is None and not reprocess_archive and garmin_client is None
     )
+
+    resolved_backend = (storage_backend or os.environ.get("STORAGE_BACKEND", "auto")).strip().lower()
 
     owns_sftp = sftp_client is None
     active_garmin: Optional[GarminClientProtocol] = None
@@ -1292,12 +1306,195 @@ def run_sync_pipeline(
             )
 
     try:
+        from src.storage.parquet_vault import ParquetVault, VaultManifest
+
+        parquet_vault: Optional[ParquetVault] = None
+        use_parquet_vault = False
+        if not is_mock and resolved_backend != "legacy":
+            candidate_vault = ParquetVault(work_dir=vault_work_path, storage_client=active_sftp)
+            if resolved_backend == "parquet" or candidate_vault.has_remote_vault():
+                use_parquet_vault = True
+                parquet_vault = candidate_vault
+                logger.info("Using DuckDB + ZSTD Parquet vault backend (garmin_archive/vault/).")
+
+        if use_parquet_vault and parquet_vault is not None:
+            v_manifest = VaultManifest() if force_refresh else parquet_vault.load_manifest()
+            manifest = SyncManifest(
+                last_sync_timestamp=v_manifest.last_sync_timestamp,
+                last_sync_datetime=v_manifest.last_sync_datetime or "",
+                total_synced_activities=v_manifest.total_synced_activities,
+                synced_activity_ids=list(v_manifest.synced_activity_ids),
+            )
+
+            existing_acts_map: Dict[str, Dict[str, Any]] = {}
+            if not force_refresh:
+                for item in parquet_vault.load_activities(pull_remote=True):
+                    if isinstance(item, dict) and item.get("id") is not None:
+                        existing_acts_map[str(item["id"])] = item
+
+            raw_files_by_year: Dict[str, Dict[str, bytes]] = {}
+            if reprocess_archive:
+                new_activities, count = [], 0
+            else:
+                new_activities, count = execute_incremental_pull(
+                    garmin_client=active_garmin,
+                    sftp_client=active_sftp,
+                    manifest=manifest,
+                    staging_dir=staging_dir_path,
+                    lookback_days=lookback_days,
+                    force_refresh=force_refresh,
+                    reconcile_days=reconcile_days,
+                    existing_acts_map=existing_acts_map,
+                    archive_individual_files=False,
+                    raw_files_out=raw_files_by_year,
+                )
+
+            # Archive newly downloaded .fit/.gpx into yearly raw_YYYY.zip
+            for yr_str, files_map in sorted(raw_files_by_year.items()):
+                if files_map:
+                    _, total_members = parquet_vault.append_raw_files(yr_str, files_map)
+                    v_manifest.raw_zip_years[yr_str] = total_members
+
+            local_streams_dir = output_rollup_path.parent / "streams"
+            if reprocess_archive and local_streams_dir.exists():
+                shutil.rmtree(local_streams_dir, ignore_errors=True)
+            local_streams_dir.mkdir(parents=True, exist_ok=True)
+
+            streams_by_year: Dict[str, Dict[str, Any]] = {}
+            dirty_years: Set[str] = set()
+
+            def _get_vault_year_streams(y_str: str) -> Dict[str, Any]:
+                if y_str not in streams_by_year:
+                    streams_by_year[y_str] = parquet_vault.load_year_streams(y_str, pull_remote=True)
+                return streams_by_year[y_str]
+
+            for payload in new_activities:
+                norm_act = normalize_garmin_activity(payload)
+                act_id_str = str(norm_act["id"])
+                existing_acts_map[act_id_str] = norm_act
+                shard_obj = {
+                    "id": act_id_str,
+                    "gps_track": norm_act.get("gps_track"),
+                    "telemetry_stream": norm_act.get("telemetry_stream"),
+                    "splits": norm_act.get("splits", []),
+                    "laps": norm_act.get("laps", []),
+                    "hr_zones": norm_act.get("hr_zones", {}),
+                }
+                (local_streams_dir / f"{act_id_str}.json").write_text(
+                    json.dumps(shard_obj, separators=(",", ":")), encoding="utf-8"
+                )
+                date_str = str(norm_act.get("start_time") or norm_act.get("date") or "")
+                year_str = date_str[:4] if len(date_str) >= 4 and date_str[:4].isdigit() else "unknown"
+                y_map = _get_vault_year_streams(year_str)
+                y_map[act_id_str] = shard_obj
+                dirty_years.add(year_str)
+
+            canonical_acts = reprocess_canonical_activities(list(existing_acts_map.values()))
+
+            # Stage stream shards for dirty years or years missing a cached .pack file
+            years_to_stage: Set[str] = set(dirty_years)
+            all_stream_years = parquet_vault.list_remote_stream_years()
+            for y_str in all_stream_years:
+                pack_cached = (
+                    (Path("public/streams") / f"streams_{y_str}.pack").exists()
+                    or (Path("dist/streams") / f"streams_{y_str}.pack").exists()
+                )
+                if reprocess_archive or force_refresh or not fast_sync or not pack_cached:
+                    years_to_stage.add(y_str)
+
+            for y_str in sorted(years_to_stage):
+                y_map = _get_vault_year_streams(y_str)
+                for aid_s, shard_obj in y_map.items():
+                    local_shard = local_streams_dir / f"{aid_s}.json"
+                    if not local_shard.exists():
+                        local_shard.write_text(
+                            json.dumps(shard_obj, separators=(",", ":")), encoding="utf-8"
+                        )
+
+            for y_str in sorted(dirty_years):
+                cnt = parquet_vault.save_year_streams(y_str, streams_by_year[y_str], push_remote=True)
+                v_manifest.stream_years[y_str] = cnt
+
+            parquet_vault.save_activities(canonical_acts, push_remote=True)
+
+            # Wellness in Parquet
+            wellness_by_date: Dict[str, Dict[str, Any]] = {}
+            if not force_refresh:
+                for w_rec in parquet_vault.load_wellness(pull_remote=True):
+                    if isinstance(w_rec, dict) and w_rec.get("date"):
+                        wellness_by_date[str(w_rec["date"])[:10]] = w_rec
+
+            if active_garmin is not None and (
+                hasattr(active_garmin, "get_raw_daily_wellness_bundle")
+                or hasattr(active_garmin, "get_daily_wellness")
+            ):
+                today_dt = datetime.now(timezone.utc).date()
+                wellness_days = min(max(7, lookback_days), 30) if not force_refresh else min(lookback_days, 90)
+                has_raw_bundle_fn = hasattr(active_garmin, "get_raw_daily_wellness_bundle")
+                for d_offset in range(wellness_days):
+                    cdate = (today_dt - timedelta(days=d_offset)).isoformat()
+                    if not force_refresh and cdate in wellness_by_date and d_offset > 2:
+                        continue
+                    try:
+                        if has_raw_bundle_fn:
+                            raw_bundle = active_garmin.get_raw_daily_wellness_bundle(cdate)
+                            if isinstance(raw_bundle, dict) and raw_bundle:
+                                wellness_by_date[cdate] = normalize_daily_wellness(cdate, raw_bundle)
+                        elif hasattr(active_garmin, "get_daily_wellness"):
+                            w_day = active_garmin.get_daily_wellness(cdate)
+                            if isinstance(w_day, dict):
+                                wellness_by_date[cdate] = w_day
+                    except Exception as e:
+                        logger.warning(f"Failed fetching daily wellness for {cdate}: {e}")
+
+            sorted_wellness = [wellness_by_date[k] for k in sorted(wellness_by_date.keys())]
+            retained_wellness = apply_wellness_intraday_retention(sorted_wellness, retention_days=14)
+            v_manifest.total_wellness_days = parquet_vault.save_wellness(retained_wellness, push_remote=True)
+
+            elapsed = time.time() - start_time
+            v_manifest.last_sync_timestamp = manifest.last_sync_timestamp
+            v_manifest.last_sync_datetime = manifest.last_sync_datetime
+            v_manifest.synced_activity_ids = list(manifest.synced_activity_ids)
+            v_manifest.total_synced_activities = len(v_manifest.synced_activity_ids)
+            yr_map: Dict[str, List[str]] = {}
+            for a in canonical_acts:
+                aid = str(a.get("id") or "")
+                ds = str(a.get("start_time") or a.get("date") or "")
+                yr = ds[:4] if len(ds) >= 4 and ds[:4].isdigit() else "unknown"
+                if aid:
+                    yr_map.setdefault(yr, []).append(aid)
+            v_manifest.activity_years = yr_map
+            v_manifest.history.append({
+                "timestamp": int(time.time()),
+                "datetime_utc": datetime.now(timezone.utc).isoformat(),
+                "activities_synced": count,
+                "duration_seconds": round(elapsed, 2),
+            })
+            parquet_vault.save_manifest(v_manifest)
+
+            latest_wellness = retained_wellness[-1] if retained_wellness else {}
+            wellness_payload = {"current": latest_wellness, "daily": retained_wellness}
+            rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
+            for act_item in rollup_dict.get("activities", []):
+                if isinstance(act_item, dict):
+                    act_item["gps_track"] = None
+                    act_item["telemetry_stream"] = None
+
+            output_rollup_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_rollup_path, "w", encoding="utf-8") as f:
+                json.dump(rollup_dict, f, indent=2)
+            logger.info(
+                f"Successfully compiled dashboard rollup from Parquet vault to {output_rollup_path} "
+                f"({len(rollup_dict.get('activities', []))} activities)."
+            )
+            return 0
+
         if force_refresh and not is_mock:
             manifest = SyncManifest()
         else:
             manifest = load_remote_manifest(active_sftp)
 
-        existing_acts_map: Dict[str, Dict[str, Any]] = {}
+        existing_acts_map = {}
         if not is_mock and not force_refresh:
             for path_candidate in (REMOTE_INDEX_PATH, REMOTE_CANONICAL_PATH):
                 if active_sftp.file_exists(path_candidate):
@@ -1759,9 +1956,10 @@ def run_sync_pipeline(
         return 0
 
     finally:
-        # CRITICAL HYGIENE: Guarantee complete unlinking of raw staging files
+        # CRITICAL HYGIENE: Guarantee complete unlinking of raw staging & transient vault files
         logger.info(f"Purging temporary staging directory: {staging_dir_path}")
         purge_raw_staging(staging_dir_path)
+        purge_directory(vault_work_path, remove_dir=True)
         if owns_sftp and hasattr(active_sftp, "close"):
             try:
                 active_sftp.close()
@@ -1785,6 +1983,7 @@ class IngestionCoordinator:
         lookback_days: int = 90,
         reconcile_days: int = 14,
         fast_sync: bool = True,
+        storage_backend: Optional[str] = None,
     ):
         self.garmin_client = garmin_client
         self.sftp_client = sftp_client
@@ -1793,6 +1992,7 @@ class IngestionCoordinator:
         self.lookback_days = lookback_days
         self.reconcile_days = reconcile_days
         self.fast_sync = fast_sync
+        self.storage_backend = storage_backend
 
     def run_sync(self, force_refresh: bool = False, mock_mode: bool = False, reprocess_archive: bool = False) -> int:
         return run_sync_pipeline(
@@ -1806,6 +2006,7 @@ class IngestionCoordinator:
             output_rollup=self.output_rollup,
             sftp_client=self.sftp_client,
             garmin_client=self.garmin_client,
+            storage_backend=self.storage_backend,
         )
 
 
@@ -1821,6 +2022,7 @@ def main() -> None:
     parser.add_argument("--lookback-days", type=int, default=90, help="Initial lookback window in days (default: 90)")
     parser.add_argument("--reconcile-days", type=int, default=None, help="Retroactive reconciliation window in days (default: 14 or RECONCILE_DAYS)")
     parser.add_argument("--fast-sync", action="store_true", default=None, help="Fast incremental delta sync (only new/edited activities & last 3 days wellness)")
+    parser.add_argument("--storage-backend", choices=["auto", "parquet", "legacy"], default=None, help="Remote vault backend (default: auto)")
     parser.add_argument("--staging-dir", type=Path, default=Path(".raw_staging"), help="Temporary raw staging directory")
     parser.add_argument("--output-rollup", type=Path, default=Path(".staging/dashboard_rollup.json"), help="Output path for compiled rollup JSON")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
@@ -1856,6 +2058,7 @@ def main() -> None:
         fast_sync=env_fast_sync,
         staging_dir=args.staging_dir,
         output_rollup=args.output_rollup,
+        storage_backend=args.storage_backend,
     )
     sys.exit(exit_code)
 

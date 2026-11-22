@@ -321,6 +321,7 @@ function renderDashboard(rollup) {
   renderPaceZoneChart(rollup);
 
   // 4. Activity Drill-Down
+  setStreamPackIndex(rollup.stream_pack_index || {});
   renderActivityTable(rollup.activities || [], activeUnit);
   setActivitySportFilter(activeSportFilter);
 

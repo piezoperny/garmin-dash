@@ -7,3 +7,4 @@ garminconnect>=0.2.19
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
 pytest>=8.0.0
+duckdb>=1.1.0

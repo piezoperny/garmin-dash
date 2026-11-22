@@ -1391,20 +1391,14 @@ def run_sync_pipeline(
 
             canonical_acts = reprocess_canonical_activities(list(existing_acts_map.values()))
 
-            # Stage stream shards for dirty years or years missing a cached .pack file
-            years_to_stage: Set[str] = set(dirty_years)
-            all_stream_years = parquet_vault.list_remote_stream_years()
+            # Always stage ALL stream years from the Parquet vault so encrypt.py packs
+            # every year with the exact same salt/key as data.enc and indexes 100% of activities.
+            all_stream_years = sorted(set(dirty_years) | set(parquet_vault.list_remote_stream_years()))
+            stream_index_by_id: Dict[str, Dict[str, Any]] = {}
             for y_str in all_stream_years:
-                pack_cached = (
-                    (Path("public/streams") / f"streams_{y_str}.pack").exists()
-                    or (Path("dist/streams") / f"streams_{y_str}.pack").exists()
-                )
-                if reprocess_archive or force_refresh or not fast_sync or not pack_cached:
-                    years_to_stage.add(y_str)
-
-            for y_str in sorted(years_to_stage):
                 y_map = _get_vault_year_streams(y_str)
                 for aid_s, shard_obj in y_map.items():
+                    stream_index_by_id[aid_s] = shard_obj
                     local_shard = local_streams_dir / f"{aid_s}.json"
                     if not local_shard.exists():
                         local_shard.write_text(
@@ -1414,6 +1408,31 @@ def run_sync_pipeline(
             for y_str in sorted(dirty_years):
                 cnt = parquet_vault.save_year_streams(y_str, streams_by_year[y_str], push_remote=True)
                 v_manifest.stream_years[y_str] = cnt
+
+            # Ensure has_streams and summary_polyline are preserved on canonical_acts before saving/compiling
+            for act in canonical_acts:
+                aid_s = str(act.get("id") or "")
+                is_str_act = act.get("sport") in ("strength", "weights")
+                shard_obj = stream_index_by_id.get(aid_s)
+                if is_str_act:
+                    for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
+                        act.pop(forbidden_key, None)
+                    act["summary_polyline"] = None
+                    act["has_streams"] = bool(
+                        isinstance(shard_obj, dict) and shard_obj.get("telemetry_stream")
+                    )
+                else:
+                    gps_val = act.get("gps_track") or (shard_obj.get("gps_track") if isinstance(shard_obj, dict) else None)
+                    if not act.get("summary_polyline") and isinstance(gps_val, dict):
+                        act["summary_polyline"] = (
+                            gps_val.get("polyline") or gps_val.get("encoded_polyline") or None
+                        )
+                    act["has_streams"] = bool(
+                        act.get("has_streams")
+                        or act.get("gps_track")
+                        or act.get("telemetry_stream")
+                        or (isinstance(shard_obj, dict) and (shard_obj.get("gps_track") or shard_obj.get("telemetry_stream")))
+                    )
 
             parquet_vault.save_activities(canonical_acts, push_remote=True)
 
@@ -1464,6 +1483,8 @@ def run_sync_pipeline(
                 if aid:
                     yr_map.setdefault(yr, []).append(aid)
             v_manifest.activity_years = yr_map
+            manifest.activities_by_year = {yr: len(ids) for yr, ids in yr_map.items()}
+            manifest.total_synced_activities = len(canonical_acts)
             v_manifest.history.append({
                 "timestamp": int(time.time()),
                 "datetime_utc": datetime.now(timezone.utc).isoformat(),
@@ -1475,8 +1496,13 @@ def run_sync_pipeline(
             latest_wellness = retained_wellness[-1] if retained_wellness else {}
             wellness_payload = {"current": latest_wellness, "daily": retained_wellness}
             rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
+            src_by_id = {str(a.get("id")): a for a in canonical_acts if isinstance(a, dict)}
             for act_item in rollup_dict.get("activities", []):
                 if isinstance(act_item, dict):
+                    src_act = src_by_id.get(str(act_item.get("id")), {})
+                    if not act_item.get("summary_polyline") and src_act.get("summary_polyline"):
+                        act_item["summary_polyline"] = src_act.get("summary_polyline")
+                    act_item["has_streams"] = bool(act_item.get("has_streams") or src_act.get("has_streams"))
                     act_item["gps_track"] = None
                     act_item["telemetry_stream"] = None
 

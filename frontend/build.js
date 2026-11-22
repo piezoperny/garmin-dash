@@ -59,7 +59,7 @@ if (fs.existsSync(publicStreamsDir)) {
   const distStreamsDir = path.join(distDir, 'streams');
   fs.mkdirSync(distStreamsDir, { recursive: true });
   for (const file of fs.readdirSync(publicStreamsDir)) {
-    if (file.endsWith('.enc')) {
+    if (file.endsWith('.enc') || file.endsWith('.pack')) {
       fs.copyFileSync(path.join(publicStreamsDir, file), path.join(distStreamsDir, file));
     }
   }

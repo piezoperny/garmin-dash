@@ -270,72 +270,96 @@ async function fetchEncryptedData() {
  * Renders all dashboard sections with the decrypted data.
  * @param {object} rollup
  */
+function safeRender(sectionName, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`[garmin-dash] Failed rendering ${sectionName}:`, err);
+  }
+}
+
 function renderDashboard(rollup) {
   if (!rollup) return;
   activeRollup = rollup;
 
-  loadCustomizationPreferences();
-  applyCardVisibility();
-  applySectionOrder();
-  syncDynamicSportFilterButtons(rollup.activities || []);
+  // Register packed stream byte-range index immediately so Today Banner & Activity Drawer can use it
+  setStreamPackIndex(rollup.stream_pack_index || {});
+
+  safeRender('preferences', () => {
+    loadCustomizationPreferences();
+    applyCardVisibility();
+    applySectionOrder();
+    syncDynamicSportFilterButtons(rollup.activities || []);
+  });
 
   // 0a. Today's / Latest Activity Hero Banner (top of homepage)
-  renderTodayActivityBanner(rollup.activities || [], activeUnit);
+  safeRender('today-activity-banner', () => renderTodayActivityBanner(rollup.activities || [], activeUnit));
 
   // 0a-2. Training & Wellness Calendar (Inline + Modal)
-  initCalendar({ onOpenMetricTrend: openMetricTrendModal });
-  renderCalendar(rollup, activeUnit);
+  safeRender('calendar', () => {
+    initCalendar({ onOpenMetricTrend: openMetricTrendModal });
+    renderCalendar(rollup, activeUnit);
+  });
 
   // 0a-3. Personal Records Trophy Case & 365-Day Consistency Heatmap
-  renderPRTrophyCase(rollup, activeUnit);
-  renderConsistencyHeatmap(rollup, null, {
-    onSelectDate: (dateStr) => {
-      const calBtn = document.querySelector(`[data-cal-date="${dateStr}"]`);
-      if (calBtn) calBtn.click();
-    }
-  });
-  const modalHeatmapEl = document.getElementById('calendar-modal-heatmap-card');
-  if (modalHeatmapEl) {
-    renderConsistencyHeatmap(rollup, modalHeatmapEl, {
+  safeRender('achievements', () => {
+    renderPRTrophyCase(rollup, activeUnit);
+    renderConsistencyHeatmap(rollup, null, {
       onSelectDate: (dateStr) => {
         const calBtn = document.querySelector(`[data-cal-date="${dateStr}"]`);
         if (calBtn) calBtn.click();
       }
     });
-  }
+    const modalHeatmapEl = document.getElementById('calendar-modal-heatmap-card');
+    if (modalHeatmapEl) {
+      renderConsistencyHeatmap(rollup, modalHeatmapEl, {
+        onSelectDate: (dateStr) => {
+          const calBtn = document.querySelector(`[data-cal-date="${dateStr}"]`);
+          if (calBtn) calBtn.click();
+        }
+      });
+    }
+  });
 
   // 0b. Health & Fitness Dashboard (Garmin Connect Web Layout: In Focus & At a Glance)
-  renderWellnessDashboard(rollup);
+  safeRender('wellness-dashboard', () => renderWellnessDashboard(rollup));
 
   // 1. KPI Cards (reacts to active unit and sport filter)
-  renderKPICards(rollup, activeUnit, activeSportFilter);
+  safeRender('kpi-cards', () => renderKPICards(rollup, activeUnit, activeSportFilter));
 
   // 2. Endurance & Training Load
-  renderWeeklyVolumeChart(rollup, activeUnit, activeSportFilter);
-  renderTrainingLoadChart(rollup);
+  safeRender('endurance-charts', () => {
+    renderWeeklyVolumeChart(rollup, activeUnit, activeSportFilter);
+    renderTrainingLoadChart(rollup);
+  });
 
   // 3. Physiological Distribution (respecting custom HR / Cycling FTP thresholds)
-  renderHeartRateZoneChart(rollup, activeCustomization.thresholds);
-  renderPowerZoneChart(rollup, activeCustomization.thresholds);
-  renderThresholdTrendsChart(rollup, activeCustomization.thresholds);
-  renderPaceZoneChart(rollup);
+  safeRender('physiological-charts', () => {
+    renderHeartRateZoneChart(rollup, activeCustomization.thresholds);
+    renderPowerZoneChart(rollup, activeCustomization.thresholds);
+    renderThresholdTrendsChart(rollup, activeCustomization.thresholds);
+    renderPaceZoneChart(rollup);
+  });
 
   // 4. Activity Drill-Down
-  setStreamPackIndex(rollup.stream_pack_index || {});
-  renderActivityTable(rollup.activities || [], activeUnit);
-  setActivitySportFilter(activeSportFilter);
+  safeRender('activity-table', () => {
+    renderActivityTable(rollup.activities || [], activeUnit);
+    setActivitySportFilter(activeSportFilter);
+  });
 
   // 5. Multi-Year Hetzner Backup Vault Explorer
-  renderBackupVaultExplorer(rollup, year => {
-    const searchInput = document.getElementById('activity-search');
-    if (searchInput) {
-      searchInput.value = String(year);
-      searchInput.dispatchEvent(new Event('input'));
-      const tableEl = document.getElementById('activity-table');
-      if (tableEl && typeof tableEl.scrollIntoView === 'function') {
-        tableEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  safeRender('backup-vault', () => {
+    renderBackupVaultExplorer(rollup, year => {
+      const searchInput = document.getElementById('activity-search');
+      if (searchInput) {
+        searchInput.value = String(year);
+        searchInput.dispatchEvent(new Event('input'));
+        const tableEl = document.getElementById('activity-table');
+        if (tableEl && typeof tableEl.scrollIntoView === 'function') {
+          tableEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       }
-    }
+    });
   });
 }
 

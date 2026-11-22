@@ -721,37 +721,42 @@ function resolveActivitySplits(act, isStrength) {
     return cnt > 0 ? sum / cnt : null;
   };
 
+  // Compute relative split durations and normalize so sum(sec) === totalDur (unit-immune for m/s vs km/h)
   let cumDist = 0;
-  return splitDists.map((dM, idx) => {
+  const rawMeta = splitDists.map((dM) => {
     const startFrac = cumDist / totalDist;
     cumDist += dM;
     const endFrac = cumDist / totalDist;
     const frac = dM / totalDist;
-
     const avgSpd = avgSlice(spdArr, startFrac, endFrac);
-    let sec = Math.max(1, Math.round(totalDur * frac));
-    if (avgSpd && avgSpd > 0.2) {
-      const estSec = Math.round(dM / avgSpd);
-      if (estSec > 0 && estSec < totalDur * 2) sec = estSec;
-    }
-    const speedMps = Number((dM / Math.max(1, sec)).toFixed(2));
+    const weight = (avgSpd && avgSpd > 0.1) ? (dM / avgSpd) : null;
+    return { dM, startFrac, endFrac, frac, weight };
+  });
 
-    const sliceHr = avgSlice(hrArr, startFrac, endFrac);
+  const hasAllWeights = rawMeta.every(m => m.weight !== null && m.weight > 0);
+  const totalWeight = hasAllWeights ? rawMeta.reduce((acc, m) => acc + m.weight, 0) : 0;
+
+  return rawMeta.map((m, idx) => {
+    const timeFrac = (hasAllWeights && totalWeight > 0) ? (m.weight / totalWeight) : m.frac;
+    const sec = Math.max(1, Math.round(totalDur * timeFrac));
+    const speedMps = Number((m.dM / Math.max(1, sec)).toFixed(2));
+
+    const sliceHr = avgSlice(hrArr, m.startFrac, m.endFrac);
     const avgHr = sliceHr ? Math.round(sliceHr) : (Number(rawSplits[idx]?.avg_hr) || defaultHr);
 
-    const sliceCad = avgSlice(cadArr, startFrac, endFrac);
+    const sliceCad = avgSlice(cadArr, m.startFrac, m.endFrac);
     const avgCad = sliceCad ? Math.round(sliceCad) : (Number(rawSplits[idx]?.avg_cadence) || defaultCad);
 
-    let elevDiff = Math.round(totalElev * frac);
+    let elevDiff = Math.round(totalElev * m.frac);
     if (elevArr.length >= 2) {
-      const sIdx = Math.min(elevArr.length - 1, Math.floor(startFrac * (elevArr.length - 1)));
-      const eIdx = Math.min(elevArr.length - 1, Math.round(endFrac * (elevArr.length - 1)));
+      const sIdx = Math.min(elevArr.length - 1, Math.floor(m.startFrac * (elevArr.length - 1)));
+      const eIdx = Math.min(elevArr.length - 1, Math.round(m.endFrac * (elevArr.length - 1)));
       elevDiff = Math.round(elevArr[eIdx] - elevArr[sIdx]);
     }
 
     return {
       split_number: idx + 1,
-      distance_meters: Number(dM.toFixed(1)),
+      distance_meters: Number(m.dM.toFixed(1)),
       duration_seconds: sec,
       split_sec: sec,
       avg_hr: avgHr,

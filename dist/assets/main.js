@@ -35,7 +35,8 @@ import {
   renderActivityTable,
   renderTodayActivityBanner,
   setupActivityEventListeners,
-  setActivitySportFilter
+  setActivitySportFilter,
+  setStreamPackIndex
 } from './charts/activities.js';
 import {
   renderBackupVaultExplorer

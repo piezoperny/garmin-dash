@@ -388,10 +388,12 @@ def normalize_splits(
         # 2. duration_seconds & split_sec
         dur = float(
             raw.get("duration")
+            or raw.get("elapsedDuration")
+            or raw.get("movingDuration")
+            or raw.get("sumDuration")
             or raw.get("durationInSeconds")
             or raw.get("durationSeconds")
             or raw.get("duration_seconds")
-            or raw.get("movingDuration")
             or raw.get("split_sec")
             or 0.0
         )
@@ -403,6 +405,8 @@ def normalize_splits(
         else:
             dist_m = float(
                 raw.get("distance")
+                or raw.get("sumDistance")
+                or raw.get("directDistance")
                 or raw.get("distanceInMeters")
                 or raw.get("distance_meters")
                 or raw.get("distanceM")
@@ -453,9 +457,9 @@ def normalize_splits(
             elevation_diff = 0
         elif "elevation_diff" in raw:
             elevation_diff = int(round(float(raw["elevation_diff"])))
-        elif "elevationGain" in raw or "elevationLoss" in raw:
-            gain = float(raw.get("elevationGain") or 0.0)
-            loss = float(raw.get("elevationLoss") or 0.0)
+        elif "elevationGain" in raw or "elevationLoss" in raw or "totalElevationGain" in raw or "totalElevationLoss" in raw:
+            gain = float(raw.get("elevationGain") or raw.get("totalElevationGain") or 0.0)
+            loss = float(raw.get("elevationLoss") or raw.get("totalElevationLoss") or 0.0)
             elevation_diff = int(round(gain - loss))
         elif "elevation_gain_meters" in raw or "elevation_gain" in raw:
             elevation_diff = int(round(float(raw.get("elevation_gain_meters") or raw.get("elevation_gain") or 0.0)))
@@ -845,8 +849,12 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                         "hr": hr_stream,
                     }
 
-    # If no splits were returned by Garmin, synthesize clean per-km splits from summary so drawer is never blank
-    if not canonical_splits and dur_sec > 0:
+    # If no splits (or only empty 0-duration/0-distance splits) were returned by Garmin, synthesize clean per-km splits
+    has_valid_splits = any(
+        (s.get("duration_seconds") or 0) > 0 or (s.get("distance_meters") or 0) > 0
+        for s in canonical_splits
+    )
+    if (not canonical_splits or not has_valid_splits) and dur_sec > 0:
         if sport in ("strength", "weights") or dist_m <= 0:
             block_count = max(1, min(6, dur_sec // 600))
             block_dur = dur_sec // block_count

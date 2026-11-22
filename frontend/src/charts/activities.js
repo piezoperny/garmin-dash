@@ -645,13 +645,128 @@ export function openActivityDrawer(act, unit = 'km') {
   const calEl = document.getElementById('drawer-kpi-calories');
   if (calEl) calEl.textContent = act.calories ? `${act.calories} kcal` : '-';
 
+function resolveActivitySplits(act, isStrength) {
+  const rawSplits = Array.isArray(act?.splits)
+    ? act.splits.filter(s => s && typeof s === 'object')
+    : [];
+
+  const hasValidMetrics = rawSplits.some(s =>
+    Number(s.split_sec || s.duration_seconds || s.moving_time_seconds || 0) > 0 ||
+    Number(s.distance_meters || 0) > 0
+  );
+  if (hasValidMetrics) {
+    return rawSplits;
+  }
+
+  const totalDur = Number(act?.moving_time_seconds || act?.duration_seconds || 0);
+  const totalDist = isStrength ? 0 : Number(act?.distance_meters || 0);
+  const totalElev = isStrength ? 0 : Number(act?.elevation_gain_meters || 0);
+  const defaultHr = Number(act?.avg_hr || 0);
+  const defaultCad = isStrength ? 0 : Number(act?.avg_cadence || 0);
+
+  if (totalDur <= 0) {
+    return rawSplits;
+  }
+
+  if (isStrength || totalDist <= 0) {
+    const count = rawSplits.length > 0 ? rawSplits.length : Math.max(1, Math.min(6, Math.round(totalDur / 600)));
+    const blockDur = Math.round(totalDur / count);
+    return Array.from({ length: count }, (_, i) => ({
+      split_number: i + 1,
+      distance_meters: 0,
+      duration_seconds: blockDur,
+      split_sec: blockDur,
+      avg_hr: Number(rawSplits[i]?.avg_hr) || defaultHr,
+      avg_cadence: 0,
+      elevation_diff: 0,
+      speed_mps: null
+    }));
+  }
+
+  const fullKms = Math.floor(totalDist / 1000);
+  const remM = totalDist - fullKms * 1000;
+  let splitDists = [];
+  if (totalDist < 1000) {
+    splitDists = [totalDist];
+  } else if (fullKms <= 50) {
+    for (let i = 0; i < fullKms; i++) splitDists.push(1000);
+    if (remM >= 50) splitDists.push(remM);
+    else if (splitDists.length > 0) splitDists[splitDists.length - 1] += remM;
+  } else {
+    const n = 50;
+    const per = totalDist / n;
+    for (let i = 0; i < n; i++) splitDists.push(per);
+  }
+
+  const stream = act?.telemetry_stream && typeof act.telemetry_stream === 'object' ? act.telemetry_stream : null;
+  const hrArr = Array.isArray(stream?.hr) ? stream.hr.map(Number).filter(v => Number.isFinite(v) && v > 0) : [];
+  const elevArr = Array.isArray(stream?.elevation) ? stream.elevation.map(Number).filter(Number.isFinite) : [];
+  const spdArr = Array.isArray(stream?.speed)
+    ? stream.speed.map(Number).filter(v => Number.isFinite(v) && v > 0)
+    : (Array.isArray(stream?.speed_mps) ? stream.speed_mps.map(Number).filter(v => Number.isFinite(v) && v > 0) : []);
+  const cadArr = Array.isArray(stream?.cadence) ? stream.cadence.map(Number).filter(v => Number.isFinite(v) && v > 0) : [];
+
+  const avgSlice = (arr, startFrac, endFrac) => {
+    if (!arr.length) return null;
+    const sIdx = Math.min(arr.length - 1, Math.floor(startFrac * arr.length));
+    const eIdx = Math.max(sIdx + 1, Math.min(arr.length, Math.ceil(endFrac * arr.length)));
+    let sum = 0;
+    let cnt = 0;
+    for (let i = sIdx; i < eIdx; i++) {
+      if (Number.isFinite(arr[i]) && arr[i] > 0) {
+        sum += arr[i];
+        cnt++;
+      }
+    }
+    return cnt > 0 ? sum / cnt : null;
+  };
+
+  let cumDist = 0;
+  return splitDists.map((dM, idx) => {
+    const startFrac = cumDist / totalDist;
+    cumDist += dM;
+    const endFrac = cumDist / totalDist;
+    const frac = dM / totalDist;
+
+    const avgSpd = avgSlice(spdArr, startFrac, endFrac);
+    let sec = Math.max(1, Math.round(totalDur * frac));
+    if (avgSpd && avgSpd > 0.2) {
+      const estSec = Math.round(dM / avgSpd);
+      if (estSec > 0 && estSec < totalDur * 2) sec = estSec;
+    }
+    const speedMps = Number((dM / Math.max(1, sec)).toFixed(2));
+
+    const sliceHr = avgSlice(hrArr, startFrac, endFrac);
+    const avgHr = sliceHr ? Math.round(sliceHr) : (Number(rawSplits[idx]?.avg_hr) || defaultHr);
+
+    const sliceCad = avgSlice(cadArr, startFrac, endFrac);
+    const avgCad = sliceCad ? Math.round(sliceCad) : (Number(rawSplits[idx]?.avg_cadence) || defaultCad);
+
+    let elevDiff = Math.round(totalElev * frac);
+    if (elevArr.length >= 2) {
+      const sIdx = Math.min(elevArr.length - 1, Math.floor(startFrac * (elevArr.length - 1)));
+      const eIdx = Math.min(elevArr.length - 1, Math.round(endFrac * (elevArr.length - 1)));
+      elevDiff = Math.round(elevArr[eIdx] - elevArr[sIdx]);
+    }
+
+    return {
+      split_number: idx + 1,
+      distance_meters: Number(dM.toFixed(1)),
+      duration_seconds: sec,
+      split_sec: sec,
+      avg_hr: avgHr,
+      avg_cadence: avgCad,
+      elevation_diff: elevDiff,
+      speed_mps: speedMps
+    };
+  });
+}
+
   // Render Splits Table
   const splitsTbody = document.getElementById('drawer-splits-tbody');
   if (splitsTbody) {
     splitsTbody.innerHTML = '';
-    const splits = Array.isArray(act.splits)
-      ? act.splits.filter(s => s && typeof s === 'object')
-      : [];
+    const splits = resolveActivitySplits(act, isStrength);
     if (splits.length === 0) {
       splitsTbody.innerHTML = `<tr><td colspan="7" class="py-4 text-center text-zinc-500">No split breakdown recorded.</td></tr>`;
     } else {

@@ -11,6 +11,7 @@
 
 export const STORAGE_KEY_NAME = 'garmin_dash_session_key';
 export const STORAGE_VAULT_NAME = 'garmin_vault_session';
+export const STORAGE_META_NAME = 'garmin_dash_session_meta';
 
 /**
  * Checks if sessionStorage is available.
@@ -25,19 +26,22 @@ function isSessionStorageAvailable() {
 }
 
 /**
- * Saves authenticated session key and decrypted payload to sessionStorage.
+ * Saves authenticated session key and lightweight metadata to sessionStorage.
+ * Never writes full decrypted payload JSON to sessionStorage (avoids 5 MB quota limit).
  * @param {string} rawKeyBase64 - Base64 encoded 32-byte AES key
- * @param {object} payload - Decrypted dashboard rollup payload
+ * @param {object} [_payload] - Ignored (retained for call-site compatibility)
  */
-export function saveSession(rawKeyBase64, payload) {
+export function saveSession(rawKeyBase64, _payload) {
   if (!isSessionStorageAvailable()) return;
   try {
     if (rawKeyBase64) {
       window.sessionStorage.setItem(STORAGE_KEY_NAME, rawKeyBase64);
+      window.sessionStorage.setItem(
+        STORAGE_META_NAME,
+        JSON.stringify({ savedAt: Date.now() })
+      );
     }
-    if (payload) {
-      window.sessionStorage.setItem(STORAGE_VAULT_NAME, JSON.stringify(payload));
-    }
+    window.sessionStorage.removeItem(STORAGE_VAULT_NAME);
   } catch (err) {
     console.warn('Failed to save session state to sessionStorage:', err);
   }
@@ -53,19 +57,12 @@ export function getStoredKey() {
 }
 
 /**
- * Retrieves cached decrypted payload from sessionStorage.
- * @returns {object|null}
+ * Returns null (full payload is no longer persisted to sessionStorage).
+ * Retained for backward API compatibility.
+ * @returns {null}
  */
 export function getStoredPayload() {
-  if (!isSessionStorageAvailable()) return null;
-  try {
-    const raw = window.sessionStorage.getItem(STORAGE_VAULT_NAME);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch (err) {
-    window.sessionStorage.removeItem(STORAGE_VAULT_NAME);
-    return null;
-  }
+  return null;
 }
 
 /**
@@ -74,20 +71,18 @@ export function getStoredPayload() {
  */
 export function hasActiveSession() {
   if (!isSessionStorageAvailable()) return false;
-  return Boolean(
-    window.sessionStorage.getItem(STORAGE_KEY_NAME) || 
-    window.sessionStorage.getItem(STORAGE_VAULT_NAME)
-  );
+  return Boolean(window.sessionStorage.getItem(STORAGE_KEY_NAME));
 }
 
 /**
- * Completely purges all session keys and decrypted payload from sessionStorage.
+ * Completely purges all session keys and metadata from sessionStorage.
  */
 export function clearSession() {
   if (!isSessionStorageAvailable()) return;
   try {
     window.sessionStorage.removeItem(STORAGE_KEY_NAME);
     window.sessionStorage.removeItem(STORAGE_VAULT_NAME);
+    window.sessionStorage.removeItem(STORAGE_META_NAME);
     window.sessionStorage.clear();
   } catch (err) {
     console.warn('Failed to clear sessionStorage:', err);

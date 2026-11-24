@@ -2475,3 +2475,17 @@ export function initTrendsModal() {
     }
   });
 }
+
+/**
+ * Clears retained trends modal rollup cache (called on Lock Vault).
+ */
+export function clearTrendsCache() {
+  if (state.chartInstance) {
+    try {
+      state.chartInstance.destroy();
+    } catch {}
+    state.chartInstance = null;
+  }
+  state.activeRollup = null;
+  state.customThresholds = null;
+}

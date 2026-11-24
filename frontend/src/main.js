@@ -13,7 +13,8 @@
  *   3. Activity Drill-Down
  */
 
-import { decryptDashboardPayload, decryptWithRawKey } from './crypto.js';
+import { decryptRollupOffThread, terminateCryptoWorker } from './crypto.js';
+import { clearIndexedDbCache } from './shard_cache.js';
 import {
   saveSession,
   getStoredKey,
@@ -36,7 +37,8 @@ import {
   renderTodayActivityBanner,
   setupActivityEventListeners,
   setActivitySportFilter,
-  setStreamPackIndex
+  setStreamPackIndex,
+  clearActivityCaches
 } from './charts/activities.js';
 import {
   renderBackupVaultExplorer
@@ -46,17 +48,20 @@ import {
   loadWellnessLayout,
   saveWellnessLayout,
   setupWellnessEventListeners,
+  clearWellnessCache,
   DEFAULT_WELLNESS_LAYOUT
 } from './charts/wellness.js';
 import {
   initTrendsModal,
-  openMetricTrendModal
+  openMetricTrendModal,
+  clearTrendsCache
 } from './charts/trends_modal.js';
 import {
   initCalendar,
   renderCalendar,
   openCalendarModal,
-  closeCalendarModal
+  closeCalendarModal,
+  clearCalendarCache
 } from './charts/calendar.js';
 import {
   renderPRTrophyCase,
@@ -282,12 +287,51 @@ function safeRender(sectionName, fn) {
   }
 }
 
+let modalHeatmapRenderedForRollup = null;
+
+function renderCalendarModalHeatmap() {
+  if (!activeRollup || modalHeatmapRenderedForRollup === activeRollup) return;
+  const modalHeatmapEl = document.getElementById('calendar-modal-heatmap-card');
+  if (!modalHeatmapEl) return;
+  modalHeatmapRenderedForRollup = activeRollup;
+  renderConsistencyHeatmap(activeRollup, modalHeatmapEl, {
+    onSelectDate: (dateStr) => {
+      const calBtn = document.querySelector(`[data-cal-date="${dateStr}"]`);
+      if (calBtn) calBtn.click();
+    }
+  });
+}
+
+function setupLazyModalHeatmapListener() {
+  if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+  const triggerIds = ['btn-header-calendar', 'btn-open-calendar-modal'];
+  triggerIds.forEach((id) => {
+    const btn = document.getElementById(id);
+    if (btn && !btn._lazyHeatmapBound) {
+      btn._lazyHeatmapBound = true;
+      btn.addEventListener('click', () => renderCalendarModalHeatmap());
+    }
+  });
+  if (!document._lazyHeatmapClickBound) {
+    document._lazyHeatmapClickBound = true;
+    document.addEventListener('click', (e) => {
+      if (e?.target && typeof e.target.closest === 'function' && e.target.closest('[data-open-calendar="true"]')) {
+        renderCalendarModalHeatmap();
+      }
+    });
+  }
+}
+
 function renderDashboard(rollup) {
   if (!rollup) return;
   activeRollup = rollup;
+  modalHeatmapRenderedForRollup = null;
 
-  // Register packed stream byte-range index immediately so Today Banner & Activity Drawer can use it
-  setStreamPackIndex(rollup.stream_pack_index || {});
+  // Register packed stream byte-range index, per-year DEKs, and AAD version
+  setStreamPackIndex(rollup.stream_pack_index || {}, {
+    stream_pack_keys: rollup.stream_pack_keys,
+    aad_version: rollup.aad_version
+  });
 
   safeRender('preferences', () => {
     loadCustomizationPreferences();
@@ -305,7 +349,7 @@ function renderDashboard(rollup) {
     renderCalendar(rollup, activeUnit);
   });
 
-  // 0a-3. Personal Records Trophy Case & 365-Day Consistency Heatmap
+  // 0a-3. Personal Records Trophy Case & 365-Day Consistency Heatmap (render modal heatmap lazily)
   safeRender('achievements', () => {
     renderPRTrophyCase(rollup, activeUnit);
     renderConsistencyHeatmap(rollup, null, {
@@ -314,14 +358,9 @@ function renderDashboard(rollup) {
         if (calBtn) calBtn.click();
       }
     });
-    const modalHeatmapEl = document.getElementById('calendar-modal-heatmap-card');
-    if (modalHeatmapEl) {
-      renderConsistencyHeatmap(rollup, modalHeatmapEl, {
-        onSelectDate: (dateStr) => {
-          const calBtn = document.querySelector(`[data-cal-date="${dateStr}"]`);
-          if (calBtn) calBtn.click();
-        }
-      });
+    const calModal = document.getElementById('calendar-modal');
+    if (calModal && !calModal.classList.contains('hidden')) {
+      renderCalendarModalHeatmap();
     }
   });
 
@@ -476,7 +515,7 @@ async function handlePassphraseSubmit(e) {
 
   try {
     const wireData = await fetchEncryptedData();
-    const { payload, rawKeyBase64 } = await decryptDashboardPayload(passphrase, wireData);
+    const { payload, rawKeyBase64 } = await decryptRollupOffThread(wireData, passphrase);
 
     // Save session in sessionStorage
     saveSession(rawKeyBase64, payload);
@@ -495,13 +534,20 @@ async function handlePassphraseSubmit(e) {
 }
 
 /**
- * Locks the dashboard and clears all session state.
+ * Locks the dashboard and clears all session state, in-memory caches, worker, and IndexedDB.
  */
-function handleLockVault() {
+export async function handleLockVault() {
   clearSession();
   activeRollup = null;
+  modalHeatmapRenderedForRollup = null;
+  clearActivityCaches();
+  clearWellnessCache();
+  clearCalendarCache();
+  clearTrendsCache();
+  terminateCryptoWorker();
   renderTodayActivityBanner([], activeUnit);
   showModal();
+  await clearIndexedDbCache();
 }
 
 /**
@@ -666,11 +712,24 @@ function setupCustomizationModalListeners() {
     }
   };
 
+  const openCustomizeModal = (event) => {
+    if (event?.defaultPrevented) return;
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+    syncModalFields();
+    modal.classList.remove('hidden');
+  };
+
   if (openBtn) {
-    openBtn.addEventListener('click', () => {
-      syncModalFields();
-      modal.classList.remove('hidden');
-    });
+    openBtn.addEventListener('click', openCustomizeModal);
+  }
+
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('garmin-dash:open-customize', openCustomizeModal);
+  }
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('garmin-dash:open-customize', openCustomizeModal);
   }
 
   if (closeBtn) {
@@ -792,6 +851,7 @@ export async function initApp() {
   setupActivityEventListeners();
   setupCustomizationModalListeners();
   setupWellnessEventListeners();
+  setupLazyModalHeatmapListener();
   initTrendsModal();
 
   // Attach submit listeners
@@ -946,7 +1006,7 @@ export async function initApp() {
   if (cachedKey) {
     try {
       const wireData = await fetchEncryptedData();
-      const payload = await decryptWithRawKey(cachedKey, wireData);
+      const { payload } = await decryptRollupOffThread(wireData, { rawKeyBase64: cachedKey });
       saveSession(cachedKey, payload);
       showDashboard(payload);
       return;
@@ -969,7 +1029,7 @@ async function reloadEncryptedVault() {
     return false;
   }
   const wireData = await fetchEncryptedData();
-  const payload = await decryptWithRawKey(cachedKey, wireData);
+  const { payload } = await decryptRollupOffThread(wireData, { rawKeyBase64: cachedKey });
   saveSession(cachedKey, payload);
   showDashboard(payload);
   return true;

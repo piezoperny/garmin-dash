@@ -40,6 +40,7 @@ def calculate_continuous_training_load(
     athlete_profile: Optional[Dict[str, Any]] = None,
     initial_atl: Optional[float] = None,
     initial_ctl: Optional[float] = None,
+    end_date: Optional[date] = None,
 ) -> Dict[str, Any]:
     """
     Computes continuous daily EWMA curves (CTL 42d, ATL 7d, TSB = CTL - ATL).
@@ -58,18 +59,6 @@ def calculate_continuous_training_load(
             "activity_snapshots": {},
         }
 
-    profile = athlete_profile or {}
-    start_atl = float(
-        initial_atl
-        if initial_atl is not None
-        else profile.get("initial_atl", profile.get("atl", DEFAULT_INITIAL_ATL))
-    )
-    start_ctl = float(
-        initial_ctl
-        if initial_ctl is not None
-        else profile.get("initial_ctl", profile.get("ctl", DEFAULT_INITIAL_CTL))
-    )
-
     # 1. Group activities by calendar date (YYYY-MM-DD)
     acts_by_date: Dict[date, List[Dict[str, Any]]] = defaultdict(list)
     for act in activities:
@@ -78,21 +67,40 @@ def calculate_continuous_training_load(
 
     sorted_dates = sorted(acts_by_date.keys())
     min_date = sorted_dates[0]
-    max_date = sorted_dates[-1]
+    max_act_date = sorted_dates[-1]
+    effective_end_date = max(
+        max_act_date,
+        end_date if end_date is not None else datetime.now(timezone.utc).date(),
+    )
+    span_days = (effective_end_date - min_date).days
 
-    # 2. Iterate continuous chronological calendar timeline from min_date to max_date
+    profile = athlete_profile or {}
+    default_atl = 0.0 if span_days > 42 else DEFAULT_INITIAL_ATL
+    default_ctl = 0.0 if span_days > 42 else DEFAULT_INITIAL_CTL
+    start_atl = float(
+        initial_atl
+        if initial_atl is not None
+        else profile.get("initial_atl", profile.get("atl", default_atl))
+    )
+    start_ctl = float(
+        initial_ctl
+        if initial_ctl is not None
+        else profile.get("initial_ctl", profile.get("ctl", default_ctl))
+    )
+
+    # 2. Iterate continuous chronological calendar timeline from min_date to effective_end_date
     atl = start_atl
     ctl = start_ctl
 
     daily_timeline: List[Dict[str, Any]] = []
     activity_snapshots: Dict[str, Dict[str, float]] = {}
 
-    # Weekly aggregation tracking: key -> weekly metrics
+    # Weekly aggregation tracking: key -> weekly metrics (unrounded floats)
     # Key: (iso_year, iso_week)
     weekly_agg: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
     curr_date = min_date
-    while curr_date <= max_date:
+    while curr_date <= effective_end_date:
         d_str = curr_date.isoformat()
         day_acts = acts_by_date.get(curr_date, [])
 
@@ -148,17 +156,17 @@ def calculate_continuous_training_load(
                 "hiking_km": 0.0,
                 "cycle_km": 0.0,
                 "load": 0.0,
-                "atl": round(atl, 1),
-                "ctl": round(ctl, 1),
-                "tsb": tsb,
+                "atl": atl,
+                "ctl": ctl,
+                "tsb": ctl - atl,
             }
 
         w_entry = weekly_agg[week_key]
-        w_entry["load"] = round(w_entry["load"] + day_tss, 1)
+        w_entry["load"] += day_tss
         # Snapshot end-of-week / latest day in week
-        w_entry["atl"] = round(atl, 1)
-        w_entry["ctl"] = round(ctl, 1)
-        w_entry["tsb"] = round(ctl - atl, 1)
+        w_entry["atl"] = atl
+        w_entry["ctl"] = ctl
+        w_entry["tsb"] = ctl - atl
 
         # Accumulate sport-specific distance and duration from day activities
         for a in day_acts:
@@ -167,23 +175,32 @@ def calculate_continuous_training_load(
             dur_hours = float(a.get("duration_seconds") or 0.0) / 3600.0
 
             if sport in ("running", "run"):
-                w_entry["run_km"] = round(w_entry["run_km"] + dist_km, 1)
-                w_entry["running_hours"] = round(w_entry["running_hours"] + dur_hours, 1)
+                w_entry["run_km"] += dist_km
+                w_entry["running_hours"] += dur_hours
             elif sport in ("walking", "walk"):
-                w_entry["walk_km"] = round(w_entry["walk_km"] + dist_km, 1)
-                w_entry["walking_hours"] = round(w_entry["walking_hours"] + dur_hours, 1)
+                w_entry["walk_km"] += dist_km
+                w_entry["walking_hours"] += dur_hours
             elif sport in ("hiking", "hike"):
-                w_entry["hiking_km"] = round(w_entry["hiking_km"] + dist_km, 1)
-                w_entry["hiking_hours"] = round(w_entry["hiking_hours"] + dur_hours, 1)
+                w_entry["hiking_km"] += dist_km
+                w_entry["hiking_hours"] += dur_hours
             elif sport in ("cycling", "cycle"):
-                w_entry["cycle_km"] = round(w_entry["cycle_km"] + dist_km, 1)
-                w_entry["cycling_hours"] = round(w_entry["cycling_hours"] + dur_hours, 1)
+                w_entry["cycle_km"] += dist_km
+                w_entry["cycling_hours"] += dur_hours
             elif sport in ("strength", "weights"):
-                w_entry["strength_hours"] = round(w_entry["strength_hours"] + dur_hours, 1)
+                w_entry["strength_hours"] += dur_hours
 
         curr_date += timedelta(days=1)
 
-    weekly_list = [weekly_agg[k] for k in sorted(weekly_agg.keys())]
+    float_keys = (
+        "running_hours", "walking_hours", "hiking_hours", "cycling_hours", "strength_hours",
+        "run_km", "walk_km", "hiking_km", "cycle_km", "load", "atl", "ctl", "tsb",
+    )
+    weekly_list: List[Dict[str, Any]] = []
+    for k in sorted(weekly_agg.keys()):
+        entry = dict(weekly_agg[k])
+        for fk in float_keys:
+            entry[fk] = round(entry[fk], 1)
+        weekly_list.append(entry)
 
     return {
         "daily": daily_timeline,

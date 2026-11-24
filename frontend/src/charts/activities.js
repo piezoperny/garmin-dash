@@ -9,7 +9,6 @@
  *   Cycling (cadence in rpm, distance, elevation), and Hiking (cadence in spm, ascent, splits)
  */
 
-import { Chart } from './chart_engine.js';
 import { formatDuration } from './endurance.js';
 import {
   renderRouteMap,
@@ -23,6 +22,8 @@ import { decryptWithRawKey } from '../crypto.js';
 import { getStoredKey } from '../session.js';
 
 let profileChartInstance = null;
+let profileResizeObserver = null;
+let profileResizeObserverTarget = null;
 let currentActivities = [];
 let currentTodayActivities = [];
 let currentFilter = 'all';
@@ -35,13 +36,52 @@ let currentSelectedActivity = null;
 let isDrawerExpanded = false;
 let bannerRenderGeneration = 0;
 
+const SHARD_CACHE_MAX = 50;
+const PACK_CACHE_MAX = 2;
 const shardCache = new Map();
 const inFlightShards = new Map();
 const packFileCache = new Map();
 let streamPackIndex = {};
+let streamPackKeys = {};
+let streamAadVersion = null;
 
-export function setStreamPackIndex(indexObj) {
+function lruGet(map, key) {
+  if (!map.has(key)) return undefined;
+  const val = map.get(key);
+  map.delete(key);
+  map.set(key, val);
+  return val;
+}
+
+function lruSet(map, key, val, maxEntries) {
+  if (map.has(key)) {
+    map.delete(key);
+  }
+  while (map.size >= maxEntries) {
+    const oldestKey = map.keys().next().value;
+    map.delete(oldestKey);
+  }
+  map.set(key, val);
+}
+
+export function setStreamPackIndex(indexObj, options = null) {
   streamPackIndex = indexObj && typeof indexObj === 'object' ? indexObj : {};
+  const keys = options?.stream_pack_keys ?? indexObj?.stream_pack_keys ?? null;
+  streamPackKeys = keys && typeof keys === 'object' ? keys : {};
+  const aadVer = options?.aad_version ?? indexObj?.aad_version ?? null;
+  streamAadVersion = aadVer ?? null;
+}
+
+export function clearActivityCaches() {
+  shardCache.clear();
+  packFileCache.clear();
+  inFlightShards.clear();
+  streamPackIndex = {};
+  streamPackKeys = {};
+  streamAadVersion = null;
+  currentActivities = [];
+  currentTodayActivities = [];
+  currentSelectedActivity = null;
 }
 
 export function escapeHtml(str) {
@@ -96,7 +136,7 @@ async function fetchEncryptedShardBytes(idStr) {
   ) {
     const packUrl = `./streams/streams_${encodeURIComponent(packEntry.year)}.pack`;
     if (packFileCache.has(packUrl)) {
-      const fullBytes = packFileCache.get(packUrl);
+      const fullBytes = lruGet(packFileCache, packUrl);
       return fullBytes.subarray(packEntry.offset, packEntry.offset + packEntry.length);
     }
 
@@ -110,9 +150,9 @@ async function fetchEncryptedShardBytes(idStr) {
       if (res.status === 206 || bytes.byteLength === packEntry.length) {
         return bytes;
       }
-      // Server returned 200 OK (full packfile); cache and slice
+      // Server returned 200 OK (full packfile); cache with LRU eviction and slice
       if (bytes.byteLength >= packEntry.offset + packEntry.length) {
-        packFileCache.set(packUrl, bytes);
+        lruSet(packFileCache, packUrl, bytes, PACK_CACHE_MAX);
         return bytes.subarray(packEntry.offset, packEntry.offset + packEntry.length);
       }
     }
@@ -145,7 +185,7 @@ export async function loadActivityStreamShard(actId, targetAct = null) {
 
   const cacheKey = `${rawKey}::${idStr}`;
   if (shardCache.has(cacheKey)) {
-    const cached = shardCache.get(cacheKey);
+    const cached = lruGet(shardCache, cacheKey);
     syncActivityShardState(idStr, cached, targetAct);
     return cached;
   }
@@ -171,12 +211,20 @@ export async function loadActivityStreamShard(actId, targetAct = null) {
         syncActivityShardState(idStr, null, targetAct);
         return null;
       }
-      const shard = await decryptWithRawKey(rawKey, encBytes);
+      const packEntry = streamPackIndex && streamPackIndex[idStr];
+      const dek = packEntry?.dek || packEntry?.key || (packEntry?.year && streamPackKeys[packEntry.year]) || null;
+      const aadVersion = packEntry?.aad_version ?? streamAadVersion;
+      const shard = (dek || aadVersion != null)
+        ? await decryptWithRawKey(rawKey, encBytes, {
+            ...(dek ? { dek } : {}),
+            ...(aadVersion != null ? { aad_version: aadVersion, aad: `stream:${idStr}:v${aadVersion}` } : {})
+          })
+        : await decryptWithRawKey(rawKey, encBytes);
       if (!shard || typeof shard !== 'object') {
         syncActivityShardState(idStr, null, targetAct);
         return null;
       }
-      shardCache.set(cacheKey, shard);
+      lruSet(shardCache, cacheKey, shard, SHARD_CACHE_MAX);
       syncActivityShardState(idStr, shard, targetAct);
       return shard;
     } catch (_err) {
@@ -355,7 +403,14 @@ export function formatDate(isoString) {
  */
 export function renderActivityTable(activities, unit = 'km') {
   currentActivities = Array.isArray(activities)
-    ? activities.filter(a => a && typeof a === 'object')
+    ? activities.filter(a => {
+        if (!a || typeof a !== 'object') return false;
+        if (a._sortTs === undefined) {
+          const ts = Date.parse(a.date || a.start_time || '');
+          a._sortTs = Number.isFinite(ts) ? ts : 0;
+        }
+        return true;
+      })
     : [];
   currentUnit = unit;
   currentPage = 1;
@@ -410,13 +465,21 @@ export function applyFiltersAndRender() {
     });
   }
 
+  // Ensure _sortTs is pre-parsed once before sorting
+  for (const a of filtered) {
+    if (a._sortTs === undefined) {
+      const ts = Date.parse(a.date || a.start_time || '');
+      a._sortTs = Number.isFinite(ts) ? ts : 0;
+    }
+  }
+
   // Sorting
   filtered.sort((a, b) => {
     if (currentSort === 'date-desc') {
-      return new Date(b.date || b.start_time || 0) - new Date(a.date || a.start_time || 0);
+      return b._sortTs - a._sortTs;
     }
     if (currentSort === 'date-asc') {
-      return new Date(a.date || a.start_time || 0) - new Date(b.date || b.start_time || 0);
+      return a._sortTs - b._sortTs;
     }
     if (currentSort === 'dist-desc') {
       return (b.distance_meters || 0) - (a.distance_meters || 0);
@@ -751,82 +814,85 @@ function resolveActivitySplits(act, isStrength) {
   });
 }
 
-  // Render Splits Table
-  const splitsTbody = document.getElementById('drawer-splits-tbody');
-  if (splitsTbody) {
+  function renderActivitySplitsTable() {
+    const splitsTbody = document.getElementById('drawer-splits-tbody');
+    if (!splitsTbody) return;
     splitsTbody.innerHTML = '';
     const splits = resolveActivitySplits(act, isStrength);
     if (splits.length === 0) {
       splitsTbody.innerHTML = `<tr><td colspan="7" class="py-4 text-center text-zinc-500">No split breakdown recorded.</td></tr>`;
-    } else {
-      splits.forEach((s, idx) => {
-        const splitNum = s.split_number || s.km || (idx + 1);
-        const splitSec = s.split_sec || s.duration_seconds || s.moving_time_seconds || 0;
-        const splitDur = formatSplitDuration(splitSec);
-
-        // Distance formatting
-        let splitDist = '—';
-        if (!isStrength) {
-          if (s.distance_meters !== undefined && s.distance_meters !== null && s.distance_meters > 0) {
-            splitDist = formatDistance(s.distance_meters, unit);
-          } else if (s.distance_meters === 0) {
-            splitDist = formatDistance(0, unit);
-          } else {
-            splitDist = '-';
-          }
-        }
-
-        // Pace vs Speed: Cycling displays speed in km/h or mph; foot sports display pace in mm:ss/km or mm:ss/mi
-        let paceOrSpeed = '-';
-        if (isStrength) {
-          paceOrSpeed = '—';
-        } else if (isCycling) {
-          let speedMps = s.speed_mps;
-          if ((speedMps === undefined || speedMps === null || speedMps <= 0) && s.distance_meters > 0 && splitSec > 0) {
-            speedMps = s.distance_meters / splitSec;
-          }
-          paceOrSpeed = formatSpeed(speedMps, unit);
-        } else {
-          const distM = Number(s.distance_meters);
-          const secPerKm = (distM && distM > 0) ? (splitSec / (distM / 1000.0)) : splitSec;
-          paceOrSpeed = formatPace(secPerKm, unit);
-        }
-
-        // Average Heart Rate
-        const splitHR = s.avg_hr ? `${s.avg_hr} bpm` : '-';
-
-        // Elevation delta (+/-m or +/-ft)
-        const elevDiff = isStrength
-          ? '—'
-          : (s.elevation_diff !== undefined && s.elevation_diff !== null
-              ? formatElevation(s.elevation_diff, unit)
-              : '-');
-
-        // Cadence: rpm for cycling, spm for running/walking, '-' if absent/zero, '—' for strength
-        let splitCadence = '-';
-        if (isStrength) {
-          splitCadence = '—';
-        } else if (s.avg_cadence && s.avg_cadence > 0) {
-          splitCadence = isCycling ? `${s.avg_cadence} rpm` : `${s.avg_cadence} spm`;
-        } else {
-          splitCadence = '-';
-        }
-
-        const tr = document.createElement('tr');
-        tr.className = 'border-b border-[#2d2147] text-xs font-mono text-zinc-300 tabular-nums';
-        tr.innerHTML = `
-          <td class="py-2 px-3 text-zinc-400">#${escapeHtml(splitNum)}</td>
-          <td class="py-2 px-3 text-white font-semibold">${escapeHtml(splitDist)}</td>
-          <td class="py-2 px-3">${escapeHtml(splitDur)}</td>
-          <td class="py-2 px-3 text-teal-400">${escapeHtml(paceOrSpeed)}</td>
-          <td class="py-2 px-3 text-rose-400">${escapeHtml(splitHR)}</td>
-          <td class="py-2 px-3 text-zinc-400">${escapeHtml(elevDiff)}</td>
-          <td class="py-2 px-3 text-indigo-300">${escapeHtml(splitCadence)}</td>
-        `;
-        splitsTbody.appendChild(tr);
-      });
+      return;
     }
+    splits.forEach((s, idx) => {
+      const splitNum = s.split_number || s.km || (idx + 1);
+      const splitSec = s.split_sec || s.duration_seconds || s.moving_time_seconds || 0;
+      const splitDur = formatSplitDuration(splitSec);
+
+      // Distance formatting
+      let splitDist = '—';
+      if (!isStrength) {
+        if (s.distance_meters !== undefined && s.distance_meters !== null && s.distance_meters > 0) {
+          splitDist = formatDistance(s.distance_meters, unit);
+        } else if (s.distance_meters === 0) {
+          splitDist = formatDistance(0, unit);
+        } else {
+          splitDist = '-';
+        }
+      }
+
+      // Pace vs Speed: Cycling displays speed in km/h or mph; foot sports display pace in mm:ss/km or mm:ss/mi
+      let paceOrSpeed = '-';
+      if (isStrength) {
+        paceOrSpeed = '—';
+      } else if (isCycling) {
+        let speedMps = s.speed_mps;
+        if ((speedMps === undefined || speedMps === null || speedMps <= 0) && s.distance_meters > 0 && splitSec > 0) {
+          speedMps = s.distance_meters / splitSec;
+        }
+        paceOrSpeed = formatSpeed(speedMps, unit);
+      } else {
+        const distM = Number(s.distance_meters);
+        const secPerKm = (distM && distM > 0) ? (splitSec / (distM / 1000.0)) : splitSec;
+        paceOrSpeed = formatPace(secPerKm, unit);
+      }
+
+      // Average Heart Rate
+      const splitHR = s.avg_hr ? `${s.avg_hr} bpm` : '-';
+
+      // Elevation delta (+/-m or +/-ft)
+      const elevDiff = isStrength
+        ? '—'
+        : (s.elevation_diff !== undefined && s.elevation_diff !== null
+            ? formatElevation(s.elevation_diff, unit)
+            : '-');
+
+      // Cadence: rpm for cycling, spm for running/walking, '-' if absent/zero, '—' for strength
+      let splitCadence = '-';
+      if (isStrength) {
+        splitCadence = '—';
+      } else if (s.avg_cadence && s.avg_cadence > 0) {
+        splitCadence = isCycling ? `${s.avg_cadence} rpm` : `${s.avg_cadence} spm`;
+      } else {
+        splitCadence = '-';
+      }
+
+      const tr = document.createElement('tr');
+      tr.className = 'border-b border-[#2d2147] text-xs font-mono text-zinc-300 tabular-nums';
+      tr.innerHTML = `
+        <td class="py-2 px-3 text-zinc-400">#${escapeHtml(splitNum)}</td>
+        <td class="py-2 px-3 text-white font-semibold">${escapeHtml(splitDist)}</td>
+        <td class="py-2 px-3">${escapeHtml(splitDur)}</td>
+        <td class="py-2 px-3 text-teal-400">${escapeHtml(paceOrSpeed)}</td>
+        <td class="py-2 px-3 text-rose-400">${escapeHtml(splitHR)}</td>
+        <td class="py-2 px-3 text-zinc-400">${escapeHtml(elevDiff)}</td>
+        <td class="py-2 px-3 text-indigo-300">${escapeHtml(splitCadence)}</td>
+      `;
+      splitsTbody.appendChild(tr);
+    });
   }
+
+  // Render Splits Table
+  renderActivitySplitsTable();
 
   // Reset stream visibility sensibly for this activity type
   resetStreamVisibilityForActivity(act);
@@ -856,12 +922,48 @@ function resolveActivitySplits(act, isStrength) {
   });
 
   // Lazy-load encrypted activity stream shard (./streams/<id>.enc) if sharded
-  if (act && act.id && !act._streamsLoaded && (!act.telemetry_stream || !act.gps_track)) {
-    loadActivityStreamShard(act.id, act).then((shard) => {
-      if (shard && typeof shard === 'object' && currentSelectedActivity === act) {
-        openActivityDrawer(act, unit);
+  const canAttemptShardFetch = Boolean(
+    act && act.id && !act._streamsLoaded && (!act.telemetry_stream || !act.gps_track) &&
+    getStoredKey() && typeof fetch === 'function'
+  );
+  if (canAttemptShardFetch) {
+    const fetchShardInPlace = () => {
+      const metaEl = document.getElementById('drawer-map-meta');
+      const fallbackEl = document.getElementById('drawer-map-fallback');
+      if (!act.gps_track) {
+        if (metaEl) metaEl.textContent = 'Loading stream…';
+        if (fallbackEl) fallbackEl.textContent = 'Loading GPS & telemetry stream…';
       }
-    });
+      loadActivityStreamShard(act.id, act).then((shard) => {
+        if (currentSelectedActivity !== act) return;
+        if (shard && typeof shard === 'object') {
+          resetStreamVisibilityForActivity(act);
+          renderRouteMap(act);
+          renderActivityProfileChart(act, unit);
+          renderActivitySplitsTable();
+          invalidateMapSize();
+        } else {
+          if (metaEl && !act.gps_track) {
+            metaEl.textContent = act.has_streams ? 'Stream unavailable' : 'Indoor / No GPS';
+          }
+          if (fallbackEl && !act.gps_track) {
+            if (act.has_streams) {
+              fallbackEl.innerHTML = '<span>Failed to load telemetry stream.</span><button type="button" data-retry-shard="true" class="ml-2 px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/30 text-[11px]">Retry</button>';
+              const retryBtn = fallbackEl.querySelector('[data-retry-shard="true"]');
+              if (retryBtn) {
+                retryBtn.addEventListener('click', (e) => {
+                  if (typeof e.stopPropagation === 'function') e.stopPropagation();
+                  fetchShardInPlace();
+                });
+              }
+            } else {
+              fallbackEl.textContent = 'No GPS track available for this workout.';
+            }
+          }
+        }
+      });
+    };
+    fetchShardInPlace();
   }
 }
 
@@ -870,6 +972,9 @@ function resolveActivitySplits(act, isStrength) {
  */
 export function closeActivityDrawer() {
   const drawer = document.getElementById('activity-drawer');
+  if (!currentSelectedActivity && (!drawer || drawer.classList.contains('hidden'))) {
+    return;
+  }
   const panel = document.getElementById('drawer-panel');
   const iconExpand = document.getElementById('icon-expand');
   const iconCollapse = document.getElementById('icon-collapse');
@@ -890,6 +995,11 @@ export function closeActivityDrawer() {
   if (drawer) drawer.classList.add('hidden');
   if (typeof document !== 'undefined' && document.body) {
     document.body.style.overflow = '';
+  }
+  if (profileResizeObserver) {
+    profileResizeObserver.disconnect();
+    profileResizeObserver = null;
+    profileResizeObserverTarget = null;
   }
   if (profileChartInstance) {
     if (typeof profileChartInstance.destroy === 'function') {
@@ -1372,18 +1482,24 @@ export function renderActivityProfileChart(act, unit = 'km') {
   }
 
   // Attach ResizeObserver to keep canvas layout responsive across viewports
-  if (typeof ResizeObserver === 'function' && parent && !canvas._hasProfileResizeObserver) {
-    canvas._hasProfileResizeObserver = true;
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.contentRect && entry.contentRect.width > 0) {
-          if (currentSelectedActivity) {
-            renderActivityProfileChart(currentSelectedActivity, currentUnit);
+  if (typeof ResizeObserver === 'function' && parent) {
+    if (!profileResizeObserver || profileResizeObserverTarget !== parent) {
+      if (profileResizeObserver) {
+        profileResizeObserver.disconnect();
+        profileResizeObserver = null;
+      }
+      profileResizeObserverTarget = parent;
+      profileResizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.contentRect && entry.contentRect.width > 0) {
+            if (currentSelectedActivity) {
+              renderActivityProfileChart(currentSelectedActivity, currentUnit);
+            }
           }
         }
-      }
-    });
-    ro.observe(parent);
+      });
+      profileResizeObserver.observe(parent);
+    }
   }
 
   if (typeof ctx.setTransform === 'function') {
@@ -1904,10 +2020,15 @@ export function reprocessAllActivities() {
 export function setupActivityEventListeners() {
   const searchInput = document.getElementById('activity-search');
   if (searchInput) {
+    let searchDebounceTimer = null;
     searchInput.addEventListener('input', (e) => {
       currentSearch = e.target.value;
       currentPage = 1;
-      applyFiltersAndRender();
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        searchDebounceTimer = null;
+        applyFiltersAndRender();
+      }, 150);
     });
   }
 
@@ -2000,7 +2121,9 @@ export function setupActivityEventListeners() {
   }
 
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeActivityDrawer();
+    if (e.key === 'Escape' && currentSelectedActivity) {
+      closeActivityDrawer();
+    }
   });
 }
 

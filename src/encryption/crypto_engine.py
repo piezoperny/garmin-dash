@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from typing import Any, Dict, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
@@ -80,11 +81,13 @@ except ImportError:
 # OpenSSL libcrypto CTypes Fallback Engine
 # ---------------------------------------------------------------------------
 
+_LIBCRYPTO_LOCK = threading.Lock()
 _LIBCRYPTO_HANDLE = None
+_LIBCRYPTO_INITIALIZED = False
 
 
-def _get_libcrypto() -> Any:
-    """Locates and loads OpenSSL libcrypto DLL/so using standard library ctypes."""
+def _get_libcrypto_unlocked() -> Any:
+    """Locates and loads OpenSSL libcrypto DLL/so using standard library ctypes (caller holds _LIBCRYPTO_LOCK)."""
     global _LIBCRYPTO_HANDLE
     if _LIBCRYPTO_HANDLE is not None:
         return _LIBCRYPTO_HANDLE
@@ -124,6 +127,14 @@ def _get_libcrypto() -> Any:
     )
 
 
+def _get_libcrypto() -> Any:
+    """Thread-safely locates and loads OpenSSL libcrypto DLL/so using standard library ctypes."""
+    if _LIBCRYPTO_HANDLE is not None:
+        return _LIBCRYPTO_HANDLE
+    with _LIBCRYPTO_LOCK:
+        return _get_libcrypto_unlocked()
+
+
 def _init_libcrypto_functions(lib: Any) -> None:
     """Configures ctypes function signatures for OpenSSL EVP cipher operations."""
     lib.EVP_CIPHER_CTX_new.restype = ctypes.c_void_p
@@ -137,8 +148,8 @@ def _init_libcrypto_functions(lib: Any) -> None:
         ctypes.c_void_p,
         ctypes.c_void_p,
         ctypes.c_void_p,
-        ctypes.c_char_p,
-        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
         ctypes.c_int,
     ]
     lib.EVP_CipherInit_ex.restype = ctypes.c_int
@@ -153,28 +164,45 @@ def _init_libcrypto_functions(lib: Any) -> None:
 
     lib.EVP_CipherUpdate.argtypes = [
         ctypes.c_void_p,
-        ctypes.c_char_p,
+        ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_int),
-        ctypes.c_char_p,
+        ctypes.c_void_p,
         ctypes.c_int,
     ]
     lib.EVP_CipherUpdate.restype = ctypes.c_int
 
     lib.EVP_CipherFinal_ex.argtypes = [
         ctypes.c_void_p,
-        ctypes.c_char_p,
+        ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_int),
     ]
     lib.EVP_CipherFinal_ex.restype = ctypes.c_int
 
 
-def _ctypes_aes_gcm_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
+def _ensure_libcrypto() -> Any:
+    """Thread-safely loads libcrypto and initializes ctypes argtypes/restype once."""
+    global _LIBCRYPTO_INITIALIZED
+    if _LIBCRYPTO_INITIALIZED and _LIBCRYPTO_HANDLE is not None:
+        return _LIBCRYPTO_HANDLE
+    with _LIBCRYPTO_LOCK:
+        lib = _get_libcrypto_unlocked()
+        if not _LIBCRYPTO_INITIALIZED:
+            _init_libcrypto_functions(lib)
+            _LIBCRYPTO_INITIALIZED = True
+        return lib
+
+
+def _ctypes_aes_gcm_encrypt(
+    key: bytes,
+    iv: bytes,
+    plaintext: bytes,
+    aad: Optional[bytes] = None,
+) -> bytes:
     """
     Encrypts plaintext using OpenSSL AES-256-GCM via ctypes.
     Returns: ciphertext + 16-byte authentication tag.
     """
-    lib = _get_libcrypto()
-    _init_libcrypto_functions(lib)
+    lib = _ensure_libcrypto()
 
     ctx = lib.EVP_CIPHER_CTX_new()
     if not ctx:
@@ -193,6 +221,12 @@ def _ctypes_aes_gcm_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
         if lib.EVP_CipherInit_ex(ctx, None, None, key, iv, 1) != 1:
             raise RuntimeError("Failed to configure key and IV in cipher context.")
 
+        # Feed Additional Authenticated Data (AAD) if provided
+        if aad:
+            aad_len = ctypes.c_int(0)
+            if lib.EVP_CipherUpdate(ctx, None, ctypes.byref(aad_len), bytes(aad), len(aad)) != 1:
+                raise RuntimeError("EVP_CipherUpdate failed while processing AAD during encryption.")
+
         # Encrypt plaintext
         out_buf = ctypes.create_string_buffer(len(plaintext) + 16)
         out_len = ctypes.c_int(0)
@@ -204,7 +238,8 @@ def _ctypes_aes_gcm_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
         # Finalize encryption
         dummy = ctypes.create_string_buffer(16)
         final_len = ctypes.c_int(0)
-        lib.EVP_CipherFinal_ex(ctx, dummy, ctypes.byref(final_len))
+        if lib.EVP_CipherFinal_ex(ctx, dummy, ctypes.byref(final_len)) != 1:
+            raise RuntimeError("EVP_CipherFinal_ex failed during encryption.")
 
         # Retrieve 16-byte authentication tag: EVP_CTRL_GCM_GET_TAG = 0x10
         tag_buf = ctypes.create_string_buffer(TAG_SIZE)
@@ -218,14 +253,19 @@ def _ctypes_aes_gcm_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
         lib.EVP_CIPHER_CTX_free(ctx)
 
 
-def _ctypes_aes_gcm_decrypt(key: bytes, iv: bytes, ciphertext: bytes, tag: bytes) -> bytes:
+def _ctypes_aes_gcm_decrypt(
+    key: bytes,
+    iv: bytes,
+    ciphertext: bytes,
+    tag: bytes,
+    aad: Optional[bytes] = None,
+) -> bytes:
     """
     Decrypts ciphertext and validates 16-byte authentication tag using OpenSSL AES-256-GCM via ctypes.
     Raises AuthenticationError if tag mismatch or tampered data.
     Ensures zero partial plaintext is returned on error and zeroes out memory buffers immediately.
     """
-    lib = _get_libcrypto()
-    _init_libcrypto_functions(lib)
+    lib = _ensure_libcrypto()
 
     ctx = lib.EVP_CIPHER_CTX_new()
     if not ctx:
@@ -245,6 +285,12 @@ def _ctypes_aes_gcm_decrypt(key: bytes, iv: bytes, ciphertext: bytes, tag: bytes
         # Set key and IV
         if lib.EVP_CipherInit_ex(ctx, None, None, key, iv, 0) != 1:
             raise RuntimeError("Failed to configure key and IV in cipher context.")
+
+        # Feed Additional Authenticated Data (AAD) if provided
+        if aad:
+            aad_len = ctypes.c_int(0)
+            if lib.EVP_CipherUpdate(ctx, None, ctypes.byref(aad_len), bytes(aad), len(aad)) <= 0:
+                raise AuthenticationError("Authentication failed: invalid AAD.")
 
         # Decrypt ciphertext
         out_buf = ctypes.create_string_buffer(len(ciphertext) + 16)
@@ -395,12 +441,25 @@ def encrypt_with_key(
     data: Union[bytes, bytearray, str, Dict[str, Any]],
     key: bytes,
     salt: bytes,
+    aad: Optional[bytes] = None,
 ) -> bytes:
     """
     Encrypts a payload using an already-derived 32-byte AES key and 16-byte salt,
     generating a fresh cryptographically random 12-byte IV per shard.
+    Optional AAD (Additional Authenticated Data) is bound into the GCM tag.
     Wire layout: [Salt 16B] + [IV 12B] + [Ciphertext + Tag 16B].
     """
+    if not isinstance(key, (bytes, bytearray)):
+        raise TypeError(f"Key must be bytes, got {type(key).__name__}")
+    if len(key) != KEY_SIZE:
+        raise ValueError(f"Key must be exactly {KEY_SIZE} bytes, got {len(key)} bytes")
+    if not isinstance(salt, (bytes, bytearray)):
+        raise TypeError(f"Salt must be bytes, got {type(salt).__name__}")
+    if len(salt) != SALT_SIZE:
+        raise ValueError(f"Salt must be exactly {SALT_SIZE} bytes, got {len(salt)} bytes")
+    if aad is not None and not isinstance(aad, (bytes, bytearray)):
+        raise TypeError(f"AAD must be bytes or None, got {type(aad).__name__}")
+
     if isinstance(data, dict):
         plaintext = json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     elif isinstance(data, str):
@@ -410,14 +469,78 @@ def encrypt_with_key(
     else:
         raise TypeError(f"Unsupported payload type for encryption: {type(data).__name__}")
 
+    key_bytes = bytes(key)
+    salt_bytes = bytes(salt)
+    aad_bytes = bytes(aad) if aad is not None else None
     iv = os.urandom(IV_SIZE)
-    if _USE_CRYPTOGRAPHY:
-        aesgcm = AESGCM(key)
-        ciphertext_and_tag = aesgcm.encrypt(iv, plaintext, associated_data=None)
-    else:
-        ciphertext_and_tag = _ctypes_aes_gcm_encrypt(key, iv, plaintext)
 
-    return bytes(salt) + iv + ciphertext_and_tag
+    if _USE_CRYPTOGRAPHY:
+        aesgcm = AESGCM(key_bytes)
+        ciphertext_and_tag = aesgcm.encrypt(iv, plaintext, associated_data=aad_bytes)
+    else:
+        ciphertext_and_tag = _ctypes_aes_gcm_encrypt(key_bytes, iv, plaintext, aad=aad_bytes)
+
+    return salt_bytes + iv + ciphertext_and_tag
+
+
+def decrypt_with_key(
+    wire: Union[bytes, bytearray],
+    key: bytes,
+    salt: Optional[bytes] = None,
+    aad: Optional[bytes] = None,
+) -> bytes:
+    """
+    Decrypts a binary wire payload ([16B Salt][12B IV][Ciphertext+16B Tag]) using an
+    already-derived 32-byte AES key and optional AAD.
+
+    Raises:
+      MalformedWireError: If wire length is less than 44 bytes.
+      AuthenticationError: If tag verification or AAD binding fails.
+    """
+    if not isinstance(wire, (bytes, bytearray)):
+        raise TypeError(f"Wire payload must be bytes, got {type(wire).__name__}")
+    if not isinstance(key, (bytes, bytearray)):
+        raise TypeError(f"Key must be bytes, got {type(key).__name__}")
+    if len(key) != KEY_SIZE:
+        raise ValueError(f"Key must be exactly {KEY_SIZE} bytes, got {len(key)} bytes")
+    if salt is not None:
+        if not isinstance(salt, (bytes, bytearray)):
+            raise TypeError(f"Salt must be bytes, got {type(salt).__name__}")
+        if len(salt) != SALT_SIZE:
+            raise ValueError(f"Salt must be exactly {SALT_SIZE} bytes, got {len(salt)} bytes")
+    if aad is not None and not isinstance(aad, (bytes, bytearray)):
+        raise TypeError(f"AAD must be bytes or None, got {type(aad).__name__}")
+
+    wire_bytes = bytes(wire)
+    if len(wire_bytes) < MIN_WIRE_SIZE:
+        raise MalformedWireError(
+            f"Invalid wire format: payload is {len(wire_bytes)} bytes, "
+            f"minimum required is {MIN_WIRE_SIZE} bytes."
+        )
+
+    wire_salt = wire_bytes[:SALT_SIZE]
+    if len(wire_salt) != SALT_SIZE:
+        raise ValueError(f"Salt must be exactly {SALT_SIZE} bytes, got {len(wire_salt)} bytes")
+
+    iv = wire_bytes[SALT_SIZE:HEADER_SIZE]
+    ciphertext_and_tag = wire_bytes[HEADER_SIZE:]
+    ciphertext = wire_bytes[HEADER_SIZE:-TAG_SIZE]
+    tag = wire_bytes[-TAG_SIZE:]
+
+    key_bytes = bytes(key)
+    aad_bytes = bytes(aad) if aad is not None else None
+
+    if _USE_CRYPTOGRAPHY:
+        aesgcm = AESGCM(key_bytes)
+        try:
+            return aesgcm.decrypt(iv, ciphertext_and_tag, associated_data=aad_bytes)
+        except InvalidTag:
+            raise AuthenticationError("Authentication failed: invalid tag or AAD mismatch.") from None
+    else:
+        try:
+            return _ctypes_aes_gcm_decrypt(key_bytes, iv, ciphertext, tag, aad=aad_bytes)
+        except AuthenticationError:
+            raise AuthenticationError("Authentication failed: invalid tag or AAD mismatch.") from None
 
 
 def decrypt_payload(

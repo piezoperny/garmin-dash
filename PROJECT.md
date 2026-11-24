@@ -23,6 +23,16 @@
 | 3 | M3: VO2 Max Trend & Y-Axis | `frontend/src/charts/trends_modal.js`, `src/ingestion/mock_generator.py`, `tests/test_m8_readiness_and_vitals.js` | M2 (shared `mock_generator.py`) | PLANNED |
 | 4 | M4: Section Reordering & Final Verification | `frontend/index.html`, `frontend/src/main.js`, `dist/`, `public/data.enc` | M1, M2, M3 | PLANNED |
 
+## Optimization Wave Milestones (M1–M6)
+| # | Name | Scope | Status |
+|---|------|-------|--------|
+| 1 | M1: Storage Vault & Packed Shards | Year-packed stream shards (`streams_YYYY.pack`), `pack_keys.enc`, deterministic archival layout | COMPLETED |
+| 2 | M2: Sync & Analytics Optimization | Incremental delta sync, wellness/activity rollup optimization | COMPLETED |
+| 3 | M3: Envelope Crypto & Pack Format | Envelope-encrypted packed stream format & fast range decryption | COMPLETED |
+| 4 | M4: Frontend Perf & Lazy Rendering | Deferred rendering, lazy Leaflet loading, pagination & DOM optimizations | COMPLETED |
+| 5 | M5: Web Worker Crypto & Shard Cache | `crypto_worker.js` off-thread decryption & `shard_cache.js` IndexedDB/memory caching | COMPLETED |
+| 6 | M6: Compiled Tailwind, Minified Build & CI Tuning | Compiled Tailwind CSS, esbuild ESM minification, CDN removal, CI cache/pip tuning | COMPLETED |
+
 ## Code Layout
 - `frontend/index.html` — Main HTML layout & `#customize-modal`
 - `frontend/src/main.js` — Dashboard initialization, `renderDashboard()`, customization modal

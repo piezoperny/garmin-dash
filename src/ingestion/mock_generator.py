@@ -1405,6 +1405,7 @@ def compile_rollup(
     sync_manifest: Optional[Any] = None,
     backup_vault: Optional[Dict[str, Any]] = None,
     wellness: Optional[Dict[str, Any]] = None,
+    storage_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Compiles list of activities into canonical dashboard_rollup.json matching
@@ -1468,7 +1469,22 @@ def compile_rollup(
     # Total physiological zone seconds
     hr_zone_seconds = {"Z1": 0, "Z2": 0, "Z3": 0, "Z4": 0, "Z5": 0}
     power_zone_seconds = {"Z1": 0.0, "Z2": 0.0, "Z3": 0.0, "Z4": 0.0, "Z5": 0.0, "Z6": 0.0, "Z7": 0.0}
-    pace_zone_seconds = {"Recovery": 0, "Aerobic": 0, "Tempo": 0, "Threshold": 0, "Interval": 0}
+    pace_zone_seconds = {"Recovery": 0.0, "Aerobic": 0.0, "Tempo": 0.0, "Threshold": 0.0, "Interval": 0.0}
+    used_power_stream = False
+    used_power_fallback = False
+    used_pace_stream = False
+    used_pace_fallback = False
+
+    def _classify_pace_zone(pace_sec_km: float) -> str:
+        if pace_sec_km >= 600.0:
+            return "Recovery"
+        if pace_sec_km >= 500.0:
+            return "Aerobic"
+        if pace_sec_km >= 420.0:
+            return "Tempo"
+        if pace_sec_km >= 360.0:
+            return "Threshold"
+        return "Interval"
 
     for act in sorted_acts:
         date_str = act.get("start_time") or act.get("date") or "2026-10-24T00:00:00Z"
@@ -1523,14 +1539,16 @@ def compile_rollup(
         # HR zones accumulation
         hz = act.get("hr_zones")
         if isinstance(hz, dict) and any(int(hz.get(k) or 0) > 0 for k in ("z1", "Z1", "z2", "Z2", "z3", "Z3", "z4", "Z4", "z5", "Z5")):
-            act_z1 = int(hz.get("z1") or hz.get("Z1") or 0)
-            act_z2 = int(hz.get("z2") or hz.get("Z2") or 0)
-            act_z3 = int(hz.get("z3") or hz.get("Z3") or 0)
-            act_z4 = int(hz.get("z4") or hz.get("Z4") or 0)
-            act_z5 = int(hz.get("z5") or hz.get("Z5") or 0)
+            act_z1 = max(0, int(hz.get("z1") or hz.get("Z1") or 0))
+            act_z2 = max(0, int(hz.get("z2") or hz.get("Z2") or 0))
+            act_z3 = max(0, int(hz.get("z3") or hz.get("Z3") or 0))
+            act_z4 = max(0, int(hz.get("z4") or hz.get("Z4") or 0))
+            act_z5 = max(0, int(hz.get("z5") or hz.get("Z5") or 0))
             tot_z = act_z1 + act_z2 + act_z3 + act_z4 + act_z5
-            if tot_z != dur_sec and dur_sec > 0:
-                act_z5 += (dur_sec - tot_z)
+            if dur_sec > 0:
+                residual = max(0, dur_sec - tot_z)
+                if residual > 0:
+                    act_z1 += residual
             hr_zone_seconds["Z1"] += act_z1
             hr_zone_seconds["Z2"] += act_z2
             hr_zone_seconds["Z3"] += act_z3
@@ -1553,11 +1571,16 @@ def compile_rollup(
                     stream_zones["Z2"] += ratio
                 else:
                     stream_zones["Z1"] += ratio
-            z1_acc = int(round(stream_zones["Z1"]))
-            z2_acc = int(round(stream_zones["Z2"]))
-            z3_acc = int(round(stream_zones["Z3"]))
-            z4_acc = int(round(stream_zones["Z4"]))
-            z5_acc = dur_sec - (z1_acc + z2_acc + z3_acc + z4_acc)
+            z1_acc = max(0, int(round(stream_zones["Z1"])))
+            z2_acc = max(0, int(round(stream_zones["Z2"])))
+            z3_acc = max(0, int(round(stream_zones["Z3"])))
+            z4_acc = max(0, int(round(stream_zones["Z4"])))
+            z5_acc = max(0, int(round(stream_zones["Z5"])))
+            tot_acc = z1_acc + z2_acc + z3_acc + z4_acc + z5_acc
+            if dur_sec > 0:
+                residual = max(0, dur_sec - tot_acc)
+                if residual > 0:
+                    z1_acc += residual
             hr_zone_seconds["Z1"] += z1_acc
             hr_zone_seconds["Z2"] += z2_acc
             hr_zone_seconds["Z3"] += z3_acc
@@ -1569,7 +1592,7 @@ def compile_rollup(
             fb_z2 = int(dur_sec * 0.45)
             fb_z3 = int(dur_sec * 0.25)
             fb_z4 = int(dur_sec * 0.12)
-            fb_z5 = dur_sec - (fb_z1 + fb_z2 + fb_z3 + fb_z4)
+            fb_z5 = max(0, dur_sec - (fb_z1 + fb_z2 + fb_z3 + fb_z4))
             hr_zone_seconds["Z1"] += fb_z1
             hr_zone_seconds["Z2"] += fb_z2
             hr_zone_seconds["Z3"] += fb_z3
@@ -1578,9 +1601,9 @@ def compile_rollup(
 
         # Power zones (for cycling)
         if sport in ("cycling", "cycle") and has_cycling_power:
-            # Check if telemetry stream has power readings
             p_stream = act.get("telemetry_stream", {}).get("power") if isinstance(act.get("telemetry_stream"), dict) else None
             if isinstance(p_stream, list) and len(p_stream) > 0 and any(float(p or 0) > 0 for p in p_stream):
+                used_power_stream = True
                 stream_len = len(p_stream)
                 ratio = dur_sec / max(1, stream_len)
                 for reading in p_stream:
@@ -1600,6 +1623,7 @@ def compile_rollup(
                     else:
                         power_zone_seconds["Z1"] += ratio
             else:
+                used_power_fallback = True
                 power_zone_seconds["Z1"] += int(dur_sec * 0.12)
                 power_zone_seconds["Z2"] += int(dur_sec * 0.48)
                 power_zone_seconds["Z3"] += int(dur_sec * 0.22)
@@ -1609,12 +1633,43 @@ def compile_rollup(
                 power_zone_seconds["Z7"] += int(dur_sec * 0.005)
 
         # Pace zones (for hiking / running)
-        if sport in ("hiking", "running"):
-            pace_zone_seconds["Recovery"] += int(dur_sec * 0.15)
-            pace_zone_seconds["Aerobic"] += int(dur_sec * 0.50)
-            pace_zone_seconds["Tempo"] += int(dur_sec * 0.20)
-            pace_zone_seconds["Threshold"] += int(dur_sec * 0.12)
-            pace_zone_seconds["Interval"] += int(dur_sec * 0.03)
+        if sport in ("hiking", "running", "run", "hike"):
+            tel_dict = act.get("telemetry_stream") if isinstance(act.get("telemetry_stream"), dict) else None
+            speed_stream = tel_dict.get("speed") if tel_dict else None
+            act_splits = act.get("splits") if isinstance(act.get("splits"), list) else None
+            if isinstance(speed_stream, list) and len(speed_stream) > 0 and any(float(s or 0) > 0 for s in speed_stream):
+                used_pace_stream = True
+                ratio = dur_sec / max(1, len(speed_stream))
+                for s_raw in speed_stream:
+                    s_val = float(s_raw or 0.0)
+                    if s_val > 0.2:
+                        pace_zone_seconds[_classify_pace_zone(1000.0 / s_val)] += ratio
+                    else:
+                        pace_zone_seconds["Recovery"] += ratio
+            elif act_splits and any((float(sp.get("duration_seconds") or sp.get("split_sec") or 0) > 0) for sp in act_splits if isinstance(sp, dict)):
+                used_pace_stream = True
+                for sp in act_splits:
+                    if not isinstance(sp, dict):
+                        continue
+                    sp_dur = float(sp.get("duration_seconds") or sp.get("split_sec") or 0.0)
+                    if sp_dur <= 0:
+                        continue
+                    sp_speed = float(sp.get("speed_mps") or 0.0)
+                    if sp_speed <= 0:
+                        sp_dist = float(sp.get("distance_meters") or 0.0)
+                        if sp_dist > 0:
+                            sp_speed = sp_dist / sp_dur
+                    if sp_speed > 0.2:
+                        pace_zone_seconds[_classify_pace_zone(1000.0 / sp_speed)] += sp_dur
+                    else:
+                        pace_zone_seconds["Recovery"] += sp_dur
+            else:
+                used_pace_fallback = True
+                pace_zone_seconds["Recovery"] += int(dur_sec * 0.15)
+                pace_zone_seconds["Aerobic"] += int(dur_sec * 0.50)
+                pace_zone_seconds["Tempo"] += int(dur_sec * 0.20)
+                pace_zone_seconds["Threshold"] += int(dur_sec * 0.12)
+                pace_zone_seconds["Interval"] += int(dur_sec * 0.03)
 
     # Format canonical physiological blocks with percentage and dynamic boundaries
     total_hr_sec = sum(hr_zone_seconds.values())
@@ -1677,11 +1732,11 @@ def compile_rollup(
         })
 
     pace_zones_list = [
-        {"zone": "Recovery", "short_label": "Rec", "min_sec_km": 600, "max_sec_km": 720, "seconds": pace_zone_seconds["Recovery"]},
-        {"zone": "Aerobic", "short_label": "Aer", "min_sec_km": 500, "max_sec_km": 599, "seconds": pace_zone_seconds["Aerobic"]},
-        {"zone": "Tempo", "short_label": "Tempo", "min_sec_km": 420, "max_sec_km": 499, "seconds": pace_zone_seconds["Tempo"]},
-        {"zone": "Threshold", "short_label": "Thr", "min_sec_km": 360, "max_sec_km": 419, "seconds": pace_zone_seconds["Threshold"]},
-        {"zone": "Interval", "short_label": "Int", "min_sec_km": 280, "max_sec_km": 359, "seconds": pace_zone_seconds["Interval"]},
+        {"zone": "Recovery", "short_label": "Rec", "min_sec_km": 600, "max_sec_km": 720, "seconds": int(round(pace_zone_seconds["Recovery"]))},
+        {"zone": "Aerobic", "short_label": "Aer", "min_sec_km": 500, "max_sec_km": 599, "seconds": int(round(pace_zone_seconds["Aerobic"]))},
+        {"zone": "Tempo", "short_label": "Tempo", "min_sec_km": 420, "max_sec_km": 499, "seconds": int(round(pace_zone_seconds["Tempo"]))},
+        {"zone": "Threshold", "short_label": "Thr", "min_sec_km": 360, "max_sec_km": 419, "seconds": int(round(pace_zone_seconds["Threshold"]))},
+        {"zone": "Interval", "short_label": "Int", "min_sec_km": 280, "max_sec_km": 359, "seconds": int(round(pace_zone_seconds["Interval"]))},
     ]
 
     if wellness is not None and isinstance(wellness, dict):
@@ -1790,8 +1845,22 @@ def compile_rollup(
     # -----------------------------------------------------------------------
     # Backup Vault Rollup Metadata (F20)
     # -----------------------------------------------------------------------
+    manifest_provider = (
+        sync_manifest.get("storage_provider")
+        if isinstance(sync_manifest, dict)
+        else getattr(sync_manifest, "storage_provider", None)
+    )
+    resolved_storage_provider = (
+        storage_provider
+        or manifest_provider
+        or athlete_profile.get("storage_provider")
+        or "Hetzner Storage Box"
+    )
+
     if backup_vault is not None and isinstance(backup_vault, dict):
         vault_entry = dict(backup_vault)
+        if storage_provider and not vault_entry.get("storage_provider"):
+            vault_entry["storage_provider"] = storage_provider
     elif sync_manifest is not None:
         if hasattr(sync_manifest, "archival_health"):
             health = sync_manifest.archival_health
@@ -1826,7 +1895,7 @@ def compile_rollup(
 
         vault_entry = {
             "status": health,
-            "storage_provider": "Hetzner Storage Box",
+            "storage_provider": resolved_storage_provider,
             "total_activities": total_acts if total_acts > 0 else len(canonical_activities),
             "activities_by_year": sorted_by_year,
             "last_backup_datetime": last_sync,
@@ -1846,7 +1915,7 @@ def compile_rollup(
 
         vault_entry = {
             "status": "healthy",
-            "storage_provider": "Hetzner Storage Box",
+            "storage_provider": resolved_storage_provider,
             "total_activities": len(canonical_activities),
             "activities_by_year": sorted_by_year,
             "last_backup_datetime": generated_at,
@@ -1887,6 +1956,8 @@ def compile_rollup(
             "heart_rate_zones": heart_rate_zones_list,
             "power_zones": power_zones_list,
             "pace_zones": pace_zones_list,
+            "power_zones_estimated": bool(used_power_fallback and not used_power_stream),
+            "pace_zones_estimated": bool(used_pace_fallback and not used_pace_stream),
             "threshold_trends": threshold_trends,
         },
         "activities": canonical_activities,
@@ -1903,6 +1974,7 @@ def compile_dashboard_rollup(
     sync_manifest: Optional[Any] = None,
     backup_vault: Optional[Dict[str, Any]] = None,
     wellness: Optional[Dict[str, Any]] = None,
+    storage_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compiles dashboard rollup JSON dictionary."""
     if activities is None or len(activities) == 0:
@@ -1913,6 +1985,7 @@ def compile_dashboard_rollup(
         sync_manifest=sync_manifest,
         backup_vault=backup_vault,
         wellness=wellness,
+        storage_provider=storage_provider,
     )
 
 

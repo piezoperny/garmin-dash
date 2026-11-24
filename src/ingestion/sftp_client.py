@@ -57,6 +57,7 @@ class SFTPConfig:
     key_passphrase: Optional[str] = None
     timeout: float = 30.0
     base_dir: str = "garmin_archive"
+    host_key: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> Optional[SFTPConfig]:
@@ -67,12 +68,14 @@ class SFTPConfig:
             return None
         port = int(os.environ.get("HETZNER_PORT", "23"))
         key_passphrase = os.environ.get("HETZNER_KEY_PASSPHRASE", "").strip() or None
+        host_key = os.environ.get("HETZNER_HOST_KEY", "").strip() or None
         return cls(
             host=host,
             port=port,
             user=user,
             ssh_key=ssh_key,
             key_passphrase=key_passphrase,
+            host_key=host_key,
         )
 
 
@@ -252,6 +255,80 @@ class SFTPClientProtocol(Protocol):
 # Hetzner SFTP Client Implementation
 # ---------------------------------------------------------------------------
 
+def _configure_host_key_policy(ssh: Any, host: str, port: int, host_key_str: Optional[str]) -> None:
+    """Pin host key via RejectPolicy when HETZNER_HOST_KEY is provided, else AutoAddPolicy with warning."""
+    import base64
+    import paramiko
+
+    if not host_key_str:
+        logger.warning(
+            "HETZNER_HOST_KEY is not set; falling back to AutoAddPolicy() without host-key pinning."
+        )
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        return
+
+    parts = host_key_str.strip().split()
+    if len(parts) >= 2 and parts[0].startswith(("ssh-", "ecdsa-sha2-")):
+        key_type, key_b64 = parts[0], parts[1]
+    elif len(parts) >= 3 and parts[1].startswith(("ssh-", "ecdsa-sha2-")):
+        key_type, key_b64 = parts[1], parts[2]
+    else:
+        raise SFTPArchivalError("Invalid HETZNER_HOST_KEY format; expected '<key_type> <base64_key>'.")
+
+    try:
+        raw_bytes = base64.b64decode(key_b64, validate=True)
+    except Exception as exc:
+        raise SFTPArchivalError(f"Invalid base64 in HETZNER_HOST_KEY: {exc}") from exc
+
+    key_cls_map = {
+        "ssh-ed25519": paramiko.Ed25519Key,
+        "ssh-rsa": paramiko.RSAKey,
+        "ecdsa-sha2-nistp256": paramiko.ECDSAKey,
+        "ecdsa-sha2-nistp384": paramiko.ECDSAKey,
+        "ecdsa-sha2-nistp521": paramiko.ECDSAKey,
+    }
+    key_cls = key_cls_map.get(key_type)
+    if key_cls is None:
+        raise SFTPArchivalError(f"Unsupported HETZNER_HOST_KEY type: {key_type}")
+
+    pkey_obj = key_cls(data=raw_bytes)
+    host_keys = ssh.get_host_keys()
+    host_keys.add(host, key_type, pkey_obj)
+    if port != 22:
+        host_keys.add(f"[{host}]:{port}", key_type, pkey_obj)
+    ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+
+def _posix_rename_with_fallback(sftp: Any, old_path: str, new_path: str) -> None:
+    """Atomically rename via posix_rename, falling back to remove+rename only if unsupported."""
+    import errno
+
+    if hasattr(sftp, "posix_rename"):
+        try:
+            sftp.posix_rename(old_path, new_path)
+            return
+        except (IOError, OSError) as exc:
+            err_no = getattr(exc, "errno", None)
+            msg = str(exc).lower()
+            unsupported_errnos = {
+                getattr(errno, "EOPNOTSUPP", 95),
+                getattr(errno, "ENOTSUP", 95),
+            }
+            if (
+                err_no not in unsupported_errnos
+                and "not supported" not in msg
+                and "unsupported" not in msg
+                and "does not support" not in msg
+            ):
+                raise
+
+    try:
+        sftp.remove(new_path)
+    except (IOError, FileNotFoundError):
+        pass
+    sftp.rename(old_path, new_path)
+
+
 class HetznerSFTPClient:
     """
     Paramiko-based SFTP client for Hetzner Storage Box.
@@ -268,6 +345,7 @@ class HetznerSFTPClient:
         key_passphrase: Optional[str] = None,
         timeout: float = 30.0,
         base_dir: str = "garmin_archive",
+        host_key: Optional[str] = None,
     ):
         if isinstance(host_or_config, SFTPConfig):
             self.config = host_or_config
@@ -284,6 +362,7 @@ class HetznerSFTPClient:
                 key_passphrase=key_passphrase,
                 timeout=timeout,
                 base_dir=base_dir,
+                host_key=host_key,
             )
 
         self._ssh_client: Optional[Any] = None
@@ -302,9 +381,13 @@ class HetznerSFTPClient:
         import paramiko
 
         if self.connected and self._sftp:
-            return
+            transport = self._ssh_client.get_transport() if self._ssh_client else None
+            if transport is not None and transport.is_active():
+                return
+            self.close()
 
         pkey = parse_private_key(self.config.ssh_key, self.config.key_passphrase)
+        host_key_str = self.config.host_key or os.environ.get("HETZNER_HOST_KEY", "").strip() or None
 
         ports_to_try = [self.config.port]
         if self.config.port == 23:
@@ -316,7 +399,7 @@ class HetznerSFTPClient:
         for port in ports_to_try:
             try:
                 ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                _configure_host_key_policy(ssh, self.config.host, port, host_key_str)
                 logger.info(f"Connecting to Hetzner Storage Box {self.config.host}:{port} as {self.config.user}...")
                 ssh.connect(
                     hostname=self.config.host,
@@ -329,6 +412,9 @@ class HetznerSFTPClient:
                     allow_agent=False,
                     look_for_keys=False,
                 )
+                transport = ssh.get_transport()
+                if transport is not None:
+                    transport.set_keepalive(30)
                 self._ssh_client = ssh
                 self._sftp = ssh.open_sftp()
                 self.connected = True
@@ -372,82 +458,115 @@ class HetznerSFTPClient:
         self.disconnect()
 
     def _ensure_connected(self) -> Any:
-        if not self.connected or not self._sftp:
+        transport = self._ssh_client.get_transport() if self._ssh_client else None
+        if not self.connected or not self._sftp or transport is None or not transport.is_active():
+            self.close()
             self.connect()
         return self._sftp
+
+    def _with_reconnect(self, fn: Any) -> Any:
+        import paramiko
+
+        sftp = self._ensure_connected()
+        try:
+            return fn(sftp)
+        except (EOFError, paramiko.SSHException) as exc:
+            logger.warning(f"SFTP transport error ({exc}); reconnecting once...")
+            self.close()
+            self.connect()
+            return fn(self._sftp)
 
     def _normalize(self, path: str) -> str:
         return path.replace("\\", "/").strip("/")
 
     def mkdir_p(self, remote_dir: str) -> None:
         """Recursively creates remote directories, equivalent to 'mkdir -p'."""
-        sftp = self._ensure_connected()
         normalized = self._normalize(remote_dir)
         if not normalized:
             return
 
-        parts = [p for p in normalized.split("/") if p]
-        current_path = ""
-        for part in parts:
-            current_path = f"{current_path}/{part}" if current_path else part
-            try:
-                sftp.stat(current_path)
-            except (IOError, FileNotFoundError):
+        def _op(sftp: Any) -> None:
+            parts = [p for p in normalized.split("/") if p]
+            current_path = ""
+            for part in parts:
+                current_path = f"{current_path}/{part}" if current_path else part
                 try:
-                    sftp.mkdir(current_path)
-                except IOError:
-                    # Directory may have been created concurrently
-                    pass
+                    sftp.stat(current_path)
+                except (IOError, FileNotFoundError):
+                    try:
+                        sftp.mkdir(current_path)
+                    except IOError:
+                        # Directory may have been created concurrently
+                        pass
+
+        self._with_reconnect(_op)
 
     def file_exists(self, remote_path: str) -> bool:
-        sftp = self._ensure_connected()
         norm = self._normalize(remote_path)
-        try:
-            stat_res = sftp.stat(norm)
-            return not stat_module.S_ISDIR(stat_res.st_mode)
-        except (IOError, FileNotFoundError):
-            return False
+
+        def _op(sftp: Any) -> bool:
+            try:
+                stat_res = sftp.stat(norm)
+                return not stat_module.S_ISDIR(stat_res.st_mode)
+            except (IOError, FileNotFoundError):
+                return False
+
+        return self._with_reconnect(_op)
 
     def stat(self, remote_path: str) -> SFTPFileStat:
-        sftp = self._ensure_connected()
         norm = self._normalize(remote_path)
+
+        def _op(sftp: Any) -> SFTPFileStat:
+            try:
+                res = sftp.stat(norm)
+                return SFTPFileStat(
+                    filename=posixpath.basename(norm),
+                    size_bytes=res.st_size,
+                    mtime=res.st_mtime or int(time.time()),
+                    is_dir=stat_module.S_ISDIR(res.st_mode),
+                )
+            except (EOFError, OSError):
+                raise
+            except Exception as e:
+                raise FileNotFoundError(f"Remote path not found: {remote_path}") from e
+
         try:
-            res = sftp.stat(norm)
-            return SFTPFileStat(
-                filename=posixpath.basename(norm),
-                size_bytes=res.st_size,
-                mtime=res.st_mtime or int(time.time()),
-                is_dir=stat_module.S_ISDIR(res.st_mode),
-            )
+            return self._with_reconnect(_op)
+        except FileNotFoundError:
+            raise
         except Exception as e:
             raise FileNotFoundError(f"Remote path not found: {remote_path}") from e
 
     def listdir(self, remote_dir: str) -> List[str]:
-        sftp = self._ensure_connected()
         norm = self._normalize(remote_dir)
-        try:
+
+        def _op(sftp: Any) -> List[str]:
             return sftp.listdir(norm)
+
+        try:
+            return self._with_reconnect(_op)
         except Exception as e:
             raise IOError(f"Failed to list remote directory {remote_dir}: {e}") from e
 
     def remove(self, remote_path: str) -> None:
-        sftp = self._ensure_connected()
         norm = self._normalize(remote_path)
-        try:
-            sftp.remove(norm)
-        except (IOError, FileNotFoundError):
-            pass
+
+        def _op(sftp: Any) -> None:
+            try:
+                sftp.remove(norm)
+            except (IOError, FileNotFoundError):
+                pass
+
+        self._with_reconnect(_op)
 
     def rename(self, old_path: str, new_path: str) -> None:
-        sftp = self._ensure_connected()
         old_norm = self._normalize(old_path)
         new_norm = self._normalize(new_path)
-        # Pre-emptively remove destination if exists for OpenSSH compatibility
-        try:
-            sftp.remove(new_norm)
-        except (IOError, FileNotFoundError):
-            pass
-        sftp.rename(old_norm, new_norm)
+
+        def _op(sftp: Any) -> None:
+            _posix_rename_with_fallback(sftp, old_norm, new_norm)
+
+        self._with_reconnect(_op)
 
     def upload_file(self, local_path: Union[Path, str], remote_path: str, atomic: bool = True) -> bool:
         """Uploads local file to remote_path with atomic rename and size verification."""
@@ -463,7 +582,6 @@ class HetznerSFTPClient:
 
     def upload_bytes(self, data: bytes, remote_path: str, atomic: bool = True) -> bool:
         """Uploads raw bytes to remote_path with atomic rename and size verification."""
-        sftp = self._ensure_connected()
         norm = self._normalize(remote_path)
         parent = posixpath.dirname(norm)
         if parent:
@@ -471,43 +589,41 @@ class HetznerSFTPClient:
 
         expected_size = len(data)
 
-        if not atomic:
-            with sftp.file(norm, "wb") as f:
-                f.write(data)
-            stat_res = sftp.stat(norm)
-            if stat_res.st_size != expected_size:
-                raise IOError(f"SFTP upload verification failed for {remote_path}: size mismatch")
-            return True
+        def _op(sftp: Any) -> bool:
+            if not atomic:
+                with sftp.file(norm, "wb") as f:
+                    f.write(data)
+                stat_res = sftp.stat(norm)
+                if stat_res.st_size != expected_size:
+                    raise IOError(f"SFTP upload verification failed for {remote_path}: size mismatch")
+                return True
 
-        tmp_path = f"{norm}.tmp.{uuid.uuid4().hex[:8]}"
-        try:
-            with sftp.file(tmp_path, "wb") as f:
-                f.write(data)
+            tmp_path = f"{norm}.tmp.{uuid.uuid4().hex[:8]}"
+            try:
+                with sftp.file(tmp_path, "wb") as f:
+                    f.write(data)
 
-            stat_res = sftp.stat(tmp_path)
-            if stat_res.st_size != expected_size:
+                stat_res = sftp.stat(tmp_path)
+                if stat_res.st_size != expected_size:
+                    try:
+                        sftp.remove(tmp_path)
+                    except Exception:
+                        pass
+                    raise IOError(
+                        f"SFTP upload size mismatch verification failed for {remote_path}: "
+                        f"expected {expected_size} bytes, got {stat_res.st_size}"
+                    )
+
+                _posix_rename_with_fallback(sftp, tmp_path, norm)
+                return True
+            except Exception:
                 try:
                     sftp.remove(tmp_path)
                 except Exception:
                     pass
-                raise IOError(
-                    f"SFTP upload size mismatch verification failed for {remote_path}: "
-                    f"expected {expected_size} bytes, got {stat_res.st_size}"
-                )
+                raise
 
-            # Atomically replace destination
-            try:
-                sftp.remove(norm)
-            except (IOError, FileNotFoundError):
-                pass
-            sftp.rename(tmp_path, norm)
-            return True
-        except Exception:
-            try:
-                sftp.remove(tmp_path)
-            except Exception:
-                pass
-            raise
+        return self._with_reconnect(_op)
 
     def put_bytes(self, remote_path: str, data: bytes) -> None:
         self.upload_bytes(data, remote_path, atomic=True)
@@ -516,11 +632,14 @@ class HetznerSFTPClient:
         self.upload_file(local_path, remote_path, atomic=True)
 
     def download_bytes(self, remote_path: str) -> bytes:
-        sftp = self._ensure_connected()
         norm = self._normalize(remote_path)
-        try:
+
+        def _op(sftp: Any) -> bytes:
             with sftp.file(norm, "rb") as f:
                 return f.read()
+
+        try:
+            return self._with_reconnect(_op)
         except Exception as e:
             raise FileNotFoundError(f"Remote file not found: {remote_path}") from e
 
@@ -1007,13 +1126,19 @@ def get_sftp_client(force_mock: bool = False, config: Optional[SFTPConfig] = Non
     Returns an SFTPClientProtocol instance.
     If force_mock is True, or if HETZNER_HOST/HETZNER_SSH_KEY are missing from environment,
     returns an instance of MockSFTPClient.
+    Raises RuntimeError if HETZNER_HOST (or config) is configured and connection fails.
     """
     if force_mock or os.environ.get("FORCE_MOCK", "").lower() in ("true", "1", "yes"):
         logger.info("Using MockSFTPClient (mock mode requested)")
         return MockSFTPClient()
 
+    hetzner_host = os.environ.get("HETZNER_HOST", "").strip()
     resolved_config = config or SFTPConfig.from_env()
     if not resolved_config:
+        if hetzner_host:
+            raise RuntimeError(
+                f"HETZNER_HOST ({hetzner_host}) is configured, but HETZNER_USER or HETZNER_SSH_KEY is missing."
+            )
         logger.info("Hetzner SFTP credentials not found in environment; falling back to MockSFTPClient.")
         return MockSFTPClient()
 
@@ -1022,5 +1147,6 @@ def get_sftp_client(force_mock: bool = False, config: Optional[SFTPConfig] = Non
         client.connect()
         return client
     except Exception as e:
-        logger.warning(f"Could not connect live Hetzner SFTP ({e}); falling back to MockSFTPClient.")
-        return MockSFTPClient()
+        raise RuntimeError(
+            f"HETZNER_HOST is configured ({resolved_config.host}), but SFTP connection failed: {e}"
+        ) from e

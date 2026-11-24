@@ -56,7 +56,6 @@ jobs:
       # Step 4: Install Python dependencies
       - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       # Step 5: Cache and install frontend dependencies
@@ -73,12 +72,12 @@ jobs:
           cd frontend
           npm install --prefer-offline --no-audit
 
-      # Step 5b: Cache encrypted stream shards across runs for fast delta sync
-      - name: Cache public/streams/*.enc shards
+      # Step 5b: Cache encrypted stream shards/packs across runs for fast delta sync
+      - name: Cache public/streams packs & shards
         uses: actions/cache@v4
         with:
           path: public/streams
-          key: garmin-streams-${{ github.run_id }}
+          key: garmin-streams-${{ hashFiles('public/streams/pack_keys.enc') }}
           restore-keys: |
             garmin-streams-
 

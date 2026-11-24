@@ -870,3 +870,12 @@ export function closeCalendarModal() {
   modal.classList.add('hidden');
   modal.setAttribute('aria-hidden', 'true');
 }
+
+/**
+ * Clears retained calendar rollup cache (called on Lock Vault).
+ */
+export function clearCalendarCache() {
+  calendarState.rollup = null;
+  calendarState.selectedDate = null;
+  calendarState.latestDateStr = null;
+}

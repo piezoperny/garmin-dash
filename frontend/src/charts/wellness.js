@@ -1188,15 +1188,29 @@ function attachDragAndDropListeners() {
 }
 
 /**
+ * Clears retained wellness rollup cache (called on Lock Vault).
+ */
+export function clearWellnessCache() {
+  activeRollupCache = null;
+}
+
+/**
  * Initializes global wellness event listeners (e.g. Edit Cards button in header).
  */
 export function setupWellnessEventListeners() {
   const editBtn = document.getElementById('btn-edit-home');
   if (editBtn) {
     editBtn.addEventListener('click', () => {
-      const modal = document.getElementById('customize-modal');
-      if (modal) {
-        modal.classList.remove('hidden');
+      let handled = false;
+      if (typeof CustomEvent === 'function' && typeof document !== 'undefined' && typeof document.dispatchEvent === 'function') {
+        const evt = new CustomEvent('garmin-dash:open-customize', { bubbles: true, cancelable: true });
+        handled = !document.dispatchEvent(evt);
+      }
+      if (!handled) {
+        const modal = document.getElementById('customize-modal');
+        if (modal) {
+          modal.classList.remove('hidden');
+        }
       }
     });
   }

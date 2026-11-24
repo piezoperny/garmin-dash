@@ -17,6 +17,58 @@ let currentPolyline = null;
 let startMarker = null;
 let finishMarker = null;
 let scrubberMarker = null;
+let leafletLoadPromise = null;
+let latestRouteMapActivity = null;
+
+const LEAFLET_CSS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+const LEAFLET_CSS_INTEGRITY = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
+const LEAFLET_JS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+const LEAFLET_JS_INTEGRITY = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+
+/**
+ * Dynamically injects Leaflet CSS and JS on first map render if window.L is not already present.
+ * Returns an in-flight singleton promise so concurrent calls share one load.
+ * @returns {Promise<object|null>}
+ */
+export function ensureLeafletLoaded() {
+  if (typeof window !== 'undefined' && window.L) {
+    return Promise.resolve(window.L);
+  }
+  if (typeof document === 'undefined' || !document.head || typeof document.createElement !== 'function') {
+    return Promise.resolve(null);
+  }
+  if (leafletLoadPromise) {
+    return leafletLoadPromise;
+  }
+
+  leafletLoadPromise = new Promise((resolve) => {
+    const hasCss = typeof document.querySelector === 'function' && document.querySelector('link[href*="leaflet"]');
+    if (!hasCss) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = LEAFLET_CSS_URL;
+      link.integrity = LEAFLET_CSS_INTEGRITY;
+      link.crossOrigin = '';
+      document.head.appendChild(link);
+    }
+
+    const script = document.createElement('script');
+    script.src = LEAFLET_JS_URL;
+    script.integrity = LEAFLET_JS_INTEGRITY;
+    script.crossOrigin = '';
+    script.async = true;
+    script.onload = () => {
+      resolve((typeof window !== 'undefined' && window.L) ? window.L : null);
+    };
+    script.onerror = () => {
+      leafletLoadPromise = null;
+      resolve(null);
+    };
+    document.head.appendChild(script);
+  });
+
+  return leafletLoadPromise;
+}
 
 /**
  * Safely shows an element across standard and mock DOM environments.
@@ -173,44 +225,7 @@ export function extractCoordinates(gpsTrack) {
   return [];
 }
 
-/**
- * Renders or updates the interactive GPS route map for the selected activity.
- * @param {object} activity
- */
-export function renderRouteMap(activity) {
-  const mapEl = document.getElementById('activity-route-map');
-  const fallbackEl = document.getElementById('drawer-map-fallback');
-  const metaEl = document.getElementById('drawer-map-meta');
-
-  const rawCoords = activity ? extractCoordinates(activity.gps_track) : [];
-  const coords = filterGpsOutliers(rawCoords);
-
-  if (!coords || coords.length === 0) {
-    hideElement(mapEl);
-    showElement(fallbackEl);
-    if (metaEl) metaEl.textContent = 'Indoor / No GPS';
-    destroyRouteMap();
-    return;
-  }
-
-  showElement(mapEl);
-  hideElement(fallbackEl);
-  if (metaEl) metaEl.textContent = `${coords.length} GPS Points`;
-
-  const bounds = calculateBounds(coords);
-
-  // Check Leaflet availability (safeguard for headless / test runner environments)
-  const L = (typeof window !== 'undefined' && window.L) ? window.L : null;
-  if (!L || !mapEl) {
-    if (mapEl) {
-      if (typeof mapEl.setAttribute === 'function') {
-        mapEl.setAttribute('data-points-count', String(coords.length));
-        if (bounds) mapEl.setAttribute('data-bounds', JSON.stringify(bounds));
-      }
-    }
-    return;
-  }
-
+function renderLeafletRoute(L, mapEl, coords, bounds) {
   // Ensure clean map instance on container
   if (!currentMapInstance) {
     currentMapInstance = L.map(mapEl, {
@@ -295,6 +310,56 @@ export function renderRouteMap(activity) {
 }
 
 /**
+ * Renders or updates the interactive GPS route map for the selected activity.
+ * @param {object} activity
+ */
+export function renderRouteMap(activity) {
+  const mapEl = document.getElementById('activity-route-map');
+  const fallbackEl = document.getElementById('drawer-map-fallback');
+  const metaEl = document.getElementById('drawer-map-meta');
+
+  latestRouteMapActivity = activity || null;
+
+  const rawCoords = activity ? extractCoordinates(activity.gps_track) : [];
+  const coords = filterGpsOutliers(rawCoords);
+
+  if (!coords || coords.length === 0) {
+    hideElement(mapEl);
+    showElement(fallbackEl);
+    if (metaEl) metaEl.textContent = 'Indoor / No GPS';
+    destroyRouteMap();
+    return;
+  }
+
+  showElement(mapEl);
+  hideElement(fallbackEl);
+  if (metaEl) metaEl.textContent = `${coords.length} GPS Points`;
+
+  const bounds = calculateBounds(coords);
+
+  // Check Leaflet availability (safeguard for headless / test runner environments)
+  const L = (typeof window !== 'undefined' && window.L) ? window.L : null;
+  if (!L || !mapEl) {
+    if (mapEl) {
+      if (typeof mapEl.setAttribute === 'function') {
+        mapEl.setAttribute('data-points-count', String(coords.length));
+        if (bounds) mapEl.setAttribute('data-bounds', JSON.stringify(bounds));
+      }
+      if (!L && typeof document !== 'undefined' && document.head) {
+        ensureLeafletLoaded().then((loadedL) => {
+          if (loadedL && latestRouteMapActivity === activity) {
+            renderLeafletRoute(loadedL, mapEl, coords, bounds);
+          }
+        });
+      }
+    }
+    return;
+  }
+
+  renderLeafletRoute(L, mapEl, coords, bounds);
+}
+
+/**
  * Updates or renders the synchronized scrubber marker along the GPS route.
  * @param {number} lat
  * @param {number} lng
@@ -343,6 +408,7 @@ export function clearScrubberMarker() {
  * Destroys active Leaflet map instance and cleans up references.
  */
 export function destroyRouteMap() {
+  latestRouteMapActivity = null;
   if (currentMapInstance) {
     try {
       currentMapInstance.remove();
@@ -376,6 +442,7 @@ if (typeof window !== 'undefined') {
     decodePolyline,
     filterGpsOutliers,
     calculateBounds,
-    invalidateMapSize
+    invalidateMapSize,
+    ensureLeafletLoaded
   };
 }

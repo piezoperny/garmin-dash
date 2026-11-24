@@ -7,11 +7,15 @@ and pipeline CLI.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import inspect
 import json
 import logging
+import math
 import os
 import re
 import shutil
+import statistics
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -338,7 +342,7 @@ def reprocess_canonical_activities(
 
         dur_sec = int(float(act.get("duration_seconds") or 0))
         dist_m = 0.0 if new_sport in ("strength", "weights") else float(act.get("distance_meters") or 0.0)
-        avg_hr = int(float(act.get("avg_hr") or 130))
+        avg_hr_val = safe_int(act.get("avg_hr"))
         elev_m = 0 if new_sport in ("strength", "weights", "swimming") else int(float(act.get("elevation_gain_meters") or 0))
         avg_power = act.get("avg_power")
 
@@ -347,13 +351,24 @@ def reprocess_canonical_activities(
         else:
             avg_pace_sec_km = None
 
-        calc_tss = compute_activity_tss(
-            sport=new_sport,
-            dur_sec=dur_sec,
-            avg_hr=avg_hr,
-            elev_m=elev_m,
-            avg_power=avg_power,
+        existing_tss = safe_float(act.get("tss") or act.get("training_stress_score"))
+        raw_atl_load = safe_float(raw_summary.get("activityTrainingLoad")) if isinstance(raw_summary, dict) else None
+        has_garmin_tss_source = (
+            act.get("tss_source") == "garmin"
+            or act.get("activityTrainingLoad") is not None
+            or (raw_atl_load is not None and raw_atl_load > 0)
         )
+        if has_garmin_tss_source and existing_tss is not None and existing_tss > 0:
+            calc_tss = round(existing_tss, 1)
+            act["tss_source"] = "garmin"
+        else:
+            calc_tss = compute_activity_tss(
+                sport=new_sport,
+                dur_sec=dur_sec,
+                avg_hr=avg_hr_val if avg_hr_val is not None else 0,
+                elev_m=elev_m,
+                avg_power=avg_power,
+            )
 
         act["sport"] = new_sport
         act["distance_meters"] = dist_m
@@ -368,9 +383,17 @@ def reprocess_canonical_activities(
             for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
                 act.pop(forbidden_key, None)
             act["gps_track"] = None
-            act["telemetry_stream"] = None
             act["summary_polyline"] = None
-            act["has_streams"] = False
+            tel = act.get("telemetry_stream")
+            if isinstance(tel, dict) and isinstance(tel.get("hr"), list) and len(tel["hr"]) > 0:
+                act["telemetry_stream"] = {
+                    "time": list(tel.get("time") or list(range(len(tel["hr"])))),
+                    "hr": list(tel["hr"]),
+                }
+                act["has_streams"] = True
+            else:
+                act["telemetry_stream"] = None
+                act["has_streams"] = False
         else:
             if not act.get("summary_polyline") and isinstance(act.get("gps_track"), dict):
                 act["summary_polyline"] = (
@@ -611,6 +634,7 @@ def parse_garmin_activity_detail_metrics(
     hr_idx = find_idx("directheartrate", "heartrate", "directheartratebpm", "hr")
     speed_idx = find_idx("directspeed", "speed")
     cad_idx = find_idx("directruncadence", "directbikecadence", "directcadence", "cadence")
+    power_idx = find_idx("directpower", "power", "directwatts", "watts")
     dist_idx = find_idx("directdistance", "distance", "directsumdistance")
     lat_idx = find_idx("directlatitude", "latitude", "lat")
     lon_idx = find_idx("directlongitude", "longitude", "lon")
@@ -620,10 +644,14 @@ def parse_garmin_activity_detail_metrics(
     hr_stream: List[int] = []
     speed_stream: List[float] = []
     cad_stream: List[int] = []
+    power_stream: List[float] = []
     dist_stream: List[float] = []
     geo_pts: List[List[float]] = []
 
     first_t: Optional[float] = None
+    last_valid_dist: float = 0.0
+    has_any_dist: bool = False
+    has_any_power: bool = False
     metric_count = len(raw_metrics)
 
     for i, item in enumerate(raw_metrics):
@@ -673,11 +701,24 @@ def parse_garmin_activity_detail_metrics(
         c_i = safe_int(raw_c)
         cad_stream.append(c_i if c_i is not None else 0)
 
-        # Distance
-        raw_d = get_metric(dist_idx)
-        d_f = safe_float(raw_d)
-        if d_f is not None:
-            dist_stream.append(round(d_f, 1))
+        # Power
+        if power_idx is not None:
+            raw_p = get_metric(power_idx)
+            p_f = safe_float(raw_p)
+            if p_f is not None:
+                has_any_power = True
+                power_stream.append(round(p_f, 1))
+            else:
+                power_stream.append(0.0)
+
+        # Distance (carry forward last valid sample on None)
+        if dist_idx is not None:
+            raw_d = get_metric(dist_idx)
+            d_f = safe_float(raw_d)
+            if d_f is not None:
+                last_valid_dist = round(d_f, 1)
+                has_any_dist = True
+            dist_stream.append(last_valid_dist)
 
         # Lat / Lon
         raw_lat = get_metric(lat_idx)
@@ -697,7 +738,9 @@ def parse_garmin_activity_detail_metrics(
         "speed": speed_stream,
         "cadence": cad_stream,
     }
-    if dist_stream and len(dist_stream) == len(time_stream):
+    if has_any_power and len(power_stream) == len(time_stream):
+        stream_res["power"] = power_stream
+    if has_any_dist and len(dist_stream) == len(time_stream):
         stream_res["distance"] = dist_stream
 
     if geo_pts:
@@ -742,8 +785,9 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
     dur_sec = _extract_num(summary, ("duration", "durationInSeconds", "duration_seconds"), safe_int, 0)
     moving_sec = _extract_num(summary, ("movingDuration", "movingDurationInSeconds", "moving_time_seconds"), safe_int, dur_sec)
     dist_m = 0.0 if sport in ("strength", "weights") else _extract_num(summary, ("distance", "distanceInMeters", "distance_meters"), safe_float, 0.0)
-    avg_hr = _extract_num(summary, ("averageHR", "averageHeartRateInBeatsPerMinute", "avg_hr"), safe_int, 130)
-    max_hr = _extract_num(summary, ("maxHR", "maxHeartRateInBeatsPerMinute", "max_hr"), safe_int, max(avg_hr + 15, 145))
+    avg_hr = _extract_num(summary, ("averageHR", "averageHeartRateInBeatsPerMinute", "avg_hr"), safe_int, None)
+    max_hr = _extract_num(summary, ("maxHR", "maxHeartRateInBeatsPerMinute", "max_hr"), safe_int, None)
+    hr_fallback = avg_hr if avg_hr is not None else 0
     elev_m = 0 if sport in ("strength", "weights", "swimming") else _extract_num(summary, ("elevationGain", "totalElevationGainInMeters", "elevation_gain_meters"), safe_int, 0)
     avg_power = None if sport != "cycling" else _extract_num(summary, ("avgPower", "averagePower", "averagePowerInWatts", "avg_power"), safe_float, None)
 
@@ -760,13 +804,14 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     tss_raw = _extract_num(summary, ("activityTrainingLoad", "trainingStressScore", "tss"), safe_float, None)
+    tss_source = "garmin" if (tss_raw is not None and tss_raw > 0) else "computed"
     tss = float(
         tss_raw
-        if tss_raw is not None
+        if (tss_raw is not None and tss_raw > 0)
         else compute_activity_tss(
             sport=sport,
             dur_sec=dur_sec,
-            avg_hr=avg_hr,
+            avg_hr=hr_fallback,
             elev_m=elev_m,
             avg_power=avg_power,
         )
@@ -797,8 +842,8 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not raw_laps and raw_splits:
         raw_laps = raw_splits
 
-    canonical_splits = normalize_splits(raw_splits, sport=sport, default_hr=avg_hr, default_cadence=avg_cadence)
-    canonical_laps = normalize_splits(raw_laps, sport=sport, default_hr=avg_hr, default_cadence=avg_cadence)
+    canonical_splits = normalize_splits(raw_splits, sport=sport, default_hr=hr_fallback, default_cadence=avg_cadence)
+    canonical_laps = normalize_splits(raw_laps, sport=sport, default_hr=hr_fallback, default_cadence=avg_cadence)
 
     # Live GPS & Telemetry extraction
     gps_track = details.get("gps_track")
@@ -806,7 +851,7 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     # Ingest metricDescriptors & activityDetailMetrics if available
     if not telemetry_stream and "metricDescriptors" in details and "activityDetailMetrics" in details:
-        parsed_stream = parse_garmin_activity_detail_metrics(details, dur_sec=dur_sec, avg_hr=avg_hr)
+        parsed_stream = parse_garmin_activity_detail_metrics(details, dur_sec=dur_sec, avg_hr=hr_fallback)
         if parsed_stream:
             geo_pts = parsed_stream.pop("_geo_points", None)
             telemetry_stream = parsed_stream
@@ -833,7 +878,7 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                 pts_with_telemetry = []
                 for idx_p, p in enumerate(pts):
                     e_val = 0.0
-                    h_val = avg_hr
+                    h_val = hr_fallback
                     if telemetry_stream:
                         elevs = telemetry_stream.get("elevation") or []
                         hrs = telemetry_stream.get("hr") or []
@@ -863,7 +908,7 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                     if abs(lat_f) < 0.001 and abs(lon_f) < 0.001:
                         continue
                     alt_f = round(float(pt.get("altitude") or pt.get("elevation") or 0.0), 1)
-                    hr_i = int(float(pt.get("hr") or pt.get("heartRate") or avg_hr))
+                    hr_i = int(float(pt.get("hr") or pt.get("heartRate") or hr_fallback))
                     pts_full.append([lat_f, lon_f, alt_f, hr_i])
                     lat_lon_pairs.append((lat_f, lon_f))
                     t_sec = int((idx_pt / max(1, len(poly_raw) - 1)) * dur_sec)
@@ -903,7 +948,7 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "distance_meters": 0.0,
                     "duration_seconds": block_dur,
                     "split_sec": block_dur,
-                    "avg_hr": avg_hr,
+                    "avg_hr": hr_fallback,
                     "avg_cadence": 0,
                     "elevation_diff": 0,
                     "speed_mps": None,
@@ -923,7 +968,7 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "distance_meters": round(split_dist, 1),
                     "duration_seconds": split_dur,
                     "split_sec": split_dur,
-                    "avg_hr": avg_hr,
+                    "avg_hr": hr_fallback,
                     "avg_cadence": avg_cadence,
                     "elevation_diff": split_elev,
                     "speed_mps": split_speed,
@@ -971,6 +1016,7 @@ def normalize_garmin_activity(payload: Dict[str, Any]) -> Dict[str, Any]:
         "elevation_gain_meters": elev_m,
         "tss": round(tss, 1),
         "training_stress_score": round(tss, 1),
+        "tss_source": tss_source,
         "splits": canonical_splits,
         "laps": canonical_laps,
         "hr_zones": details.get("hr_zones") or summary.get("hr_zones") or {},
@@ -1104,14 +1150,34 @@ def save_remote_manifest(sftp_client: Any, manifest: SyncManifest) -> None:
 # Incremental Pull Engine
 # ---------------------------------------------------------------------------
 
+def _normalize_iso_minute_utc(ts_val: Any) -> str:
+    """Normalize timestamp string to UTC ISO minute precision (YYYY-MM-DDTHH:MM)."""
+    if ts_val is None:
+        return ""
+    s = str(ts_val).strip()
+    if not s:
+        return ""
+    if " " in s and "T" not in s:
+        s = s.replace(" ", "T")
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M")
+    except Exception:
+        return s[:16]
+
+
 def _has_activity_summary_changed(summary: Dict[str, Any], existing_act: Dict[str, Any]) -> bool:
     """Compare a Garmin activity summary against an existing canonical activity record."""
-    raw_start = str(summary.get("startTimeLocal") or summary.get("startTimeGMT") or "")[:16]
+    raw_start = _normalize_iso_minute_utc(
+        summary.get("startTimeGMT") or summary.get("startTimeLocal") or summary.get("date")
+    )
     raw_name = str(summary.get("activityName") or "").strip()
-    raw_dist = round(float(summary.get("distance") or 0.0), 1)
-    raw_dur = round(float(summary.get("duration") or summary.get("movingDuration") or 0.0))
+    raw_dist = round(float(summary.get("distance") or summary.get("distanceInMeters") or 0.0), 1)
+    raw_dur = round(float(summary.get("duration") or summary.get("durationInSeconds") or summary.get("movingDuration") or 0.0))
 
-    ex_start = str(existing_act.get("start_time") or existing_act.get("date") or "")[:16]
+    ex_start = _normalize_iso_minute_utc(existing_act.get("start_time") or existing_act.get("date"))
     ex_name = str(existing_act.get("name") or existing_act.get("title") or "").strip()
     ex_dist = round(float(existing_act.get("distance_meters") or 0.0), 1)
     ex_dur = round(float(existing_act.get("duration_seconds") or existing_act.get("moving_time_seconds") or 0.0))
@@ -1226,7 +1292,18 @@ def execute_incremental_pull(
         remote_subfolder = f"garmin_archive/activities/{year_str}/{month_str}"
 
         # 1. Fetch details
-        details = garmin_client.get_activity_details(activity_id)
+        try:
+            sig = inspect.signature(garmin_client.get_activity_details)
+            if "include_extended_details" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            ):
+                details = garmin_client.get_activity_details(
+                    activity_id, include_extended_details=archive_individual_files
+                )
+            else:
+                details = garmin_client.get_activity_details(activity_id)
+        except (TypeError, ValueError):
+            details = garmin_client.get_activity_details(activity_id)
         combined_payload = {"summary": summary, "details": details}
         backed_up_formats = ["json"]
 
@@ -1254,11 +1331,28 @@ def execute_incremental_pull(
             backed_up_formats.append("fit")
 
         # 4. Download, Stage & Upload .GPX file (outdoor activities)
+        sport_resolved = resolve_sport_taxonomy(summary)
+        raw_type_key = (
+            summary.get("activityType", {}).get("typeKey")
+            if isinstance(summary.get("activityType"), dict)
+            else summary.get("activityType")
+            or summary.get("typeKey")
+            or ""
+        )
+        raw_type_lower = str(raw_type_key).strip().lower()
+        indoor_types = {"indoor_cycling", "treadmill_running", "strength_training", "yoga"}
+        has_polyline = bool(summary.get("hasPolyline"))
+        skip_gpx = (
+            sport_resolved in ("strength", "weights")
+            or raw_type_lower in indoor_types
+        ) and not has_polyline
+
         gpx_bytes = None
-        if hasattr(garmin_client, "download_gpx_file"):
-            gpx_bytes = garmin_client.download_gpx_file(activity_id)
-        elif hasattr(garmin_client, "fetch_gpx_file"):
-            gpx_bytes = garmin_client.fetch_gpx_file(activity_id)
+        if not skip_gpx:
+            if hasattr(garmin_client, "download_gpx_file"):
+                gpx_bytes = garmin_client.download_gpx_file(activity_id)
+            elif hasattr(garmin_client, "fetch_gpx_file"):
+                gpx_bytes = garmin_client.fetch_gpx_file(activity_id)
 
         if gpx_bytes:
             if archive_individual_files:
@@ -1281,6 +1375,136 @@ def execute_incremental_pull(
     manifest.last_sync_timestamp = end_ts
     manifest.last_sync_datetime = datetime.now(timezone.utc).isoformat()
     return all_current_activities, synced_count
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _resolve_storage_provider(storage_client: Any) -> str:
+    if storage_client is None:
+        return "Hetzner Storage Box"
+    cls_name = type(storage_client).__name__
+    if "GDrive" in cls_name or "Drive" in cls_name:
+        return "Google Drive"
+    if "Composite" in cls_name:
+        return "Google Drive + Hetzner Storage Box"
+    return "Hetzner Storage Box"
+
+
+def _best_20min_power(power_stream: List[Any], time_stream: Optional[List[Any]] = None, dur_sec: int = 0) -> Optional[float]:
+    if not power_stream:
+        return None
+    powers = [float(p or 0.0) for p in power_stream]
+    n = len(powers)
+    if time_stream and len(time_stream) == n:
+        times = [float(t or 0.0) for t in time_stream]
+        total_span = times[-1] - times[0]
+        if total_span >= 1200.0:
+            best = 0.0
+            left = 0
+            window_sum = 0.0
+            for right in range(n):
+                window_sum += powers[right]
+                while left < right and (times[right] - times[left]) > 1200.0:
+                    window_sum -= powers[left]
+                    left += 1
+                if (times[right] - times[left]) >= 1200.0:
+                    count = right - left + 1
+                    best = max(best, window_sum / count)
+            return best if best > 0 else None
+    elif dur_sec >= 1200 and n > 0:
+        samples_per_20m = max(1, int(round(n * (1200.0 / dur_sec))))
+        if samples_per_20m <= n:
+            window_sum = sum(powers[:samples_per_20m])
+            best = window_sum / samples_per_20m
+            for idx in range(samples_per_20m, n):
+                window_sum += powers[idx] - powers[idx - samples_per_20m]
+                best = max(best, window_sum / samples_per_20m)
+            return best if best > 0 else None
+    return None
+
+
+def derive_athlete_profile(
+    activities: List[Dict[str, Any]],
+    wellness_daily: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Derive live athlete_profile from wellness (30d median resting_hr, latest vo2max_running/vo2max_cycling)
+    and activities (99.5th percentile max_hr, best 20-min power * 0.95 for ftp).
+    """
+    rest_hr = 48
+    vo2max: Any = 54
+    if wellness_daily:
+        sorted_w = sorted(
+            [w for w in wellness_daily if isinstance(w, dict) and w.get("date")],
+            key=lambda w: str(w.get("date"))[:10],
+        )
+        recent_30 = sorted_w[-30:]
+        rhrs = [
+            float(w.get("resting_hr") if w.get("resting_hr") is not None else w.get("resting_heart_rate"))
+            for w in recent_30
+            if (w.get("resting_hr") is not None or w.get("resting_heart_rate") is not None)
+            and float(w.get("resting_hr") if w.get("resting_hr") is not None else w.get("resting_heart_rate")) > 0
+        ]
+        if rhrs:
+            rest_hr = int(round(statistics.median(rhrs)))
+
+        for w in reversed(sorted_w):
+            v_run = w.get("vo2max_running")
+            v_cyc = w.get("vo2max_cycling")
+            cand_v = v_run if v_run is not None else v_cyc
+            if cand_v is not None and float(cand_v) > 0:
+                vo2max = round(float(cand_v), 1)
+                break
+
+    max_hrs = sorted(
+        float(a["max_hr"])
+        for a in activities
+        if isinstance(a, dict) and a.get("max_hr") is not None and float(a["max_hr"]) > 0
+    )
+    if max_hrs:
+        idx = 0.995 * (len(max_hrs) - 1)
+        lo = int(math.floor(idx))
+        hi = int(math.ceil(idx))
+        p995 = max_hrs[lo] + (max_hrs[hi] - max_hrs[lo]) * (idx - lo)
+        max_hr = int(round(p995))
+    else:
+        max_hr = 192
+
+    best_20m: Optional[float] = None
+    for a in activities:
+        if not isinstance(a, dict):
+            continue
+        if str(a.get("sport") or "").lower() not in ("cycling", "cycle"):
+            continue
+        dur_s = int(a.get("duration_seconds") or 0)
+        tel = a.get("telemetry_stream")
+        if isinstance(tel, dict) and isinstance(tel.get("power"), list) and tel["power"]:
+            cand_20 = _best_20min_power(tel["power"], tel.get("time"), dur_s)
+            if cand_20 is not None and (best_20m is None or cand_20 > best_20m):
+                best_20m = cand_20
+        elif dur_s >= 1200:
+            avg_p = safe_float(a.get("avg_power") or a.get("avg_power_watts"))
+            if avg_p is not None and avg_p > 0:
+                if best_20m is None or avg_p > best_20m:
+                    best_20m = avg_p
+
+    ftp = int(round(best_20m * 0.95)) if best_20m is not None and best_20m > 0 else 280
+    lthr = int(round(max_hr * 0.875))
+
+    return {
+        "vo2max": vo2max,
+        "cycling_ftp": ftp,
+        "ftp": ftp,
+        "lthr": lthr,
+        "max_hr": max_hr,
+        "rest_hr": rest_hr,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1451,8 +1675,26 @@ def run_sync_pipeline(
                             json.dumps(shard_obj, separators=(",", ":")), encoding="utf-8"
                         )
 
+            vault_hashes = getattr(v_manifest, "content_hashes", None)
+            if not isinstance(vault_hashes, dict):
+                vault_hashes = getattr(v_manifest, "file_hashes", None)
+
+            def _push_if_hash_changed(filename: str, local_path: Path) -> None:
+                if isinstance(vault_hashes, dict) and local_path.exists():
+                    new_h = _file_sha256(local_path)
+                    if vault_hashes.get(filename) == new_h:
+                        logger.debug(f"Parquet {filename} unchanged (sha256={new_h[:12]}); skipping upload.")
+                        return
+                    parquet_vault._push_file(local_path, filename)
+                    vault_hashes[filename] = new_h
+
             for y_str in sorted(dirty_years):
-                cnt = parquet_vault.save_year_streams(y_str, streams_by_year[y_str], push_remote=True)
+                use_hash_check = isinstance(vault_hashes, dict)
+                cnt = parquet_vault.save_year_streams(
+                    y_str, streams_by_year[y_str], push_remote=not use_hash_check
+                )
+                if use_hash_check:
+                    _push_if_hash_changed(f"streams_{y_str}.parquet", parquet_vault.local_streams_path(y_str))
                 v_manifest.stream_years[y_str] = cnt
 
             # Ensure has_streams and summary_polyline are preserved on canonical_acts before saving/compiling
@@ -1480,7 +1722,10 @@ def run_sync_pipeline(
                         or (isinstance(shard_obj, dict) and (shard_obj.get("gps_track") or shard_obj.get("telemetry_stream")))
                     )
 
-            parquet_vault.save_activities(canonical_acts, push_remote=True)
+            use_hash_check = isinstance(vault_hashes, dict)
+            parquet_vault.save_activities(canonical_acts, push_remote=not use_hash_check)
+            if use_hash_check:
+                _push_if_hash_changed("activities.parquet", parquet_vault.local_activities_path)
 
             # Wellness in Parquet
             wellness_by_date: Dict[str, Dict[str, Any]] = {}
@@ -1490,31 +1735,52 @@ def run_sync_pipeline(
                         wellness_by_date[str(w_rec["date"])[:10]] = w_rec
 
             if active_garmin is not None and (
-                hasattr(active_garmin, "get_raw_daily_wellness_bundle")
+                hasattr(active_garmin, "get_wellness_range_bundles")
+                or hasattr(active_garmin, "get_raw_daily_wellness_bundle")
                 or hasattr(active_garmin, "get_daily_wellness")
             ):
                 today_dt = datetime.now(timezone.utc).date()
                 wellness_days = min(max(7, lookback_days), 30) if not force_refresh else min(lookback_days, 90)
-                has_raw_bundle_fn = hasattr(active_garmin, "get_raw_daily_wellness_bundle")
-                for d_offset in range(wellness_days):
-                    cdate = (today_dt - timedelta(days=d_offset)).isoformat()
-                    if not force_refresh and cdate in wellness_by_date and d_offset > 2:
-                        continue
+                dates_needed = [
+                    (today_dt - timedelta(days=d_offset)).isoformat()
+                    for d_offset in range(wellness_days)
+                    if force_refresh
+                    or (today_dt - timedelta(days=d_offset)).isoformat() not in wellness_by_date
+                    or d_offset <= 2
+                ]
+                if dates_needed and hasattr(active_garmin, "get_wellness_range_bundles"):
                     try:
-                        if has_raw_bundle_fn:
-                            raw_bundle = active_garmin.get_raw_daily_wellness_bundle(cdate)
-                            if isinstance(raw_bundle, dict) and raw_bundle:
+                        range_bundles = active_garmin.get_wellness_range_bundles(
+                            min(dates_needed), max(dates_needed), max_workers=4
+                        )
+                        needed_set = set(dates_needed)
+                        for cdate, raw_bundle in range_bundles.items():
+                            if cdate in needed_set and isinstance(raw_bundle, dict) and raw_bundle:
                                 wellness_by_date[cdate] = normalize_daily_wellness(cdate, raw_bundle)
-                        elif hasattr(active_garmin, "get_daily_wellness"):
-                            w_day = active_garmin.get_daily_wellness(cdate)
-                            if isinstance(w_day, dict):
-                                wellness_by_date[cdate] = w_day
                     except Exception as e:
-                        logger.warning(f"Failed fetching daily wellness for {cdate}: {e}")
+                        logger.warning(f"Failed batch fetching wellness range bundles: {e}")
+                else:
+                    has_raw_bundle_fn = hasattr(active_garmin, "get_raw_daily_wellness_bundle")
+                    for cdate in dates_needed:
+                        try:
+                            if has_raw_bundle_fn:
+                                raw_bundle = active_garmin.get_raw_daily_wellness_bundle(cdate)
+                                if isinstance(raw_bundle, dict) and raw_bundle:
+                                    wellness_by_date[cdate] = normalize_daily_wellness(cdate, raw_bundle)
+                            elif hasattr(active_garmin, "get_daily_wellness"):
+                                w_day = active_garmin.get_daily_wellness(cdate)
+                                if isinstance(w_day, dict):
+                                    wellness_by_date[cdate] = w_day
+                        except Exception as e:
+                            logger.warning(f"Failed fetching daily wellness for {cdate}: {e}")
 
             sorted_wellness = [wellness_by_date[k] for k in sorted(wellness_by_date.keys())]
             retained_wellness = apply_wellness_intraday_retention(sorted_wellness, retention_days=14)
-            v_manifest.total_wellness_days = parquet_vault.save_wellness(retained_wellness, push_remote=True)
+            v_manifest.total_wellness_days = parquet_vault.save_wellness(
+                retained_wellness, push_remote=not use_hash_check
+            )
+            if use_hash_check:
+                _push_if_hash_changed("wellness.parquet", parquet_vault.local_wellness_path)
 
             elapsed = time.time() - start_time
             v_manifest.last_sync_timestamp = manifest.last_sync_timestamp
@@ -1541,7 +1807,14 @@ def run_sync_pipeline(
 
             latest_wellness = build_current_wellness_snapshot(retained_wellness)
             wellness_payload = {"current": latest_wellness, "daily": retained_wellness}
-            rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
+            derived_profile = derive_athlete_profile(canonical_acts, retained_wellness)
+            rollup_dict = compile_rollup(
+                canonical_acts,
+                athlete_profile=derived_profile,
+                sync_manifest=manifest,
+                wellness=wellness_payload,
+                storage_provider=_resolve_storage_provider(active_sftp),
+            )
             src_by_id = {str(a.get("id")): a for a in canonical_acts if isinstance(a, dict)}
             for act_item in rollup_dict.get("activities", []):
                 if isinstance(act_item, dict):
@@ -1839,7 +2112,12 @@ def run_sync_pipeline(
                                             y_map[act_id_str] = shard_obj
                                             dirty_years.add(year_str)
                                             if is_str_act:
-                                                act["has_streams"] = False
+                                                tel = re_norm.get("telemetry_stream")
+                                                act["has_streams"] = bool(
+                                                    isinstance(tel, dict)
+                                                    and isinstance(tel.get("hr"), list)
+                                                    and len(tel["hr"]) > 0
+                                                )
                                                 act["summary_polyline"] = None
                                             else:
                                                 act["has_streams"] = bool(
@@ -1869,7 +2147,11 @@ def run_sync_pipeline(
                     for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
                         idx_copy.pop(forbidden_key, None)
                     idx_copy["summary_polyline"] = None
-                    idx_copy["has_streams"] = False
+                    tel = idx_copy.get("telemetry_stream")
+                    idx_copy["has_streams"] = bool(
+                        idx_copy.get("has_streams")
+                        or (isinstance(tel, dict) and isinstance(tel.get("hr"), list) and len(tel["hr"]) > 0)
+                    )
                 else:
                     gps_val = idx_copy.get("gps_track")
                     if not idx_copy.get("summary_polyline") and isinstance(gps_val, dict):
@@ -1936,31 +2218,54 @@ def run_sync_pipeline(
                     except Exception as e:
                         logger.warning(f"Could not reprocess raw wellness archive {raw_w_path}: {e}")
             elif active_garmin is not None and (
-                hasattr(active_garmin, "get_raw_daily_wellness_bundle")
+                hasattr(active_garmin, "get_wellness_range_bundles")
+                or hasattr(active_garmin, "get_raw_daily_wellness_bundle")
                 or hasattr(active_garmin, "get_daily_wellness")
             ):
                 today_dt = datetime.now(timezone.utc).date()
                 wellness_days = min(max(7, lookback_days), 30) if not force_refresh else min(lookback_days, 90)
-                has_raw_bundle_fn = hasattr(active_garmin, "get_raw_daily_wellness_bundle")
+                dates_needed: List[str] = []
                 for d_offset in range(wellness_days):
                     cdate = (today_dt - timedelta(days=d_offset)).isoformat()
                     yyyy = cdate[:4]
                     y_raw = _get_raw_wellness_year(yyyy)
                     if not force_refresh and cdate in wellness_by_date and cdate in y_raw and d_offset > 2:
                         continue
+                    dates_needed.append(cdate)
+
+                if dates_needed and hasattr(active_garmin, "get_wellness_range_bundles"):
                     try:
-                        if has_raw_bundle_fn:
-                            raw_bundle = active_garmin.get_raw_daily_wellness_bundle(cdate)
-                            if isinstance(raw_bundle, dict) and raw_bundle:
+                        range_bundles = active_garmin.get_wellness_range_bundles(
+                            min(dates_needed), max(dates_needed), max_workers=4
+                        )
+                        needed_set = set(dates_needed)
+                        for cdate, raw_bundle in range_bundles.items():
+                            if cdate in needed_set and isinstance(raw_bundle, dict) and raw_bundle:
+                                yyyy = cdate[:4]
+                                y_raw = _get_raw_wellness_year(yyyy)
                                 y_raw[cdate] = raw_bundle
                                 dirty_wellness_years.add(yyyy)
                                 wellness_by_date[cdate] = normalize_daily_wellness(cdate, raw_bundle)
-                        elif hasattr(active_garmin, "get_daily_wellness"):
-                            w_day = active_garmin.get_daily_wellness(cdate)
-                            if isinstance(w_day, dict):
-                                wellness_by_date[cdate] = w_day
                     except Exception as e:
-                        logger.warning(f"Failed fetching daily wellness for {cdate}: {e}")
+                        logger.warning(f"Failed batch fetching wellness range bundles: {e}")
+                else:
+                    has_raw_bundle_fn = hasattr(active_garmin, "get_raw_daily_wellness_bundle")
+                    for cdate in dates_needed:
+                        yyyy = cdate[:4]
+                        y_raw = _get_raw_wellness_year(yyyy)
+                        try:
+                            if has_raw_bundle_fn:
+                                raw_bundle = active_garmin.get_raw_daily_wellness_bundle(cdate)
+                                if isinstance(raw_bundle, dict) and raw_bundle:
+                                    y_raw[cdate] = raw_bundle
+                                    dirty_wellness_years.add(yyyy)
+                                    wellness_by_date[cdate] = normalize_daily_wellness(cdate, raw_bundle)
+                            elif hasattr(active_garmin, "get_daily_wellness"):
+                                w_day = active_garmin.get_daily_wellness(cdate)
+                                if isinstance(w_day, dict):
+                                    wellness_by_date[cdate] = w_day
+                        except Exception as e:
+                            logger.warning(f"Failed fetching daily wellness for {cdate}: {e}")
 
                 for y_str in sorted(dirty_wellness_years):
                     raw_path = f"{REMOTE_RAW_WELLNESS_DIR}/raw_wellness_{y_str}.json"
@@ -1985,7 +2290,18 @@ def run_sync_pipeline(
                 "daily": retained_wellness,
             }
 
-        rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
+        derived_profile = (
+            derive_athlete_profile(canonical_acts, wellness_payload.get("daily") if isinstance(wellness_payload, dict) else None)
+            if not is_mock
+            else None
+        )
+        rollup_dict = compile_rollup(
+            canonical_acts,
+            athlete_profile=derived_profile,
+            sync_manifest=manifest,
+            wellness=wellness_payload,
+            storage_provider=_resolve_storage_provider(active_sftp),
+        )
 
         # In live sharded mode, strip heavy gps_track and telemetry_stream from index rollup_dict["activities"]
         # since they are encrypted into individual streams/<id>.enc shards, while preserving summary_polyline and accurate has_streams
@@ -1999,7 +2315,12 @@ def run_sync_pipeline(
                         for forbidden_key in ("weight", "kg", "load_kg", "tonnage", "weight_kg", "exercise_sets"):
                             act_item.pop(forbidden_key, None)
                         act_item["summary_polyline"] = None
-                        act_item["has_streams"] = False
+                        tel = act_item.get("telemetry_stream") or src_act.get("telemetry_stream")
+                        act_item["has_streams"] = bool(
+                            act_item.get("has_streams")
+                            or src_act.get("has_streams")
+                            or (isinstance(tel, dict) and isinstance(tel.get("hr"), list) and len(tel["hr"]) > 0)
+                        )
                     else:
                         gps_val = act_item.get("gps_track") or src_act.get("gps_track")
                         if not act_item.get("summary_polyline"):

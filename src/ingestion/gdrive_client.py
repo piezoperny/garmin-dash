@@ -11,10 +11,11 @@ import json
 import logging
 import os
 import posixpath
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, Union
 
 from src.ingestion.sftp_client import (
     HetznerSFTPClient,
@@ -27,8 +28,68 @@ from src.ingestion.sftp_client import (
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 DEFAULT_GDRIVE_ROOT_PATH = "Drive/[04] health/garmin-dash"
+
+
+class StorageWriteError(SFTPArchivalError, RuntimeError):
+    """Raised when both primary and backup storage backends fail to persist data."""
+    pass
+
+
+def _is_retryable_http_error(exc: Exception) -> bool:
+    """Return True for HTTP 429, 403 rateLimitExceeded, or 5xx errors."""
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    if status is None:
+        status = getattr(exc, "code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    if status is None:
+        return False
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        return False
+
+    if code == 429 or 500 <= code < 600:
+        return True
+    if code == 403:
+        detail = str(exc)
+        content = getattr(exc, "content", None)
+        if isinstance(content, (bytes, bytearray)):
+            detail += " " + content.decode("utf-8", errors="ignore")
+        elif content is not None:
+            detail += " " + str(content)
+        lowered = detail.lower()
+        return "ratelimitexceeded" in lowered or "userratelimitexceeded" in lowered
+    return False
+
+
+def _execute_with_backoff(
+    fn: Callable[[], T],
+    max_attempts: int = 3,
+    base_delay: float = 0.5,
+    max_delay: float = 8.0,
+) -> T:
+    """Execute fn with bounded exponential backoff + jitter on retryable HTTP errors."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= max_attempts - 1 or not _is_retryable_http_error(exc):
+                raise
+            delay = min(max_delay, base_delay * (2 ** attempt)) + random.uniform(0.0, base_delay * 0.5)
+            logger.warning(
+                f"Retryable Drive/Apps Script error ({exc}); retrying in {delay:.2f}s "
+                f"(attempt {attempt + 1}/{max_attempts})..."
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 @dataclass
@@ -72,18 +133,23 @@ class GoogleDriveStorageClient:
         }
         if data_b64 is not None:
             payload["data_b64"] = data_b64
-        req = urllib.request.Request(
-            str(self._webapp_url),
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read().decode("utf-8")
-            res = json.loads(raw)
-            if not res.get("ok", False):
-                raise SFTPArchivalError(f"Google Drive Web App error ({action} {remote_path}): {res.get('error')}")
-            return res
+        body_bytes = json.dumps(payload).encode("utf-8")
+
+        def _call() -> Dict[str, Any]:
+            req = urllib.request.Request(
+                str(self._webapp_url),
+                data=body_bytes,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read().decode("utf-8")
+                res = json.loads(raw)
+                if not res.get("ok", False):
+                    raise SFTPArchivalError(f"Google Drive Web App error ({action} {remote_path}): {res.get('error')}")
+                return res
+
+        return _execute_with_backoff(_call)
 
     def connect(self) -> None:
         """Authenticates with Google Drive (via Web App URL or Drive v3 API) and resolves the root folder hierarchy."""
@@ -157,8 +223,8 @@ class GoogleDriveStorageClient:
             q_parts.append(f"mimeType != '{FOLDER_MIME_TYPE}'")
 
         query = " and ".join(q_parts)
-        resp = (
-            self._service.files()
+        resp = _execute_with_backoff(
+            lambda: self._service.files()
             .list(
                 q=query,
                 spaces="drive",
@@ -167,7 +233,7 @@ class GoogleDriveStorageClient:
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
             )
-            .execute()
+            .execute(num_retries=3)
         )
         files = resp.get("files", [])
         return files[0] if files else None
@@ -179,18 +245,18 @@ class GoogleDriveStorageClient:
             "mimeType": FOLDER_MIME_TYPE,
             "parents": [parent_id],
         }
-        created = (
-            self._service.files()
+        created = _execute_with_backoff(
+            lambda: self._service.files()
             .create(body=meta, fields="id", supportsAllDrives=True)
-            .execute()
+            .execute(num_retries=3)
         )
         return str(created["id"])
 
     def _find_visible_folder_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Search all folders visible to the account by name, prioritizing shared folders owned by the user."""
         escaped = name.replace("'", "\\'")
-        resp = (
-            self._service.files()
+        resp = _execute_with_backoff(
+            lambda: self._service.files()
             .list(
                 q=f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false",
                 spaces="drive",
@@ -199,7 +265,7 @@ class GoogleDriveStorageClient:
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
             )
-            .execute()
+            .execute(num_retries=3)
         )
         files = resp.get("files", [])
         if not files:
@@ -305,22 +371,35 @@ class GoogleDriveStorageClient:
         if not parent_id or not filename:
             raise SFTPArchivalError(f"Invalid Google Drive target path: {remote_path}")
 
-        media = MediaIoBaseUpload(io.BytesIO(data), mimetype="application/octet-stream", resumable=False)
+        media = MediaIoBaseUpload(
+            io.BytesIO(data),
+            mimetype="application/octet-stream",
+            chunksize=5 * 1024 * 1024,
+            resumable=True,
+        )
         existing = self._find_child(parent_id, filename, is_folder=False)
         if existing:
-            self._service.files().update(
-                fileId=existing["id"],
-                media_body=media,
-                supportsAllDrives=True,
-            ).execute()
+            _execute_with_backoff(
+                lambda: self._service.files()
+                .update(
+                    fileId=existing["id"],
+                    media_body=media,
+                    supportsAllDrives=True,
+                )
+                .execute(num_retries=3)
+            )
         else:
             meta = {"name": filename, "parents": [parent_id]}
-            self._service.files().create(
-                body=meta,
-                media_body=media,
-                fields="id",
-                supportsAllDrives=True,
-            ).execute()
+            _execute_with_backoff(
+                lambda: self._service.files()
+                .create(
+                    body=meta,
+                    media_body=media,
+                    fields="id",
+                    supportsAllDrives=True,
+                )
+                .execute(num_retries=3)
+            )
         return True
 
     def put_bytes(self, remote_path: str, data: bytes) -> None:
@@ -359,7 +438,7 @@ class GoogleDriveStorageClient:
         downloader = MediaIoBaseDownload(buf, request)
         done = False
         while not done:
-            _, done = downloader.next_chunk()
+            _, done = _execute_with_backoff(lambda: downloader.next_chunk(num_retries=3))
         return buf.getvalue()
 
     def get_bytes(self, remote_path: str) -> bytes:
@@ -437,19 +516,28 @@ class GoogleDriveStorageClient:
                 return []
             folder_id = str(found["id"])
 
-        resp = (
-            self._service.files()
-            .list(
-                q=f"'{folder_id}' in parents and trashed = false",
-                spaces="drive",
-                fields="files(name)",
-                pageSize=1000,
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
+        names: List[str] = []
+        page_token: Optional[str] = None
+        while True:
+            list_kwargs: Dict[str, Any] = {
+                "q": f"'{folder_id}' in parents and trashed = false",
+                "spaces": "drive",
+                "fields": "nextPageToken, files(name)",
+                "pageSize": 1000,
+                "supportsAllDrives": True,
+                "includeItemsFromAllDrives": True,
+            }
+            if page_token:
+                list_kwargs["pageToken"] = page_token
+            resp = _execute_with_backoff(
+                lambda kw=list_kwargs: self._service.files().list(**kw).execute(num_retries=3)
             )
-            .execute()
-        )
-        return sorted(str(f["name"]) for f in resp.get("files", []))
+            for f in resp.get("files", []):
+                names.append(str(f["name"]))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return sorted(names)
 
     def remove(self, remote_path: str) -> None:
         self.connect()
@@ -461,7 +549,11 @@ class GoogleDriveStorageClient:
             return
         existing = self._find_child(parent_id, filename)
         if existing:
-            self._service.files().delete(fileId=existing["id"], supportsAllDrives=True).execute()
+            _execute_with_backoff(
+                lambda: self._service.files()
+                .delete(fileId=existing["id"], supportsAllDrives=True)
+                .execute(num_retries=3)
+            )
 
     def rename(self, old_path: str, new_path: str) -> None:
         data = self.download_bytes(old_path)
@@ -635,9 +727,12 @@ class CompositeStorageClient:
 
     def upload_bytes(self, data: bytes, remote_path: str, atomic: bool = True) -> bool:
         res = False
+        primary_err: Optional[Exception] = None
+        backup_err: Optional[Exception] = None
         try:
             res = self.primary.upload_bytes(data, remote_path, atomic=atomic)
         except Exception as e:
+            primary_err = e
             logger.warning(f"Primary upload_bytes warning ({remote_path}): {e}")
             if not self.backup:
                 raise
@@ -646,7 +741,13 @@ class CompositeStorageClient:
                 b_res = self.backup.upload_bytes(data, remote_path, atomic=atomic)
                 res = res or b_res
             except Exception as e:
+                backup_err = e
                 logger.warning(f"Backup upload_bytes warning ({remote_path}): {e}")
+        if primary_err is not None and backup_err is not None:
+            raise StorageWriteError(
+                f"Both primary and backup storage failed for upload_bytes({remote_path}): "
+                f"primary={primary_err}; backup={backup_err}"
+            ) from backup_err
         return res
 
     def put_bytes(self, remote_path: str, data: bytes) -> None:
@@ -654,9 +755,12 @@ class CompositeStorageClient:
 
     def upload_file(self, local_path: Union[Path, str], remote_path: str, atomic: bool = True) -> bool:
         res = False
+        primary_err: Optional[Exception] = None
+        backup_err: Optional[Exception] = None
         try:
             res = self.primary.upload_file(local_path, remote_path, atomic=atomic)
         except Exception as e:
+            primary_err = e
             logger.warning(f"Primary upload_file warning ({remote_path}): {e}")
             if not self.backup:
                 raise
@@ -665,7 +769,13 @@ class CompositeStorageClient:
                 b_res = self.backup.upload_file(local_path, remote_path, atomic=atomic)
                 res = res or b_res
             except Exception as e:
+                backup_err = e
                 logger.warning(f"Backup upload_file warning ({remote_path}): {e}")
+        if primary_err is not None and backup_err is not None:
+            raise StorageWriteError(
+                f"Both primary and backup storage failed for upload_file({remote_path}): "
+                f"primary={primary_err}; backup={backup_err}"
+            ) from backup_err
         return res
 
     def upload_file_verified(self, local_path: Union[Path, str], remote_path: str) -> None:
@@ -706,9 +816,12 @@ class CompositeStorageClient:
         return txt
 
     def write_text_atomic(self, remote_path: str, content: str) -> None:
+        primary_err: Optional[Exception] = None
+        backup_err: Optional[Exception] = None
         try:
             self.primary.write_text_atomic(remote_path, content)
         except Exception as e:
+            primary_err = e
             logger.warning(f"Primary write_text_atomic warning ({remote_path}): {e}")
             if not self.backup:
                 raise
@@ -716,7 +829,13 @@ class CompositeStorageClient:
             try:
                 self.backup.write_text_atomic(remote_path, content)
             except Exception as e:
+                backup_err = e
                 logger.warning(f"Backup write_text_atomic warning ({remote_path}): {e}")
+        if primary_err is not None and backup_err is not None:
+            raise StorageWriteError(
+                f"Both primary and backup storage failed for write_text_atomic({remote_path}): "
+                f"primary={primary_err}; backup={backup_err}"
+            ) from backup_err
 
     def file_exists(self, remote_path: str) -> bool:
         try:
@@ -848,15 +967,23 @@ def get_storage_client(force_mock: bool = False) -> SFTPClientProtocol:
     Resolves the active storage client(s) based on environment configuration:
     - Supports PRIMARY_STORAGE=gdrive|sftp (defaults to gdrive if GDRIVE_CREDENTIALS_JSON is set).
     - Automatically pairs Google Drive + Hetzner SFTP in CompositeStorageClient when both are configured.
+    - Raises RuntimeError if live credentials are configured and all live backends fail to connect.
     """
     if force_mock or os.environ.get("FORCE_MOCK", "").lower() in ("true", "1", "yes"):
         return MockSFTPClient()
 
     gdrive_cfg = GDriveConfig.from_env()
     sftp_cfg = SFTPConfig.from_env()
+    has_live_creds = bool(
+        gdrive_cfg is not None
+        or sftp_cfg is not None
+        or os.environ.get("GDRIVE_CREDENTIALS_JSON", "").strip()
+        or os.environ.get("HETZNER_HOST", "").strip()
+    )
 
     gdrive_client: Optional[SFTPClientProtocol] = None
     sftp_client: Optional[SFTPClientProtocol] = None
+    errors: List[str] = []
 
     if gdrive_cfg:
         try:
@@ -865,6 +992,7 @@ def get_storage_client(force_mock: bool = False) -> SFTPClientProtocol:
             gdrive_client = gd
         except Exception as e:
             logger.warning(f"Could not initialize Google Drive storage ({e}).")
+            errors.append(f"Google Drive: {e}")
 
     if sftp_cfg:
         try:
@@ -873,6 +1001,7 @@ def get_storage_client(force_mock: bool = False) -> SFTPClientProtocol:
             sftp_client = sf
         except Exception as e:
             logger.warning(f"Could not initialize Hetzner SFTP storage ({e}).")
+            errors.append(f"Hetzner SFTP: {e}")
 
     primary_pref = os.environ.get("PRIMARY_STORAGE", "gdrive").strip().lower()
 
@@ -887,6 +1016,10 @@ def get_storage_client(force_mock: bool = False) -> SFTPClientProtocol:
         return gdrive_client
     if sftp_client:
         return sftp_client
+
+    if has_live_creds:
+        detail = "; ".join(errors) if errors else "incomplete live storage credentials"
+        raise RuntimeError(f"Live storage credentials configured, but all backends failed to connect: {detail}")
 
     logger.info("Neither Google Drive nor Hetzner SFTP credentials configured; using MockSFTPClient.")
     return MockSFTPClient()

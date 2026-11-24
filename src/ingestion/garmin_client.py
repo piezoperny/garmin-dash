@@ -7,6 +7,7 @@ SFTP token store, and mock offline client.
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -16,8 +17,9 @@ import random
 import re
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Protocol, Tuple, Union, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -156,6 +158,12 @@ class SFTPTokenStore(TokenStoreProtocol):
     def __init__(self, sftp_client: Any, remote_path: str = "garmin_archive/.session/garmin_oauth.json"):
         self.sftp_client = sftp_client
         self.remote_path = remote_path
+        self._last_tokenstore_hash: Optional[str] = None
+
+    @staticmethod
+    def _compute_session_hash(session: OAuthSessionState) -> str:
+        payload = f"{session.access_token}\n{session.refresh_token}\n{session.scope or ''}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def load_session(self) -> Optional[OAuthSessionState]:
         try:
@@ -164,14 +172,21 @@ class SFTPTokenStore(TokenStoreProtocol):
             data = self.sftp_client.read_text(self.remote_path)
             if not data:
                 return None
-            return OAuthSessionState.from_json(data)
+            session = OAuthSessionState.from_json(data)
+            self._last_tokenstore_hash = self._compute_session_hash(session)
+            return session
         except Exception as e:
             logger.warning(f"Failed to read OAuth session from SFTP ({self.remote_path}): {e}")
             return None
 
     def save_session(self, session: OAuthSessionState) -> None:
+        new_hash = self._compute_session_hash(session)
+        if self._last_tokenstore_hash is not None and new_hash == self._last_tokenstore_hash:
+            logger.debug(f"OAuth tokenstore unchanged (sha256={new_hash[:12]}); skipping remote write.")
+            return
         raw_json = session.to_json()
         self.sftp_client.write_text_atomic(self.remote_path, raw_json)
+        self._last_tokenstore_hash = new_hash
         logger.info(f"Persisted refreshed OAuth session to SFTP at {self.remote_path}")
 
 
@@ -226,7 +241,7 @@ class GarminClientProtocol(Protocol):
         """Alias for get_activities."""
         ...
 
-    def get_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
+    def get_activity_details(self, activity_id: str, include_extended_details: bool = True) -> Optional[Dict[str, Any]]:
         """Fetch granular lap and split details for an activity."""
         ...
 
@@ -987,6 +1002,7 @@ class LiveGarminClient:
         self.refresh_call_count = 0
         self._session_state: Optional[OAuthSessionState] = None
         self._personal_garmin: Any = None
+        self._http_session: Optional[Any] = None
         self._is_personal_sso = "@" in self.credentials.api_key
 
         if session_state:
@@ -999,6 +1015,12 @@ class LiveGarminClient:
             self._initialize_personal_sso()
         else:
             self._initialize_session()
+
+    def _get_http_session(self) -> Any:
+        if self._http_session is None:
+            import requests
+            self._http_session = requests.Session()
+        return self._http_session
 
     @staticmethod
     def _export_personal_tokenstore(client: Any, fallback_dir: Optional[str] = None) -> str:
@@ -1196,8 +1218,6 @@ class LiveGarminClient:
         stream: bool = False,
         retry_auth: bool = True,
     ) -> Any:
-        import requests
-
         if self.is_token_expired():
             self.refresh_tokens()
 
@@ -1209,10 +1229,11 @@ class LiveGarminClient:
         if headers:
             req_headers.update(headers)
 
+        session = self._get_http_session()
         max_attempts = 4
         for attempt in range(max_attempts):
             try:
-                resp = requests.request(
+                resp = session.request(
                     method=method,
                     url=url,
                     params=params,
@@ -1236,15 +1257,22 @@ class LiveGarminClient:
                     retry_auth=False,
                 )
 
-            if resp.status_code == 429:
-                retry_after_str = resp.headers.get("Retry-After")
-                if retry_after_str and retry_after_str.isdigit():
-                    wait_seconds = float(retry_after_str)
-                else:
-                    wait_seconds = min(60.0, (2.0 ** attempt) * 2.0 + random.uniform(0.1, 1.0))
-                logger.warning(f"Garmin 429 Rate Limited. Sleeping {wait_seconds:.2f}s.")
-                time.sleep(wait_seconds)
-                continue
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                if attempt < max_attempts - 1:
+                    retry_after_str = resp.headers.get("Retry-After")
+                    if retry_after_str and str(retry_after_str).strip().isdigit():
+                        wait_seconds = float(str(retry_after_str).strip())
+                    else:
+                        wait_seconds = min(60.0, (2.0 ** attempt) * 2.0 + random.uniform(0.1, 1.0))
+                    logger.warning(
+                        f"Garmin HTTP {resp.status_code} on {url}. Sleeping {wait_seconds:.2f}s "
+                        f"(attempt {attempt + 1}/{max_attempts})."
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+                if resp.status_code == 429:
+                    raise GarminRateLimitError(f"Rate limit exceeded after {max_attempts} retries on {url}")
+                raise GarminAPIError(resp.status_code, f"API error on {url}", resp.text)
 
             if resp.status_code == 404:
                 raise GarminNotFoundError(404, f"Resource not found at {url}", resp.text)
@@ -1296,7 +1324,7 @@ class LiveGarminClient:
     def fetch_activities(self, start_epoch: int, end_epoch: int, limit: int = 100) -> List[Dict[str, Any]]:
         return self.get_activities(start_epoch, end_epoch, limit=limit)
 
-    def get_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
+    def get_activity_details(self, activity_id: str, include_extended_details: bool = True) -> Optional[Dict[str, Any]]:
         if self._personal_garmin is not None:
             result: Dict[str, Any] = {"activityId": activity_id, "splits": []}
             if hasattr(self._personal_garmin, "get_activity_splits"):
@@ -1335,24 +1363,25 @@ class LiveGarminClient:
                 except Exception as e:
                     logger.debug(f"Could not fetch personal activity HR zones for {activity_id}: {e}")
 
-            extra_activity_calls = [
-                ("typed_splits", "get_activity_typed_splits"),
-                ("split_summaries", "get_activity_split_summaries"),
-                ("power_zones", "get_activity_power_in_timezones"),
-                ("weather", "get_activity_weather"),
-                ("exercise_sets", "get_activity_exercise_sets"),
-                ("gear", "get_activity_gear"),
-            ]
-            for dest_key, method_name in extra_activity_calls:
-                if hasattr(self._personal_garmin, method_name):
-                    try:
-                        val = getattr(self._personal_garmin, method_name)(activity_id)
-                        if isinstance(val, (dict, list)):
-                            result[dest_key] = val
-                    except Exception as e:
-                        logger.debug(
-                            f"Could not fetch personal activity {dest_key} ({method_name}) for {activity_id}: {e}"
-                        )
+            if include_extended_details:
+                extra_activity_calls = [
+                    ("typed_splits", "get_activity_typed_splits"),
+                    ("split_summaries", "get_activity_split_summaries"),
+                    ("power_zones", "get_activity_power_in_timezones"),
+                    ("weather", "get_activity_weather"),
+                    ("exercise_sets", "get_activity_exercise_sets"),
+                    ("gear", "get_activity_gear"),
+                ]
+                for dest_key, method_name in extra_activity_calls:
+                    if hasattr(self._personal_garmin, method_name):
+                        try:
+                            val = getattr(self._personal_garmin, method_name)(activity_id)
+                            if isinstance(val, (dict, list)):
+                                result[dest_key] = val
+                        except Exception as e:
+                            logger.debug(
+                                f"Could not fetch personal activity {dest_key} ({method_name}) for {activity_id}: {e}"
+                            )
 
             return result
 
@@ -1364,8 +1393,8 @@ class LiveGarminClient:
             logger.warning(f"Activity details not found for {activity_id}.")
             return None
 
-    def fetch_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
-        return self.get_activity_details(activity_id)
+    def fetch_activity_details(self, activity_id: str, include_extended_details: bool = True) -> Optional[Dict[str, Any]]:
+        return self.get_activity_details(activity_id, include_extended_details=include_extended_details)
 
     def get_hrv_data(self, cdate: str) -> Optional[Dict[str, Any]]:
         if self._personal_garmin is not None and hasattr(self._personal_garmin, "get_hrv_data"):
@@ -1375,22 +1404,119 @@ class LiveGarminClient:
                 logger.warning(f"Could not fetch HRV data for {cdate}: {e}")
         return None
 
+    @staticmethod
+    def _extract_http_status_and_retry_after(exc: Exception) -> Tuple[Optional[int], Optional[float]]:
+        resp = getattr(exc, "response", None)
+        if resp is None:
+            resp = getattr(getattr(exc, "error", None), "response", None)
+        status: Optional[int] = None
+        retry_after: Optional[float] = None
+        if resp is not None:
+            raw_status = getattr(resp, "status_code", None)
+            if isinstance(raw_status, int):
+                status = raw_status
+            headers = getattr(resp, "headers", None)
+            if isinstance(headers, dict) or hasattr(headers, "get"):
+                ra_val = headers.get("Retry-After") or headers.get("retry-after")
+                if ra_val is not None:
+                    try:
+                        retry_after = float(str(ra_val).strip())
+                    except (TypeError, ValueError):
+                        retry_after = None
+        if status is None:
+            cand_status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+            if isinstance(cand_status, int):
+                status = cand_status
+        if status is None:
+            m = re.search(r"\b(?:HTTP|status[=:\s]+)(429|5\d{2})\b", str(exc), re.IGNORECASE)
+            if m:
+                status = int(m.group(1))
+        return status, retry_after
+
     def _safe_personal_call(self, method_name: str, *args: Any) -> Any:
         if self._personal_garmin is None or not hasattr(self._personal_garmin, method_name):
             return None
-        try:
-            res = getattr(self._personal_garmin, method_name)(*args)
-            if isinstance(res, (dict, list)):
-                return res
-        except Exception as e:
-            logger.debug(f"Personal Garmin call {method_name}{args} failed: {e}")
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                res = getattr(self._personal_garmin, method_name)(*args)
+                if isinstance(res, (dict, list)):
+                    return res
+                return None
+            except Exception as e:
+                status, retry_after = self._extract_http_status_and_retry_after(e)
+                is_retryable = status == 429 or (status is not None and 500 <= status < 600)
+                if is_retryable and attempt < max_attempts - 1:
+                    wait_seconds = (
+                        retry_after
+                        if retry_after is not None
+                        else min(30.0, (2.0 ** attempt) * 1.0 + random.uniform(0.05, 0.25))
+                    )
+                    logger.warning(
+                        f"Personal Garmin call {method_name}{args} returned HTTP {status}; "
+                        f"retrying in {wait_seconds:.2f}s (attempt {attempt + 1}/{max_attempts})."
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+                logger.debug(f"Personal Garmin call {method_name}{args} failed: {e}")
+                return None
         return None
 
-    def get_raw_daily_wellness_bundle(self, cdate: str) -> Optional[Dict[str, Any]]:
-        """Safely query all 16 Garmin daily wellness endpoint groups and return the raw bundle."""
+    def _get_single_day_body_battery(self, cdate: str) -> Any:
+        if self._personal_garmin is None or not hasattr(self._personal_garmin, "get_body_battery"):
+            return None
+        try:
+            cand = self._personal_garmin.get_body_battery(cdate)
+            if isinstance(cand, (dict, list)):
+                return cand
+        except TypeError:
+            cand = self._safe_personal_call("get_body_battery", cdate, cdate)
+            if isinstance(cand, (dict, list)):
+                return cand
+        except Exception as e:
+            logger.debug(f"Personal Garmin call get_body_battery({cdate}) failed: {e}")
+        return None
+
+    def _get_single_day_body_composition(self, cdate: str) -> Any:
         if self._personal_garmin is None:
             return None
+        body_comp = None
+        if hasattr(self._personal_garmin, "get_body_composition"):
+            try:
+                cand = self._personal_garmin.get_body_composition(cdate, cdate)
+                if isinstance(cand, (dict, list)) and cand:
+                    body_comp = cand
+            except TypeError:
+                cand = self._safe_personal_call("get_body_composition", cdate)
+                if isinstance(cand, (dict, list)) and cand:
+                    body_comp = cand
+            except Exception as e:
+                logger.debug(f"Personal Garmin call get_body_composition({cdate}, {cdate}) failed: {e}")
+        if not body_comp:
+            for m_name, m_args in (("get_weigh_ins", (cdate, cdate)), ("get_daily_weigh_ins", (cdate,))):
+                if hasattr(self._personal_garmin, m_name):
+                    try:
+                        cand = getattr(self._personal_garmin, m_name)(*m_args)
+                        if isinstance(cand, (dict, list)) and cand:
+                            body_comp = cand
+                            break
+                    except TypeError:
+                        cand = self._safe_personal_call(m_name, cdate)
+                        if isinstance(cand, (dict, list)) and cand:
+                            body_comp = cand
+                            break
+                    except Exception as e:
+                        logger.debug(f"Personal Garmin call {m_name} failed: {e}")
+        return body_comp
 
+    def _build_daily_wellness_bundle(
+        self,
+        cdate: str,
+        preloaded_bb: Any = None,
+        fetch_bb: bool = True,
+        preloaded_bc: Any = None,
+        fetch_bc: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         bundle: Dict[str, Any] = {"date": cdate}
 
         # 1. User summary (with get_stats fallback)
@@ -1406,7 +1532,7 @@ class LiveGarminClient:
         bundle["sleep"] = self._safe_personal_call("get_sleep_data", cdate)
 
         # 3. HRV
-        hrv_res = self.get_hrv_data(cdate)
+        hrv_res = self._safe_personal_call("get_hrv_data", cdate)
         bundle["hrv"] = hrv_res if isinstance(hrv_res, (dict, list)) else None
 
         # 4. Stress (with get_all_day_stress fallback)
@@ -1419,22 +1545,7 @@ class LiveGarminClient:
         bundle["stress"] = stress_res
 
         # 5. Body Battery + Events
-        bb_res = None
-        if hasattr(self._personal_garmin, "get_body_battery"):
-            try:
-                cand = self._personal_garmin.get_body_battery(cdate)
-                if isinstance(cand, (dict, list)):
-                    bb_res = cand
-            except TypeError:
-                try:
-                    cand = self._personal_garmin.get_body_battery(cdate, cdate)
-                    if isinstance(cand, (dict, list)):
-                        bb_res = cand
-                except Exception as e:
-                    logger.debug(f"Personal Garmin call get_body_battery({cdate}, {cdate}) failed: {e}")
-            except Exception as e:
-                logger.debug(f"Personal Garmin call get_body_battery({cdate}) failed: {e}")
-        bundle["body_battery"] = bb_res
+        bundle["body_battery"] = preloaded_bb if not fetch_bb else self._get_single_day_body_battery(cdate)
         bundle["body_battery_events"] = self._safe_personal_call("get_body_battery_events", cdate)
 
         # 6-12. Heart rates, steps, respiration, SpO2, training readiness, training status, max metrics
@@ -1446,41 +1557,8 @@ class LiveGarminClient:
         bundle["training_status"] = self._safe_personal_call("get_training_status", cdate)
         bundle["max_metrics"] = self._safe_personal_call("get_max_metrics", cdate)
 
-        # 13. Body composition (with single-arg and weigh-ins fallbacks)
-        body_comp = None
-        if hasattr(self._personal_garmin, "get_body_composition"):
-            try:
-                cand = self._personal_garmin.get_body_composition(cdate, cdate)
-                if isinstance(cand, (dict, list)) and cand:
-                    body_comp = cand
-            except TypeError:
-                try:
-                    cand = self._personal_garmin.get_body_composition(cdate)
-                    if isinstance(cand, (dict, list)) and cand:
-                        body_comp = cand
-                except Exception as e:
-                    logger.debug(f"Personal Garmin call get_body_composition({cdate}) failed: {e}")
-            except Exception as e:
-                logger.debug(f"Personal Garmin call get_body_composition({cdate}, {cdate}) failed: {e}")
-        if not body_comp:
-            for m_name, m_args in (("get_weigh_ins", (cdate, cdate)), ("get_daily_weigh_ins", (cdate,))):
-                if hasattr(self._personal_garmin, m_name):
-                    try:
-                        cand = getattr(self._personal_garmin, m_name)(*m_args)
-                        if isinstance(cand, (dict, list)) and cand:
-                            body_comp = cand
-                            break
-                    except TypeError:
-                        try:
-                            cand = getattr(self._personal_garmin, m_name)(cdate)
-                            if isinstance(cand, (dict, list)) and cand:
-                                body_comp = cand
-                                break
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        logger.debug(f"Personal Garmin call {m_name} failed: {e}")
-        bundle["body_composition"] = body_comp
+        # 13. Body composition
+        bundle["body_composition"] = preloaded_bc if not fetch_bc else self._get_single_day_body_composition(cdate)
 
         # 14-16. Hydration, floors, fitness age
         bundle["hydration"] = self._safe_personal_call("get_hydration_data", cdate)
@@ -1491,6 +1569,139 @@ class LiveGarminClient:
         if not has_data:
             return None
         return bundle
+
+    def get_raw_daily_wellness_bundle(self, cdate: str) -> Optional[Dict[str, Any]]:
+        """Safely query all 16 Garmin daily wellness endpoint groups and return the raw bundle."""
+        if self._personal_garmin is None:
+            return None
+        return self._build_daily_wellness_bundle(cdate)
+
+    def get_wellness_range_bundles(
+        self,
+        start_date: Union[str, date],
+        end_date: Union[str, date],
+        max_workers: int = 4,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Batch multi-day endpoints (get_body_battery, get_body_composition, get_weigh_ins)
+        once per range and parallelize remaining per-day fetches via ThreadPoolExecutor.
+        """
+        if self._personal_garmin is None:
+            return {}
+
+        start_dt = (
+            start_date
+            if isinstance(start_date, date)
+            else datetime.strptime(str(start_date)[:10], "%Y-%m-%d").date()
+        )
+        end_dt = (
+            end_date
+            if isinstance(end_date, date)
+            else datetime.strptime(str(end_date)[:10], "%Y-%m-%d").date()
+        )
+        if end_dt < start_dt:
+            return {}
+
+        dates: List[str] = []
+        curr = start_dt
+        while curr <= end_dt:
+            dates.append(curr.isoformat())
+            curr += timedelta(days=1)
+
+        start_str = start_dt.isoformat()
+        end_str = end_dt.isoformat()
+
+        # Batch multi-day Body Battery once per range
+        bb_by_date: Dict[str, Any] = {}
+        bb_batched = False
+        if hasattr(self._personal_garmin, "get_body_battery"):
+            try:
+                bb_range = self._personal_garmin.get_body_battery(start_str, end_str)
+                if isinstance(bb_range, list):
+                    bb_batched = True
+                    for item in bb_range:
+                        if isinstance(item, dict) and item.get("date"):
+                            d_key = str(item["date"])[:10]
+                            bb_by_date.setdefault(d_key, []).append(item)
+                elif isinstance(bb_range, dict):
+                    bb_batched = True
+                    for d_key in dates:
+                        bb_by_date[d_key] = bb_range
+            except TypeError:
+                bb_batched = False
+            except Exception as e:
+                logger.debug(f"Batch get_body_battery({start_str}, {end_str}) failed: {e}")
+
+        # Batch multi-day Body Composition / Weigh-ins once per range
+        bc_by_date: Dict[str, Any] = {}
+        bc_batched = False
+        if hasattr(self._personal_garmin, "get_body_composition"):
+            try:
+                bc_range = self._personal_garmin.get_body_composition(start_str, end_str)
+                if isinstance(bc_range, dict) and bc_range:
+                    bc_batched = True
+                    dw_list = bc_range.get("dateWeightList")
+                    if isinstance(dw_list, list):
+                        for item in dw_list:
+                            if isinstance(item, dict):
+                                d_key = str(item.get("calendarDate") or item.get("date") or "")[:10]
+                                if d_key:
+                                    bc_by_date[d_key] = {"dateWeightList": [item], "totalAverage": item}
+                    elif isinstance(bc_range.get("dailyWeightSummaries"), list):
+                        for item in bc_range["dailyWeightSummaries"]:
+                            if isinstance(item, dict):
+                                d_key = str(item.get("summaryDate") or item.get("date") or "")[:10]
+                                if d_key:
+                                    bc_by_date[d_key] = {"dailyWeightSummaries": [item]}
+            except TypeError:
+                bc_batched = False
+            except Exception as e:
+                logger.debug(f"Batch get_body_composition({start_str}, {end_str}) failed: {e}")
+
+        if not bc_batched and hasattr(self._personal_garmin, "get_weigh_ins"):
+            try:
+                wi_range = self._personal_garmin.get_weigh_ins(start_str, end_str)
+                if isinstance(wi_range, dict) and wi_range:
+                    bc_batched = True
+                    for list_key in ("dailyWeightSummaries", "dateWeightList"):
+                        items = wi_range.get(list_key)
+                        if isinstance(items, list):
+                            for item in items:
+                                if isinstance(item, dict):
+                                    d_key = str(
+                                        item.get("summaryDate") or item.get("calendarDate") or item.get("date") or ""
+                                    )[:10]
+                                    if d_key:
+                                        bc_by_date[d_key] = {list_key: [item]}
+            except TypeError:
+                bc_batched = False
+            except Exception as e:
+                logger.debug(f"Batch get_weigh_ins({start_str}, {end_str}) failed: {e}")
+
+        bundles: Dict[str, Dict[str, Any]] = {}
+        workers = max(1, min(int(max_workers or 4), len(dates)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_date = {
+                executor.submit(
+                    self._build_daily_wellness_bundle,
+                    cdate,
+                    bb_by_date.get(cdate),
+                    not bb_batched,
+                    bc_by_date.get(cdate),
+                    not bc_batched,
+                ): cdate
+                for cdate in dates
+            }
+            for fut in as_completed(future_to_date):
+                cdate = future_to_date[fut]
+                try:
+                    b = fut.result()
+                    if b is not None:
+                        bundles[cdate] = b
+                except Exception as e:
+                    logger.warning(f"Failed fetching wellness bundle for {cdate}: {e}")
+
+        return {k: bundles[k] for k in sorted(bundles.keys())}
 
     def get_daily_wellness(self, cdate: str) -> Optional[Dict[str, Any]]:
         """Fetch genuine daily wellness metrics for cdate by collecting and normalizing the raw bundle."""
@@ -1667,13 +1878,13 @@ class MockGarminClient:
     def fetch_activities(self, start_epoch: int, end_epoch: int, limit: int = 100) -> List[Dict[str, Any]]:
         return self.get_activities(start_epoch, end_epoch, limit=limit)
 
-    def get_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
+    def get_activity_details(self, activity_id: str, include_extended_details: bool = True) -> Optional[Dict[str, Any]]:
         from src.ingestion.mock_generator import SyntheticDatasetGenerator
         gen = SyntheticDatasetGenerator(seed=self.seed)
         return gen.generate_activity_detail(activity_id)
 
-    def fetch_activity_details(self, activity_id: str) -> Optional[Dict[str, Any]]:
-        return self.get_activity_details(activity_id)
+    def fetch_activity_details(self, activity_id: str, include_extended_details: bool = True) -> Optional[Dict[str, Any]]:
+        return self.get_activity_details(activity_id, include_extended_details=include_extended_details)
 
     def download_fit_file(self, activity_id: str) -> Optional[bytes]:
         from src.ingestion.mock_generator import SyntheticDatasetGenerator

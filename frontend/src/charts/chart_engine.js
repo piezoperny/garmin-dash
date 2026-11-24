@@ -129,6 +129,11 @@ export class Chart {
     };
     this._onResize = this._handleResize.bind(this);
 
+    this._mouseMoveRafId = null;
+    this._resizeRafId = null;
+    this._pendingMouseEvt = null;
+    this._hasWindowResizeListener = false;
+
     this.canvas.addEventListener('mousemove', this._onMouseMove);
     this.canvas.addEventListener('mouseleave', this._onMouseLeave);
     this.canvas.addEventListener('mousedown', this._onMouseDown);
@@ -136,19 +141,29 @@ export class Chart {
     this.canvas.addEventListener('dblclick', this._onDblClick);
     if (typeof window !== 'undefined') {
       window.addEventListener('mouseup', this._onMouseUp);
-      window.addEventListener('resize', this._onResize);
     }
     if (typeof ResizeObserver !== 'undefined' && this.canvas.parentElement) {
       this._resizeObserver = new ResizeObserver(() => {
         this._handleResize();
       });
       this._resizeObserver.observe(this.canvas.parentElement);
+    } else if (typeof window !== 'undefined') {
+      window.addEventListener('resize', this._onResize);
+      this._hasWindowResizeListener = true;
     }
 
     this.render();
   }
 
   destroy() {
+    if (typeof cancelAnimationFrame === 'function') {
+      if (this._mouseMoveRafId) cancelAnimationFrame(this._mouseMoveRafId);
+      if (this._resizeRafId) cancelAnimationFrame(this._resizeRafId);
+    }
+    this._mouseMoveRafId = null;
+    this._resizeRafId = null;
+    this._pendingMouseEvt = null;
+
     this.canvas.removeEventListener('mousemove', this._onMouseMove);
     this.canvas.removeEventListener('mouseleave', this._onMouseLeave);
     this.canvas.removeEventListener('mousedown', this._onMouseDown);
@@ -156,7 +171,10 @@ export class Chart {
     this.canvas.removeEventListener('dblclick', this._onDblClick);
     if (typeof window !== 'undefined') {
       window.removeEventListener('mouseup', this._onMouseUp);
-      window.removeEventListener('resize', this._onResize);
+      if (this._hasWindowResizeListener) {
+        window.removeEventListener('resize', this._onResize);
+        this._hasWindowResizeListener = false;
+      }
     }
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
@@ -170,6 +188,14 @@ export class Chart {
   }
 
   _handleResize() {
+    if (typeof requestAnimationFrame === 'function') {
+      if (this._resizeRafId) return;
+      this._resizeRafId = requestAnimationFrame(() => {
+        this._resizeRafId = null;
+        if (this.canvas) this.render();
+      });
+      return;
+    }
     this.render();
   }
 
@@ -179,6 +205,10 @@ export class Chart {
         this._handleResize();
       });
       this._resizeObserver.observe(this.canvas.parentElement);
+      if (this._hasWindowResizeListener && typeof window !== 'undefined') {
+        window.removeEventListener('resize', this._onResize);
+        this._hasWindowResizeListener = false;
+      }
     }
 
     const parent = this.canvas.parentElement;
@@ -204,24 +234,37 @@ export class Chart {
       height = this._lastDisplayHeight || this.canvas._cssHeight || (this.canvas.height ? (this._scaled ? this.canvas.height / dpr : this.canvas.height) : 300);
     }
 
-    this._lastDisplayWidth = width;
-    this._lastDisplayHeight = height;
-    this._scaled = true;
+    const targetW = Math.round(width * dpr);
+    const targetH = Math.round(height * dpr);
+    const needsResize = !this._scaled ||
+      this._lastDisplayWidth !== width ||
+      this._lastDisplayHeight !== height ||
+      this._lastDpr !== dpr ||
+      this.canvas.width !== targetW ||
+      this.canvas.height !== targetH;
 
-    this.canvas.width = Math.round(width * dpr);
-    this.canvas.height = Math.round(height * dpr);
+    if (needsResize) {
+      this._lastDisplayWidth = width;
+      this._lastDisplayHeight = height;
+      this._lastDpr = dpr;
+      this._scaled = true;
 
-    if (this.canvas.style) {
-      this.canvas.style.width = width + 'px';
-      this.canvas.style.height = height + 'px';
+      this.canvas.width = targetW;
+      this.canvas.height = targetH;
+
+      if (this.canvas.style) {
+        this.canvas.style.width = width + 'px';
+        this.canvas.style.height = height + 'px';
+      }
+
+      if (typeof this.ctx.resetTransform === 'function') {
+        this.ctx.resetTransform();
+      } else if (typeof this.ctx.setTransform === 'function') {
+        this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+      this.ctx.scale(dpr, dpr);
     }
 
-    if (typeof this.ctx.resetTransform === 'function') {
-      this.ctx.resetTransform();
-    } else if (typeof this.ctx.setTransform === 'function') {
-      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    }
-    this.ctx.scale(dpr, dpr);
     this.displayWidth = width;
     this.displayHeight = height;
   }
@@ -1472,6 +1515,23 @@ export class Chart {
   }
 
   _handleMouseMove(evt) {
+    if (typeof requestAnimationFrame === 'function') {
+      this._pendingMouseEvt = { clientX: evt.clientX, clientY: evt.clientY };
+      if (this._mouseMoveRafId) return;
+      this._mouseMoveRafId = requestAnimationFrame(() => {
+        this._mouseMoveRafId = null;
+        const pending = this._pendingMouseEvt;
+        this._pendingMouseEvt = null;
+        if (pending && this.canvas) {
+          this._processMouseMove(pending);
+        }
+      });
+      return;
+    }
+    this._processMouseMove(evt);
+  }
+
+  _processMouseMove(evt) {
     if (this._drag) {
       const dx = evt.clientX - this._drag.startX;
       const dy = evt.clientY - this._drag.startY;
@@ -1540,6 +1600,11 @@ export class Chart {
   }
 
   _handleMouseLeave() {
+    if (typeof cancelAnimationFrame === 'function' && this._mouseMoveRafId) {
+      cancelAnimationFrame(this._mouseMoveRafId);
+    }
+    this._mouseMoveRafId = null;
+    this._pendingMouseEvt = null;
     if (this.activeTooltip) {
       this.activeTooltip = null;
       this.render();

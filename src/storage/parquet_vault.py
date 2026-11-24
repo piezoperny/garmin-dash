@@ -11,6 +11,7 @@ Designed for long-term scalability with Google Drive (Apps Script / API) and Het
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -66,6 +67,26 @@ def _safe_int(val: Any) -> Optional[int]:
         return None
 
 
+def _first_not_none(d: Dict[str, Any], *keys: str) -> Any:
+    for k in keys:
+        val = d.get(k)
+        if val is not None:
+            return val
+    return None
+
+
+def compute_file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Compute SHA-256 hex digest of a file using bounded chunked reads."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
 class VaultManifest(BaseModel):
     """Metadata manifest for the DuckDB + Parquet vault."""
 
@@ -80,6 +101,7 @@ class VaultManifest(BaseModel):
     raw_zip_years: Dict[str, int] = Field(default_factory=dict)
     stream_years: Dict[str, int] = Field(default_factory=dict)
     total_wellness_days: int = 0
+    file_hashes: Dict[str, str] = Field(default_factory=dict)
     history: List[Dict[str, Any]] = Field(default_factory=list)
 
     def record_activity(self, activity_id: str, year: Optional[str] = None) -> None:
@@ -108,32 +130,63 @@ class RawZipArchive:
     @staticmethod
     def append_files(zip_path: Path, files: Dict[str, bytes]) -> Tuple[int, int]:
         """
-        Add or update named files (e.g. '12345.fit', '12345.gpx') inside zip_path atomically.
-        Existing entries not in `files` are preserved without re-reading if unchanged,
-        or copied cleanly to a temp zip to prevent duplicate zip member warnings.
+        Add or update named files (e.g. '12345.fit', '12345.gpx') inside zip_path.
+        When appending strictly new filenames to an existing zip (no overwrites),
+        opens the zip in 'a' mode without decompressing/recompressing existing members.
+        Only rewrites via a temp zip when replacing an existing member with new bytes.
         Returns (added_or_updated_count, total_members_in_zip).
         """
         zip_path.parent.mkdir(parents=True, exist_ok=True)
-        if not files:
+        clean_files: Dict[str, bytes] = {}
+        for name, data in files.items():
+            clean_name = Path(name).name
+            if clean_name and data is not None:
+                clean_files[clean_name] = data
+
+        if not clean_files:
             if zip_path.exists():
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     return 0, len(zf.namelist())
             return 0, 0
 
+        if not zip_path.exists():
+            tmp_zip = zip_path.with_suffix(".zip.tmp")
+            with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                for fname in sorted(clean_files.keys()):
+                    zf.writestr(fname, clean_files[fname])
+            tmp_zip.rename(zip_path)
+            return len(clean_files), len(clean_files)
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            existing_names = {info.filename for info in zf.infolist() if not info.is_dir()}
+            overlapping = [fname for fname in clean_files if fname in existing_names]
+            new_only = {fname: data for fname, data in clean_files.items() if fname not in existing_names}
+
+            needs_rewrite = False
+            for fname in overlapping:
+                if zf.read(fname) != clean_files[fname]:
+                    needs_rewrite = True
+                    break
+
+        if not needs_rewrite:
+            if not new_only:
+                return 0, len(existing_names)
+            with zipfile.ZipFile(zip_path, "a", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                for fname in sorted(new_only.keys()):
+                    zf.writestr(fname, new_only[fname])
+            return len(new_only), len(existing_names) + len(new_only)
+
+        # At least one existing member changed; rewrite atomically to avoid duplicate zip entries
         existing_entries: Dict[str, bytes] = {}
-        if zip_path.exists():
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                for info in zf.infolist():
-                    if not info.is_dir():
-                        existing_entries[info.filename] = zf.read(info.filename)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for info in zf.infolist():
+                if not info.is_dir():
+                    existing_entries[info.filename] = zf.read(info.filename)
 
         updated = 0
-        for name, data in files.items():
-            clean_name = Path(name).name
-            if not clean_name or data is None:
-                continue
-            if existing_entries.get(clean_name) != data:
-                existing_entries[clean_name] = data
+        for fname, data in clean_files.items():
+            if existing_entries.get(fname) != data:
+                existing_entries[fname] = data
                 updated += 1
 
         tmp_zip = zip_path.with_suffix(".zip.tmp")
@@ -184,6 +237,22 @@ class ParquetVault:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.storage_client = storage_client
         self.remote_vault_dir = remote_vault_dir.rstrip("/")
+        self._con: Optional[duckdb.DuckDBPyConnection] = None
+        self._manifest: Optional[VaultManifest] = None
+
+    def close(self) -> None:
+        if self._con is not None:
+            try:
+                self._con.close()
+            except Exception:
+                pass
+            self._con = None
+
+    def __enter__(self) -> ParquetVault:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -236,11 +305,19 @@ class ParquetVault:
             logger.warning(f"Could not pull {rpath}: {exc}")
             return False
 
-    def _push_file(self, local_src: Path, filename: str) -> None:
+    def _push_file(self, local_src: Path, filename: str, manifest: Optional[VaultManifest] = None) -> bool:
         if self.storage_client is None or not local_src.exists():
-            return
+            return False
+        active_manifest = manifest or self._manifest
+        digest = compute_file_sha256(local_src)
+        if active_manifest is not None and active_manifest.file_hashes.get(filename) == digest:
+            logger.debug(f"Skipping unchanged upload for {filename} (sha256={digest[:12]})")
+            return False
         rpath = self.remote_path(filename)
         self.storage_client.put_file(local_src, rpath)
+        if active_manifest is not None:
+            active_manifest.file_hashes[filename] = digest
+        return True
 
     def load_manifest(self) -> VaultManifest:
         if self.storage_client is not None:
@@ -251,17 +328,30 @@ class ParquetVault:
                     if raw:
                         m = VaultManifest.model_validate_json(raw)
                         self.local_manifest_path.write_text(m.model_dump_json(indent=2), encoding="utf-8")
+                        self._manifest = m
                         return m
             except Exception as exc:
                 logger.warning(f"Failed to load remote vault manifest: {exc}")
         elif self.local_manifest_path.exists():
             try:
-                return VaultManifest.model_validate_json(self.local_manifest_path.read_text(encoding="utf-8"))
+                m = VaultManifest.model_validate_json(self.local_manifest_path.read_text(encoding="utf-8"))
+                self._manifest = m
+                return m
             except Exception as exc:
                 logger.warning(f"Failed to load local vault manifest: {exc}")
-        return VaultManifest()
+        m = VaultManifest()
+        self._manifest = m
+        return m
 
     def save_manifest(self, manifest: VaultManifest) -> None:
+        # Ensure SHA-256 hashes for any present local vault files are recorded
+        for p in (self.local_activities_path, self.local_wellness_path):
+            if p.exists():
+                manifest.file_hashes[p.name] = compute_file_sha256(p)
+        for p in list(self.work_dir.glob("streams_*.parquet")) + list(self.work_dir.glob("raw_*.zip")):
+            if p.exists():
+                manifest.file_hashes[p.name] = compute_file_sha256(p)
+        self._manifest = manifest
         payload = manifest.model_dump_json(indent=2)
         self.local_manifest_path.write_text(payload, encoding="utf-8")
         if self.storage_client is not None:
@@ -271,21 +361,54 @@ class ParquetVault:
     # DuckDB connection helper
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _connect() -> duckdb.DuckDBPyConnection:
-        return duckdb.connect(database=":memory:")
+    def _get_con(self) -> duckdb.DuckDBPyConnection:
+        if self._con is None:
+            self._con = duckdb.connect(database=":memory:")
+        return self._con
 
     @staticmethod
-    def _atomic_copy_parquet(con: duckdb.DuckDBPyConnection, table_name: str, dest: Path) -> None:
+    def _atomic_copy_parquet_query(con: duckdb.DuckDBPyConnection, select_sql: str, dest: Path) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(".parquet.tmp")
         if tmp.exists():
             tmp.unlink()
         escaped = str(tmp).replace("'", "''")
-        con.execute(f"COPY {table_name} TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+        con.execute(f"COPY ({select_sql}) TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)")
         if dest.exists():
             dest.unlink()
         tmp.rename(dest)
+
+    def _bulk_write_ndjson_parquet(
+        self,
+        records: List[Dict[str, Any]],
+        columns_spec: Dict[str, str],
+        empty_ddl: str,
+        dest: Path,
+    ) -> None:
+        con = self._get_con()
+        if not records:
+            con.execute(f"DROP TABLE IF EXISTS _empty_stage")
+            con.execute(f"CREATE TEMP TABLE _empty_stage ({empty_ddl})")
+            self._atomic_copy_parquet_query(con, "SELECT * FROM _empty_stage", dest)
+            con.execute("DROP TABLE IF EXISTS _empty_stage")
+            return
+
+        tmp_ndjson = dest.with_suffix(".ndjson.tmp")
+        try:
+            with open(tmp_ndjson, "w", encoding="utf-8") as f:
+                for rec in records:
+                    f.write(json.dumps(rec, separators=(",", ":"), ensure_ascii=False))
+                    f.write("\n")
+            escaped_ndjson = str(tmp_ndjson).replace("'", "''")
+            cols_sql = ", ".join(f"'{k}': '{v}'" for k, v in columns_spec.items())
+            select_sql = (
+                f"SELECT * FROM read_json('{escaped_ndjson}', "
+                f"format='newline_delimited', columns={{{cols_sql}}})"
+            )
+            self._atomic_copy_parquet_query(con, select_sql, dest)
+        finally:
+            if tmp_ndjson.exists():
+                tmp_ndjson.unlink()
 
     # ------------------------------------------------------------------
     # Activities (activities.parquet)
@@ -296,19 +419,16 @@ class ParquetVault:
             self._pull_file("activities.parquet", self.local_activities_path)
         if not self.local_activities_path.exists():
             return []
-        con = self._connect()
-        try:
-            escaped = str(self.local_activities_path).replace("'", "''")
-            rows = con.execute(
-                f"SELECT payload_json FROM read_parquet('{escaped}') ORDER BY start_time ASC, id ASC"
-            ).fetchall()
-            out: List[Dict[str, Any]] = []
-            for (payload_str,) in rows:
-                if payload_str:
-                    out.append(json.loads(payload_str))
-            return out
-        finally:
-            con.close()
+        con = self._get_con()
+        escaped = str(self.local_activities_path).replace("'", "''")
+        rows = con.execute(
+            f"SELECT payload_json FROM read_parquet('{escaped}') ORDER BY start_time ASC, id ASC"
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for (payload_str,) in rows:
+            if payload_str:
+                out.append(json.loads(payload_str))
+        return out
 
     def save_activities(self, activities: List[Dict[str, Any]], push_remote: bool = True) -> int:
         """Writes canonical activities (deduplicated by id, last write wins) to activities.parquet."""
@@ -321,7 +441,7 @@ class ParquetVault:
                 dedup[aid] = act
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        records: List[Tuple[Any, ...]] = []
+        records: List[Dict[str, Any]] = []
         for aid, act in dedup.items():
             # Strip heavy streams from index table (stored in streams_YYYY.parquet)
             idx_copy = dict(act)
@@ -331,61 +451,58 @@ class ParquetVault:
             start_t = str(idx_copy.get("start_time") or idx_copy.get("date") or "")
             date_s = str(idx_copy.get("date") or start_t[:10] or "")
             yr = _extract_year(start_t or date_s)
-            records.append((
-                aid,
-                start_t,
-                date_s,
-                yr,
-                str(idx_copy.get("sport") or "other"),
-                str(idx_copy.get("name") or idx_copy.get("title") or ""),
-                _safe_float(idx_copy.get("distance_meters")),
-                _safe_float(idx_copy.get("duration_seconds")),
-                _safe_float(idx_copy.get("moving_time_seconds")),
-                _safe_float(idx_copy.get("elevation_gain_meters")),
-                _safe_float(idx_copy.get("avg_hr")),
-                _safe_float(idx_copy.get("max_hr")),
-                _safe_float(idx_copy.get("calories")),
-                _safe_float(idx_copy.get("avg_power")),
-                bool(idx_copy.get("has_streams") or act.get("gps_track") or act.get("telemetry_stream")),
-                idx_copy.get("summary_polyline"),
-                now_iso,
-                json.dumps(idx_copy, separators=(",", ":"), ensure_ascii=False),
-            ))
+            raw_act_type = idx_copy.get("raw_activity_type")
+            records.append({
+                "id": aid,
+                "start_time": start_t,
+                "date": date_s,
+                "year": yr,
+                "sport": str(idx_copy.get("sport") or "other"),
+                "name": str(idx_copy.get("name") or idx_copy.get("title") or ""),
+                "distance_meters": _safe_float(idx_copy.get("distance_meters")),
+                "duration_seconds": _safe_float(idx_copy.get("duration_seconds")),
+                "moving_time_seconds": _safe_float(idx_copy.get("moving_time_seconds")),
+                "elevation_gain_meters": _safe_float(idx_copy.get("elevation_gain_meters")),
+                "avg_hr": _safe_float(idx_copy.get("avg_hr")),
+                "max_hr": _safe_float(idx_copy.get("max_hr")),
+                "calories": _safe_float(idx_copy.get("calories")),
+                "avg_power": _safe_float(idx_copy.get("avg_power")),
+                "tss": _safe_float(idx_copy.get("tss")),
+                "avg_cadence": _safe_float(idx_copy.get("avg_cadence")),
+                "avg_pace_sec_km": _safe_float(idx_copy.get("avg_pace_sec_km")),
+                "raw_activity_type": str(raw_act_type) if raw_act_type is not None else None,
+                "has_streams": bool(idx_copy.get("has_streams") or act.get("gps_track") or act.get("telemetry_stream")),
+                "summary_polyline": idx_copy.get("summary_polyline"),
+                "updated_at": now_iso,
+                "payload_json": json.dumps(idx_copy, separators=(",", ":"), ensure_ascii=False),
+            })
 
-        con = self._connect()
-        try:
-            con.execute(
-                """
-                CREATE TABLE activities_stage (
-                    id VARCHAR,
-                    start_time VARCHAR,
-                    date VARCHAR,
-                    year VARCHAR,
-                    sport VARCHAR,
-                    name VARCHAR,
-                    distance_meters DOUBLE,
-                    duration_seconds DOUBLE,
-                    moving_time_seconds DOUBLE,
-                    elevation_gain_meters DOUBLE,
-                    avg_hr DOUBLE,
-                    max_hr DOUBLE,
-                    calories DOUBLE,
-                    avg_power DOUBLE,
-                    has_streams BOOLEAN,
-                    summary_polyline VARCHAR,
-                    updated_at VARCHAR,
-                    payload_json VARCHAR
-                )
-                """
-            )
-            if records:
-                con.executemany(
-                    "INSERT INTO activities_stage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    records,
-                )
-            self._atomic_copy_parquet(con, "activities_stage", self.local_activities_path)
-        finally:
-            con.close()
+        columns_spec = {
+            "id": "VARCHAR",
+            "start_time": "VARCHAR",
+            "date": "VARCHAR",
+            "year": "VARCHAR",
+            "sport": "VARCHAR",
+            "name": "VARCHAR",
+            "distance_meters": "DOUBLE",
+            "duration_seconds": "DOUBLE",
+            "moving_time_seconds": "DOUBLE",
+            "elevation_gain_meters": "DOUBLE",
+            "avg_hr": "DOUBLE",
+            "max_hr": "DOUBLE",
+            "calories": "DOUBLE",
+            "avg_power": "DOUBLE",
+            "tss": "DOUBLE",
+            "avg_cadence": "DOUBLE",
+            "avg_pace_sec_km": "DOUBLE",
+            "raw_activity_type": "VARCHAR",
+            "has_streams": "BOOLEAN",
+            "summary_polyline": "VARCHAR",
+            "updated_at": "VARCHAR",
+            "payload_json": "VARCHAR",
+        }
+        empty_ddl = ", ".join(f"{k} {v}" for k, v in columns_spec.items())
+        self._bulk_write_ndjson_parquet(records, columns_spec, empty_ddl, self.local_activities_path)
 
         if push_remote and self.storage_client is not None:
             self._push_file(self.local_activities_path, "activities.parquet")
@@ -400,19 +517,16 @@ class ParquetVault:
             self._pull_file("wellness.parquet", self.local_wellness_path)
         if not self.local_wellness_path.exists():
             return []
-        con = self._connect()
-        try:
-            escaped = str(self.local_wellness_path).replace("'", "''")
-            rows = con.execute(
-                f"SELECT payload_json FROM read_parquet('{escaped}') ORDER BY date ASC"
-            ).fetchall()
-            out: List[Dict[str, Any]] = []
-            for (payload_str,) in rows:
-                if payload_str:
-                    out.append(json.loads(payload_str))
-            return out
-        finally:
-            con.close()
+        con = self._get_con()
+        escaped = str(self.local_wellness_path).replace("'", "''")
+        rows = con.execute(
+            f"SELECT payload_json FROM read_parquet('{escaped}') ORDER BY date ASC"
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for (payload_str,) in rows:
+            if payload_str:
+                out.append(json.loads(payload_str))
+        return out
 
     def save_wellness(self, records_list: List[Dict[str, Any]], push_remote: bool = True) -> int:
         dedup: Dict[str, Dict[str, Any]] = {}
@@ -422,64 +536,46 @@ class ParquetVault:
             dedup[str(rec["date"])[:10]] = rec
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        rows: List[Tuple[Any, ...]] = []
+        rows: List[Dict[str, Any]] = []
         for cdate in sorted(dedup.keys()):
             rec = dedup[cdate]
-            rows.append((
-                cdate,
-                _extract_year(cdate),
-                _safe_float(rec.get("resting_hr")),
-                _safe_float(
-                    rec.get("hrv_last_night_avg")
-                    if rec.get("hrv_last_night_avg") is not None
-                    else (
-                        rec.get("hrv_ms")
-                        if rec.get("hrv_ms") is not None
-                        else (rec.get("hrv_weekly_avg") if rec.get("hrv_weekly_avg") is not None else rec.get("hrv"))
-                    )
+            rows.append({
+                "date": cdate,
+                "year": _extract_year(cdate),
+                "resting_hr": _safe_float(rec.get("resting_hr")),
+                "hrv_ms": _safe_float(
+                    _first_not_none(rec, "hrv_last_night_avg", "hrv_ms", "hrv_weekly_avg", "hrv")
                 ),
-                _safe_float(rec.get("sleep_seconds")),
-                _safe_float(rec.get("sleep_score")),
-                _safe_float(rec.get("stress_level")),
-                _safe_float(rec.get("body_battery_high") if rec.get("body_battery_high") is not None else rec.get("body_battery_max")),
-                _safe_float(rec.get("body_battery_low") if rec.get("body_battery_low") is not None else rec.get("body_battery_min")),
-                _safe_int(rec.get("steps")),
-                _safe_float(rec.get("vo2_max")),
-                _safe_float(rec.get("training_readiness")),
-                now_iso,
-                json.dumps(rec, separators=(",", ":"), ensure_ascii=False),
-            ))
+                "sleep_seconds": _safe_float(rec.get("sleep_seconds")),
+                "sleep_score": _safe_float(rec.get("sleep_score")),
+                "stress_level": _safe_float(rec.get("stress_level")),
+                "body_battery_max": _safe_float(_first_not_none(rec, "body_battery_high", "body_battery_max")),
+                "body_battery_min": _safe_float(_first_not_none(rec, "body_battery_low", "body_battery_min")),
+                "steps": _safe_int(rec.get("steps")),
+                "vo2_max": _safe_float(_first_not_none(rec, "vo2_max", "vo2max_running", "vo2max_cycling")),
+                "training_readiness": _safe_float(_first_not_none(rec, "training_readiness", "training_readiness_score")),
+                "updated_at": now_iso,
+                "payload_json": json.dumps(rec, separators=(",", ":"), ensure_ascii=False),
+            })
 
-        con = self._connect()
-        try:
-            con.execute(
-                """
-                CREATE TABLE wellness_stage (
-                    date VARCHAR,
-                    year VARCHAR,
-                    resting_hr DOUBLE,
-                    hrv_ms DOUBLE,
-                    sleep_seconds DOUBLE,
-                    sleep_score DOUBLE,
-                    stress_level DOUBLE,
-                    body_battery_max DOUBLE,
-                    body_battery_min DOUBLE,
-                    steps BIGINT,
-                    vo2_max DOUBLE,
-                    training_readiness DOUBLE,
-                    updated_at VARCHAR,
-                    payload_json VARCHAR
-                )
-                """
-            )
-            if rows:
-                con.executemany(
-                    "INSERT INTO wellness_stage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    rows,
-                )
-            self._atomic_copy_parquet(con, "wellness_stage", self.local_wellness_path)
-        finally:
-            con.close()
+        columns_spec = {
+            "date": "VARCHAR",
+            "year": "VARCHAR",
+            "resting_hr": "DOUBLE",
+            "hrv_ms": "DOUBLE",
+            "sleep_seconds": "DOUBLE",
+            "sleep_score": "DOUBLE",
+            "stress_level": "DOUBLE",
+            "body_battery_max": "DOUBLE",
+            "body_battery_min": "DOUBLE",
+            "steps": "BIGINT",
+            "vo2_max": "DOUBLE",
+            "training_readiness": "DOUBLE",
+            "updated_at": "VARCHAR",
+            "payload_json": "VARCHAR",
+        }
+        empty_ddl = ", ".join(f"{k} {v}" for k, v in columns_spec.items())
+        self._bulk_write_ndjson_parquet(rows, columns_spec, empty_ddl, self.local_wellness_path)
 
         if push_remote and self.storage_client is not None:
             self._push_file(self.local_wellness_path, "wellness.parquet")
@@ -495,19 +591,16 @@ class ParquetVault:
             self._pull_file(f"streams_{year}.parquet", local_p)
         if not local_p.exists():
             return {}
-        con = self._connect()
-        try:
-            escaped = str(local_p).replace("'", "''")
-            rows = con.execute(
-                f"SELECT activity_id, payload_json FROM read_parquet('{escaped}')"
-            ).fetchall()
-            out: Dict[str, Dict[str, Any]] = {}
-            for aid, payload_str in rows:
-                if aid and payload_str:
-                    out[str(aid)] = json.loads(payload_str)
-            return out
-        finally:
-            con.close()
+        con = self._get_con()
+        escaped = str(local_p).replace("'", "''")
+        rows = con.execute(
+            f"SELECT activity_id, payload_json FROM read_parquet('{escaped}')"
+        ).fetchall()
+        out: Dict[str, Dict[str, Any]] = {}
+        for aid, payload_str in rows:
+            if aid and payload_str:
+                out[str(aid)] = json.loads(payload_str)
+        return out
 
     def save_year_streams(
         self,
@@ -517,7 +610,7 @@ class ParquetVault:
     ) -> int:
         local_p = self.local_streams_path(year)
         now_iso = datetime.now(timezone.utc).isoformat()
-        rows: List[Tuple[str, str, str, str]] = []
+        rows: List[Dict[str, Any]] = []
         for aid in sorted(streams_map.keys()):
             shard = streams_map[aid]
             if not isinstance(shard, dict):
@@ -530,30 +623,21 @@ class ParquetVault:
                 "laps": shard.get("laps", []),
                 "hr_zones": shard.get("hr_zones", {}),
             }
-            rows.append((
-                str(aid),
-                str(year),
-                now_iso,
-                json.dumps(shard_clean, separators=(",", ":"), ensure_ascii=False),
-            ))
+            rows.append({
+                "activity_id": str(aid),
+                "year": str(year),
+                "updated_at": now_iso,
+                "payload_json": json.dumps(shard_clean, separators=(",", ":"), ensure_ascii=False),
+            })
 
-        con = self._connect()
-        try:
-            con.execute(
-                """
-                CREATE TABLE streams_stage (
-                    activity_id VARCHAR,
-                    year VARCHAR,
-                    updated_at VARCHAR,
-                    payload_json VARCHAR
-                )
-                """
-            )
-            if rows:
-                con.executemany("INSERT INTO streams_stage VALUES (?, ?, ?, ?)", rows)
-            self._atomic_copy_parquet(con, "streams_stage", local_p)
-        finally:
-            con.close()
+        columns_spec = {
+            "activity_id": "VARCHAR",
+            "year": "VARCHAR",
+            "updated_at": "VARCHAR",
+            "payload_json": "VARCHAR",
+        }
+        empty_ddl = ", ".join(f"{k} {v}" for k, v in columns_spec.items())
+        self._bulk_write_ndjson_parquet(rows, columns_spec, empty_ddl, local_p)
 
         if push_remote and self.storage_client is not None:
             self._push_file(local_p, f"streams_{year}.parquet")
@@ -617,10 +701,7 @@ class ParquetVault:
         """Execute an ad-hoc DuckDB SQL query against activities.parquet (table name: `activities`)."""
         if not self.local_activities_path.exists():
             return []
-        con = self._connect()
-        try:
-            escaped = str(self.local_activities_path).replace("'", "''")
-            con.execute(f"CREATE VIEW activities AS SELECT * FROM read_parquet('{escaped}')")
-            return con.execute(sql).fetchall()
-        finally:
-            con.close()
+        con = self._get_con()
+        escaped = str(self.local_activities_path).replace("'", "''")
+        con.execute(f"CREATE OR REPLACE VIEW activities AS SELECT * FROM read_parquet('{escaped}')")
+        return con.execute(sql).fetchall()

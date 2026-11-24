@@ -179,15 +179,45 @@ export async function decryptDashboardPayload(passphrase, wireData) {
   return { payload, rawKeyBase64 };
 }
 
+function toUint8Array(bufOrView) {
+  if (bufOrView instanceof Uint8Array) return bufOrView;
+  if (bufOrView instanceof ArrayBuffer) return new Uint8Array(bufOrView);
+  if (ArrayBuffer.isView(bufOrView)) {
+    return new Uint8Array(bufOrView.buffer, bufOrView.byteOffset, bufOrView.byteLength);
+  }
+  throw new Error('Expected ArrayBuffer or TypedArray.');
+}
+
+function resolveKeyBytes(keyInput) {
+  if (!keyInput) {
+    throw new Error('Raw session key is required.');
+  }
+  if (typeof keyInput === 'string') {
+    return base64ToUint8Array(keyInput);
+  }
+  return toUint8Array(keyInput);
+}
+
+function normalizeAad(aad) {
+  if (aad === null || aad === undefined) return null;
+  if (typeof aad === 'string') {
+    return new TextEncoder().encode(aad);
+  }
+  return toUint8Array(aad);
+}
+
 /**
- * Decrypts a binary data.enc payload using cached raw 32-byte key (sessionStorage reload bypass).
- * 
- * @param {string} rawKeyBase64 - Base64 encoded 32-byte AES key
+ * Decrypts a binary data.enc or stream chunk payload using a raw 32-byte key.
+ * Preserves 2-arg backward compatibility: decryptWithRawKey(rawKeyBase64, wireData).
+ *
+ * @param {string|Uint8Array|ArrayBuffer} rawKeyBase64 - Base64 encoded or raw 32-byte AES key
  * @param {ArrayBuffer|Uint8Array} wireData - Binary wire bytes
+ * @param {{ aad?: Uint8Array|ArrayBuffer|string|null, dek?: string|Uint8Array|ArrayBuffer|null }|null} [options]
  * @returns {Promise<object>} Decrypted payload JSON
  */
-export async function decryptWithRawKey(rawKeyBase64, wireData) {
-  if (!rawKeyBase64 || typeof rawKeyBase64 !== 'string') {
+export async function decryptWithRawKey(rawKeyBase64, wireData, options = null) {
+  const effectiveKey = options?.dek ?? rawKeyBase64;
+  if (!effectiveKey) {
     throw new Error('Raw session key is required.');
   }
 
@@ -197,7 +227,7 @@ export async function decryptWithRawKey(rawKeyBase64, wireData) {
   }
 
   const subtle = getSubtleCrypto();
-  const keyBytes = base64ToUint8Array(rawKeyBase64);
+  const keyBytes = resolveKeyBytes(effectiveKey);
 
   const aesKey = await subtle.importKey(
     'raw',
@@ -209,15 +239,21 @@ export async function decryptWithRawKey(rawKeyBase64, wireData) {
 
   const iv = bytes.subarray(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
   const ciphertextAndTag = bytes.subarray(SALT_LENGTH + IV_LENGTH);
+  const aadBytes = normalizeAad(options?.aad);
+
+  const decryptParams = {
+    name: 'AES-GCM',
+    iv: iv,
+    tagLength: TAG_LENGTH_BITS
+  };
+  if (aadBytes) {
+    decryptParams.additionalData = aadBytes;
+  }
 
   let decryptedBuffer;
   try {
     decryptedBuffer = await subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv,
-        tagLength: TAG_LENGTH_BITS
-      },
+      decryptParams,
       aesKey,
       ciphertextAndTag
     );
@@ -226,4 +262,219 @@ export async function decryptWithRawKey(rawKeyBase64, wireData) {
   }
 
   return await decodeMaybeGzipJson(decryptedBuffer);
+}
+
+/**
+ * Alias matching (buffer, rawKeyBytes, options) parameter order.
+ * @param {ArrayBuffer|Uint8Array} buffer
+ * @param {string|Uint8Array|ArrayBuffer} rawKeyBytes
+ * @param {{ aad?: Uint8Array|ArrayBuffer|string|null, dek?: string|Uint8Array|ArrayBuffer|null }|null} [options]
+ * @returns {Promise<object>}
+ */
+export async function decryptPayloadWithKey(buffer, rawKeyBytes, options = null) {
+  return decryptWithRawKey(rawKeyBytes, buffer, options);
+}
+
+// ============================================================================
+// Web Worker Off-Thread Crypto Bridge (with transparent main-thread fallback)
+// ============================================================================
+
+let cryptoWorker = null;
+let cryptoWorkerFailed = false;
+let workerRequestSeq = 0;
+const pendingWorkerRequests = new Map();
+
+class WorkerInitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'WorkerInitError';
+  }
+}
+
+function canUseCryptoWorker() {
+  return (
+    !cryptoWorkerFailed &&
+    typeof Worker !== 'undefined' &&
+    typeof window !== 'undefined'
+  );
+}
+
+function rejectAllPendingWorkerRequests(reason) {
+  for (const [, pending] of pendingWorkerRequests) {
+    pending.reject(reason);
+  }
+  pendingWorkerRequests.clear();
+}
+
+function getOrCreateCryptoWorker() {
+  if (!canUseCryptoWorker()) {
+    throw new WorkerInitError('Web Worker unavailable in this environment.');
+  }
+  if (cryptoWorker) return cryptoWorker;
+
+  try {
+    const workerUrl = new URL('./crypto_worker.js', import.meta.url);
+    const worker = new Worker(workerUrl, { type: 'module' });
+
+    worker.addEventListener('message', (event) => {
+      const msg = event?.data;
+      if (!msg || typeof msg !== 'object') return;
+      const pending = pendingWorkerRequests.get(msg.id);
+      if (!pending) return;
+      pendingWorkerRequests.delete(msg.id);
+      if (msg.ok) {
+        pending.resolve(msg.result);
+      } else {
+        pending.reject(new Error(msg.error || 'Worker decryption failed.'));
+      }
+    });
+
+    worker.addEventListener('error', (err) => {
+      cryptoWorkerFailed = true;
+      cryptoWorker = null;
+      rejectAllPendingWorkerRequests(
+        new WorkerInitError(err?.message || 'Crypto worker failed to initialize.')
+      );
+    });
+
+    cryptoWorker = worker;
+    return cryptoWorker;
+  } catch (err) {
+    cryptoWorkerFailed = true;
+    throw new WorkerInitError(err?.message || 'Crypto worker initialization failed.');
+  }
+}
+
+function callCryptoWorker(payload, transferList = []) {
+  const worker = getOrCreateCryptoWorker();
+  const id = ++workerRequestSeq;
+  return new Promise((resolve, reject) => {
+    pendingWorkerRequests.set(id, { resolve, reject });
+    try {
+      worker.postMessage({ id, ...payload }, transferList);
+    } catch (err) {
+      pendingWorkerRequests.delete(id);
+      reject(new WorkerInitError(err?.message || 'Failed to post message to crypto worker.'));
+    }
+  });
+}
+
+/**
+ * Terminates the active crypto Web Worker (called on Lock Vault).
+ */
+export function terminateCryptoWorker() {
+  if (cryptoWorker) {
+    try {
+      cryptoWorker.terminate();
+    } catch {
+      // ignore
+    }
+    cryptoWorker = null;
+  }
+  cryptoWorkerFailed = false;
+  rejectAllPendingWorkerRequests(new Error('Crypto worker terminated.'));
+}
+
+/**
+ * Decrypts the dashboard rollup off-thread in crypto_worker.js when Worker is available,
+ * falling back transparently to main-thread SubtleCrypto in Node.js or if Worker init fails.
+ *
+ * Supports both initial passphrase unlock:
+ *   decryptRollupOffThread(encryptedBuffer, passphrase)
+ * and cached raw-key reload:
+ *   decryptRollupOffThread(encryptedBuffer, { rawKeyBase64 })
+ *
+ * @param {ArrayBuffer|Uint8Array} encryptedBuffer
+ * @param {string|{ rawKeyBase64?: string, rawKeyBytes?: Uint8Array|ArrayBuffer }} passphraseOrOptions
+ * @returns {Promise<{ payload: object, rawKeyBase64: string }>}
+ */
+export async function decryptRollupOffThread(encryptedBuffer, passphraseOrOptions) {
+  const isRawKeyMode =
+    passphraseOrOptions &&
+    typeof passphraseOrOptions === 'object' &&
+    (passphraseOrOptions.rawKeyBase64 || passphraseOrOptions.rawKeyBytes);
+
+  if (isRawKeyMode) {
+    const rawKeyInput = passphraseOrOptions.rawKeyBase64 || passphraseOrOptions.rawKeyBytes;
+    const rawKeyBase64 = typeof rawKeyInput === 'string'
+      ? rawKeyInput
+      : arrayBufferToBase64(rawKeyInput);
+
+    if (canUseCryptoWorker()) {
+      try {
+        const bytesCopy = toUint8Array(encryptedBuffer).slice();
+        const keyBytes = resolveKeyBytes(rawKeyInput).slice();
+        const payload = await callCryptoWorker(
+          {
+            type: 'decryptStreamChunk',
+            encryptedBuffer: bytesCopy.buffer,
+            rawKeyBytes: keyBytes.buffer,
+            aad: null
+          },
+          [bytesCopy.buffer, keyBytes.buffer]
+        );
+        return { payload, rawKeyBase64 };
+      } catch (err) {
+        if (!(err instanceof WorkerInitError)) throw err;
+      }
+    }
+
+    const payload = await decryptWithRawKey(rawKeyInput, encryptedBuffer);
+    return { payload, rawKeyBase64 };
+  }
+
+  const passphrase = passphraseOrOptions;
+  if (canUseCryptoWorker()) {
+    try {
+      const bytesCopy = toUint8Array(encryptedBuffer).slice();
+      const { rollup, rawKeyBytes } = await callCryptoWorker(
+        {
+          type: 'deriveAndDecryptRollup',
+          encryptedBuffer: bytesCopy.buffer,
+          passphrase
+        },
+        [bytesCopy.buffer]
+      );
+      return {
+        payload: rollup,
+        rawKeyBase64: arrayBufferToBase64(rawKeyBytes)
+      };
+    } catch (err) {
+      if (!(err instanceof WorkerInitError)) throw err;
+    }
+  }
+
+  return await decryptDashboardPayload(passphrase, encryptedBuffer);
+}
+
+/**
+ * Decrypts a stream chunk off-thread in crypto_worker.js when Worker is available,
+ * falling back transparently to main-thread decryptWithRawKey().
+ *
+ * @param {ArrayBuffer|Uint8Array} encryptedBuffer
+ * @param {string|Uint8Array|ArrayBuffer} rawKeyBytes
+ * @param {{ aad?: Uint8Array|ArrayBuffer|string|null, dek?: string|Uint8Array|ArrayBuffer|null }|null} [options]
+ * @returns {Promise<object>}
+ */
+export async function decryptChunkOffThread(encryptedBuffer, rawKeyBytes, options = null) {
+  const effectiveKey = options?.dek ?? rawKeyBytes;
+  if (canUseCryptoWorker()) {
+    try {
+      const bytesCopy = toUint8Array(encryptedBuffer).slice();
+      const keyBytes = resolveKeyBytes(effectiveKey).slice();
+      return await callCryptoWorker(
+        {
+          type: 'decryptStreamChunk',
+          encryptedBuffer: bytesCopy.buffer,
+          rawKeyBytes: keyBytes.buffer,
+          aad: options?.aad ?? null
+        },
+        [bytesCopy.buffer, keyBytes.buffer]
+      );
+    } catch (err) {
+      if (!(err instanceof WorkerInitError)) throw err;
+    }
+  }
+
+  return await decryptWithRawKey(rawKeyBytes, encryptedBuffer, options);
 }

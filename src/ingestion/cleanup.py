@@ -27,6 +27,12 @@ PROHIBITED_PATTERNS = [
     "*.parquet",
     "*.duckdb",
     "*.tmp",
+    "garmin_oauth.json",
+    "vault_manifest.json",
+    "raw_*.zip",
+    "wellness_history.json",
+    "activities_index.json",
+    ".staging/streams/*.json",
 ]
 
 # Standard directories to skip during scanning
@@ -56,7 +62,7 @@ def _remove_readonly(func, path, exc_info):
 def purge_file(target_file: Union[Path, str], secure: bool = False) -> bool:
     """
     Safely unlinks a single file.
-    If secure=True, overwrites with zeros (0x00) before unlinking.
+    If secure=True, overwrites with zeros (0x00) in 1 MB chunks before unlinking.
     """
     p = Path(target_file)
     if not p.exists() or not p.is_file():
@@ -66,8 +72,14 @@ def purge_file(target_file: Union[Path, str], secure: bool = False) -> bool:
         if secure:
             file_size = p.stat().st_size
             if file_size > 0:
+                chunk_size = 1024 * 1024  # 1 MB
+                zero_chunk = b"\x00" * min(chunk_size, file_size)
                 with open(p, "wb") as f:
-                    f.write(b"\x00" * file_size)
+                    remaining = file_size
+                    while remaining > 0:
+                        to_write = min(chunk_size, remaining)
+                        f.write(zero_chunk if to_write == len(zero_chunk) else b"\x00" * to_write)
+                        remaining -= to_write
                     f.flush()
                     os.fsync(f.fileno())
         p.unlink()

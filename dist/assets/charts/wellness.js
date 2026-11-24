@@ -1,940 +1,361 @@
-/**
- * frontend/src/charts/wellness.js
- * 
- * Minimalist Dark-Themed Garmin Health & Fitness Dashboard
- * - Displays all 8 synced Garmin wellness metrics:
- *   1. Daily Steps (#card-wellness-steps)
- *   2. Resting Heart Rate (#card-wellness-rhr)
- *   3. Sleep Duration, Score & Stages (#card-wellness-sleep)
- *   4. Stress Level & Status (#card-wellness-stress)
- *   5. Body Battery Charged/Drained (#card-wellness-body-battery)
- *   6. HRV Status (#card-wellness-hrv)
- *   7. Active Intensity Minutes (#card-wellness-intensity)
- *   8. Daily Calories (#card-wellness-calories)
- * 
- * Layout Architecture:
- * - "In Focus" (#wellness-in-focus): Hero cards with progress rings, gauges, breakdown bars
- * - "At a Glance" (#wellness-at-a-glance): Compact vital metric cards
- * 
- * Customization & Persistence:
- * - Reorder cards (up/down/drag-and-drop)
- * - Move cards between In Focus and At a Glance
- * - Add / Remove cards
- * - Reset layout to Garmin default
- * - Persisted in localStorage under "garmin_dash_customization"
- */
-
-export const DEFAULT_WELLNESS_LAYOUT = {
-  in_focus: ['sleep', 'body_battery', 'stress', 'steps'],
-  at_a_glance: ['resting_hr', 'hrv', 'intensity_minutes', 'calories'],
-  hidden: []
-};
-
-export const WELLNESS_METRIC_METADATA = {
-  steps: { id: 'card-wellness-steps', name: 'Daily Steps', defaultSection: 'in_focus' },
-  resting_hr: { id: 'card-wellness-rhr', name: 'Resting Heart Rate', defaultSection: 'at_a_glance' },
-  sleep: { id: 'card-wellness-sleep', name: 'Sleep', defaultSection: 'in_focus' },
-  stress: { id: 'card-wellness-stress', name: 'Stress', defaultSection: 'in_focus' },
-  body_battery: { id: 'card-wellness-body-battery', name: 'Body Battery', defaultSection: 'in_focus' },
-  hrv: { id: 'card-wellness-hrv', name: 'HRV Status', defaultSection: 'at_a_glance' },
-  intensity_minutes: { id: 'card-wellness-intensity', name: 'Active Intensity Minutes', defaultSection: 'at_a_glance' },
-  calories: { id: 'card-wellness-calories', name: 'Daily Calories', defaultSection: 'at_a_glance' },
-  training_readiness: { id: 'card-wellness-training-readiness', name: 'Training Readiness', defaultSection: 'readiness_vitals' },
-  vo2max: { id: 'card-wellness-vo2max', name: 'VO2 Max', defaultSection: 'readiness_vitals' },
-  spo2: { id: 'card-wellness-spo2', name: 'Pulse Ox (SpO2)', defaultSection: 'readiness_vitals' },
-  respiration: { id: 'card-wellness-respiration', name: 'Respiration Rate', defaultSection: 'readiness_vitals' },
-  floors: { id: 'card-wellness-floors', name: 'Floors Climbed', defaultSection: 'readiness_vitals' },
-  hydration: { id: 'card-wellness-hydration', name: 'Hydration', defaultSection: 'readiness_vitals' },
-  weight: { id: 'card-wellness-weight', name: 'Weight & Body Comp', defaultSection: 'readiness_vitals' }
-};
-
-import { openMetricTrendModal } from './trends_modal.js';
-export { openMetricTrendModal };
-
-let activeRollupCache = null;
-
-/**
- * Detects whether the current client supports touch events.
- * On mobile/touch devices, HTML5 drag attributes hijack native touch scrolling.
- */
-export function isTouchDevice() {
-  if (typeof window === 'undefined') return false;
-  return ('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
-}
-
-/**
- * Returns draggable attribute string: 'draggable="true"' on desktop pointer devices,
- * or omitted on touch-capable screens to ensure smooth native scrolling.
- */
-function getDraggableAttr() {
-  return isTouchDevice() ? '' : 'draggable="true"';
-}
-
-/**
- * Normalizes any metric key or card ID alias into canonical metric key.
- * @param {string} key
- * @returns {string|null}
- */
-export function canonicalizeMetricKey(key) {
-  if (!key) return null;
-  let k = String(key).replace('card-wellness-', '').toLowerCase().trim();
-  if (k === 'rhr') k = 'resting_hr';
-  if (k === 'intensity') k = 'intensity_minutes';
-  return WELLNESS_METRIC_METADATA[k] ? k : null;
-}
-
-/**
- * Loads wellness layout preferences from localStorage.
- * Handles corrupted JSON gracefully with fallback to default layout.
- * @returns {object}
- */
-export function loadWellnessLayout() {
-  try {
-    const store = typeof localStorage !== 'undefined' ? localStorage : (typeof sessionStorage !== 'undefined' ? sessionStorage : null);
-    if (!store) return JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT));
-    const raw = store.getItem('garmin_dash_customization');
-    if (!raw) return JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT));
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || !parsed.wellness_layout) {
-      return JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT));
-    }
-    const layout = parsed.wellness_layout;
-
-    let inFocus = (Array.isArray(layout.in_focus) ? layout.in_focus : [])
-      .map(canonicalizeMetricKey)
-      .filter(Boolean);
-    let atAGlance = (Array.isArray(layout.at_a_glance) ? layout.at_a_glance : [])
-      .map(canonicalizeMetricKey)
-      .filter(Boolean);
-    let hidden = (Array.isArray(layout.hidden) ? layout.hidden : [])
-      .map(canonicalizeMetricKey)
-      .filter(Boolean);
-
-    // Deduplicate across sections
-    const seen = new Set();
-    inFocus = inFocus.filter(k => !seen.has(k) && seen.add(k));
-    atAGlance = atAGlance.filter(k => !seen.has(k) && seen.add(k));
-    hidden = hidden.filter(k => !seen.has(k) && seen.add(k));
-
-    // Auto-promote stress to in_focus only when stored layout is the exact legacy default
-    const isLegacyDefault =
-      inFocus.length === 3 &&
-      inFocus[0] === 'sleep' && inFocus[1] === 'body_battery' && inFocus[2] === 'steps' &&
-      atAGlance.length === 5 &&
-      atAGlance[0] === 'resting_hr' && atAGlance[1] === 'stress' && atAGlance[2] === 'hrv' &&
-      atAGlance[3] === 'intensity_minutes' && atAGlance[4] === 'calories' &&
-      hidden.length === 0;
-
-    if (isLegacyDefault) {
-      return JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT));
-    }
-
-    return { in_focus: inFocus, at_a_glance: atAGlance, hidden };
-  } catch (e) {
-    return JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT));
-  }
-}
-
-/**
- * Saves wellness layout preferences to localStorage under garmin_dash_customization.
- * Preserves existing hidden_cards and thresholds keys for backward compatibility.
- * @param {object} layout
- */
-export function saveWellnessLayout(layout) {
-  try {
-    const store = typeof localStorage !== 'undefined' ? localStorage : (typeof sessionStorage !== 'undefined' ? sessionStorage : null);
-    if (!store) return;
-    let existing = { hidden_cards: [], thresholds: {} };
-    try {
-      const raw = store.getItem('garmin_dash_customization');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          existing = parsed;
-        }
-      }
-    } catch {}
-    existing.wellness_layout = layout;
-    store.setItem('garmin_dash_customization', JSON.stringify(existing));
-  } catch (e) {
-    // Ignore quota limits
-  }
-}
-
-/**
- * Resets wellness layout to canonical Garmin default.
- */
-export function resetWellnessLayout() {
-  saveWellnessLayout(JSON.parse(JSON.stringify(DEFAULT_WELLNESS_LAYOUT)));
-  if (activeRollupCache) {
-    renderWellnessDashboard(activeRollupCache);
-  }
-}
-
-/**
- * Moves a metric card within its section or between sections.
- * @param {string} metricKey
- * @param {'up'|'down'|'prev'|'next'|'toggle-section'|'remove'} action
- */
-export function moveWellnessCard(metricKey, action) {
-  const canonical = canonicalizeMetricKey(metricKey);
-  if (!canonical) return;
-
-  const layout = loadWellnessLayout();
-  const isInFocus = layout.in_focus.includes(canonical);
-  const isAtAGlance = layout.at_a_glance.includes(canonical);
-
-  if (action === 'remove') {
-    layout.in_focus = layout.in_focus.filter(k => k !== canonical);
-    layout.at_a_glance = layout.at_a_glance.filter(k => k !== canonical);
-    if (!layout.hidden.includes(canonical)) {
-      layout.hidden.push(canonical);
-    }
-  } else if (action === 'toggle-section') {
-    if (isInFocus) {
-      layout.in_focus = layout.in_focus.filter(k => k !== canonical);
-      layout.at_a_glance.push(canonical);
-    } else if (isAtAGlance) {
-      layout.at_a_glance = layout.at_a_glance.filter(k => k !== canonical);
-      layout.in_focus.push(canonical);
-    }
-  } else {
-    // Move up/down or prev/next within the same section
-    const targetSection = isInFocus ? layout.in_focus : (isAtAGlance ? layout.at_a_glance : null);
-    if (targetSection) {
-      const idx = targetSection.indexOf(canonical);
-      const isBackward = action === 'up' || action === 'prev';
-      const targetIdx = isBackward ? idx - 1 : idx + 1;
-      if (targetIdx >= 0 && targetIdx < targetSection.length) {
-        targetSection.splice(idx, 1);
-        targetSection.splice(targetIdx, 0, canonical);
-      }
-    }
-  }
-
-  saveWellnessLayout(layout);
-  if (activeRollupCache) {
-    renderWellnessDashboard(activeRollupCache);
-  }
-}
-
-/**
- * Adds a previously hidden card back to In Focus or At a Glance.
- * @param {string} metricKey
- * @param {'in_focus'|'at_a_glance'} section
- */
-export function addWellnessCard(metricKey, section = 'at_a_glance') {
-  const canonical = canonicalizeMetricKey(metricKey);
-  if (!canonical) return;
-
-  const layout = loadWellnessLayout();
-  layout.hidden = layout.hidden.filter(k => k !== canonical);
-  layout.in_focus = layout.in_focus.filter(k => k !== canonical);
-  layout.at_a_glance = layout.at_a_glance.filter(k => k !== canonical);
-
-  if (section === 'in_focus') {
-    layout.in_focus.push(canonical);
-  } else {
-    layout.at_a_glance.push(canonical);
-  }
-
-  saveWellnessLayout(layout);
-  if (activeRollupCache) {
-    renderWellnessDashboard(activeRollupCache);
-  }
-}
-
-// ============================================================================
-// FORMATTERS & MINI SVG CHARTS
-// ============================================================================
-
-export function formatSteps(steps) {
-  if (steps === null || steps === undefined) return '—';
-  return Number(steps).toLocaleString();
-}
-
-export function formatSleepDuration(seconds) {
-  if (seconds === null || seconds === undefined) return '—';
-  const sec = Number(seconds) || 0;
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  return `${h}h ${m}m`;
-}
-
-export function formatCalories(kcal) {
-  if (kcal === null || kcal === undefined) return '—';
-  return Number(kcal).toLocaleString();
-}
-
-export function getStatusBadgeColor(qualifier) {
-  const q = String(qualifier || '').toLowerCase();
-  if (q.includes('good') || q.includes('balanced') || q.includes('low') || q.includes('optimal')) {
-    return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
-  }
-  if (q.includes('fair') || q.includes('medium') || q.includes('moderate')) {
-    return 'text-amber-400 border-amber-500/30 bg-amber-500/10';
-  }
-  if (q.includes('poor') || q.includes('unbalanced') || q.includes('high')) {
-    return 'text-rose-400 border-rose-500/30 bg-rose-500/10';
-  }
-  return 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10';
-}
-
-function renderMiniBarSparkline(data, color = '#10b981', height = 24, width = 72) {
-  if (!data || data.length === 0) return '';
-  const max = Math.max(...data, 1);
-  const barWidth = Math.max(3, Math.floor((width - (data.length - 1) * 3) / data.length));
-  const rects = data.map((v, i) => {
-    const h = Math.max(3, Math.round(((v || 0) / max) * (height - 4)));
-    const x = i * (barWidth + 3);
-    const y = height - h;
-    const isLatest = i === data.length - 1;
-    return `<rect x="${x}" y="${y}" width="${barWidth}" height="${h}" rx="1.5" fill="${color}" opacity="${isLatest ? '1' : '0.45'}"/>`;
-  }).join('');
-  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="overflow-visible shrink-0">${rects}</svg>`;
-}
-
-function renderMiniLineSparkline(data, color = '#f43f5e', height = 24, width = 72) {
-  if (!data || data.length < 2) return '';
-  const min = Math.min(...data);
-  const max = Math.max(...data, min + 1);
-  const range = max - min || 1;
-  const step = width / (data.length - 1);
-  const points = data.map((v, i) => {
-    const x = Math.round(i * step);
-    const y = Math.round(height - 4 - (((v || min) - min) / range) * (height - 8));
-    return `${x},${y}`;
-  }).join(' ');
-  return `
-    <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="overflow-visible shrink-0">
-      <polyline fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="${points}"/>
+const N={in_focus:["sleep","body_battery","stress","steps"],at_a_glance:["resting_hr","hrv","intensity_minutes","calories"],hidden:[]},G={steps:{id:"card-wellness-steps",name:"Daily Steps",defaultSection:"in_focus"},resting_hr:{id:"card-wellness-rhr",name:"Resting Heart Rate",defaultSection:"at_a_glance"},sleep:{id:"card-wellness-sleep",name:"Sleep",defaultSection:"in_focus"},stress:{id:"card-wellness-stress",name:"Stress",defaultSection:"in_focus"},body_battery:{id:"card-wellness-body-battery",name:"Body Battery",defaultSection:"in_focus"},hrv:{id:"card-wellness-hrv",name:"HRV Status",defaultSection:"at_a_glance"},intensity_minutes:{id:"card-wellness-intensity",name:"Active Intensity Minutes",defaultSection:"at_a_glance"},calories:{id:"card-wellness-calories",name:"Daily Calories",defaultSection:"at_a_glance"},training_readiness:{id:"card-wellness-training-readiness",name:"Training Readiness",defaultSection:"readiness_vitals"},vo2max:{id:"card-wellness-vo2max",name:"VO2 Max",defaultSection:"readiness_vitals"},spo2:{id:"card-wellness-spo2",name:"Pulse Ox (SpO2)",defaultSection:"readiness_vitals"},respiration:{id:"card-wellness-respiration",name:"Respiration Rate",defaultSection:"readiness_vitals"},floors:{id:"card-wellness-floors",name:"Floors Climbed",defaultSection:"readiness_vitals"},hydration:{id:"card-wellness-hydration",name:"Hydration",defaultSection:"readiness_vitals"},weight:{id:"card-wellness-weight",name:"Weight & Body Comp",defaultSection:"readiness_vitals"}};import{openMetricTrendModal as T}from"./trends_modal.js";let b=null;function O(){return typeof window>"u"?!1:"ontouchstart"in window||typeof navigator<"u"&&navigator.maxTouchPoints>0}function x(){return O()?"":'draggable="true"'}function C(e){if(!e)return null;let s=String(e).replace("card-wellness-","").toLowerCase().trim();return s==="rhr"&&(s="resting_hr"),s==="intensity"&&(s="intensity_minutes"),G[s]?s:null}function B(){try{const e=typeof localStorage<"u"?localStorage:typeof sessionStorage<"u"?sessionStorage:null;if(!e)return JSON.parse(JSON.stringify(N));const s=e.getItem("garmin_dash_customization");if(!s)return JSON.parse(JSON.stringify(N));const n=JSON.parse(s);if(!n||typeof n!="object"||!n.wellness_layout)return JSON.parse(JSON.stringify(N));const t=n.wellness_layout;let i=(Array.isArray(t.in_focus)?t.in_focus:[]).map(C).filter(Boolean),l=(Array.isArray(t.at_a_glance)?t.at_a_glance:[]).map(C).filter(Boolean),a=(Array.isArray(t.hidden)?t.hidden:[]).map(C).filter(Boolean);const o=new Set;return i=i.filter(r=>!o.has(r)&&o.add(r)),l=l.filter(r=>!o.has(r)&&o.add(r)),a=a.filter(r=>!o.has(r)&&o.add(r)),i.length===3&&i[0]==="sleep"&&i[1]==="body_battery"&&i[2]==="steps"&&l.length===5&&l[0]==="resting_hr"&&l[1]==="stress"&&l[2]==="hrv"&&l[3]==="intensity_minutes"&&l[4]==="calories"&&a.length===0?JSON.parse(JSON.stringify(N)):{in_focus:i,at_a_glance:l,hidden:a}}catch{return JSON.parse(JSON.stringify(N))}}function R(e){try{const s=typeof localStorage<"u"?localStorage:typeof sessionStorage<"u"?sessionStorage:null;if(!s)return;let n={hidden_cards:[],thresholds:{}};try{const t=s.getItem("garmin_dash_customization");if(t){const i=JSON.parse(t);i&&typeof i=="object"&&(n=i)}}catch{}n.wellness_layout=e,s.setItem("garmin_dash_customization",JSON.stringify(n))}catch{}}function re(){R(JSON.parse(JSON.stringify(N))),b&&I(b)}function W(e,s){const n=C(e);if(!n)return;const t=B(),i=t.in_focus.includes(n),l=t.at_a_glance.includes(n);if(s==="remove")t.in_focus=t.in_focus.filter(a=>a!==n),t.at_a_glance=t.at_a_glance.filter(a=>a!==n),t.hidden.includes(n)||t.hidden.push(n);else if(s==="toggle-section")i?(t.in_focus=t.in_focus.filter(a=>a!==n),t.at_a_glance.push(n)):l&&(t.at_a_glance=t.at_a_glance.filter(a=>a!==n),t.in_focus.push(n));else{const a=i?t.in_focus:l?t.at_a_glance:null;if(a){const o=a.indexOf(n),r=s==="up"||s==="prev"?o-1:o+1;r>=0&&r<a.length&&(a.splice(o,1),a.splice(r,0,n))}}R(t),b&&I(b)}function de(e,s="at_a_glance"){const n=C(e);if(!n)return;const t=B();t.hidden=t.hidden.filter(i=>i!==n),t.in_focus=t.in_focus.filter(i=>i!==n),t.at_a_glance=t.at_a_glance.filter(i=>i!==n),s==="in_focus"?t.in_focus.push(n):t.at_a_glance.push(n),R(t),b&&I(b)}function E(e){return e==null?"\u2014":Number(e).toLocaleString()}function h(e){if(e==null)return"\u2014";const s=Number(e)||0,n=Math.floor(s/3600),t=Math.floor(s%3600/60);return`${n}h ${t}m`}function A(e){return e==null?"\u2014":Number(e).toLocaleString()}function y(e){const s=String(e||"").toLowerCase();return s.includes("good")||s.includes("balanced")||s.includes("low")||s.includes("optimal")?"text-emerald-400 border-emerald-500/30 bg-emerald-500/10":s.includes("fair")||s.includes("medium")||s.includes("moderate")?"text-amber-400 border-amber-500/30 bg-amber-500/10":s.includes("poor")||s.includes("unbalanced")||s.includes("high")?"text-rose-400 border-rose-500/30 bg-rose-500/10":"text-cyan-400 border-cyan-500/30 bg-cyan-500/10"}function q(e,s="#10b981",n=24,t=72){if(!e||e.length===0)return"";const i=Math.max(...e,1),l=Math.max(3,Math.floor((t-(e.length-1)*3)/e.length)),a=e.map((o,d)=>{const r=Math.max(3,Math.round((o||0)/i*(n-4))),f=d*(l+3),u=n-r,c=d===e.length-1;return`<rect x="${f}" y="${u}" width="${l}" height="${r}" rx="1.5" fill="${s}" opacity="${c?"1":"0.45"}"/>`}).join("");return`<svg width="${t}" height="${n}" viewBox="0 0 ${t} ${n}" class="overflow-visible shrink-0">${a}</svg>`}function V(e,s="#f43f5e",n=24,t=72){if(!e||e.length<2)return"";const i=Math.min(...e),a=Math.max(...e,i+1)-i||1,o=t/(e.length-1),d=e.map((r,f)=>{const u=Math.round(f*o),c=Math.round(n-4-((r||i)-i)/a*(n-8));return`${u},${c}`}).join(" ");return`
+    <svg width="${t}" height="${n}" viewBox="0 0 ${t} ${n}" class="overflow-visible shrink-0">
+      <polyline fill="none" stroke="${s}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="${d}"/>
     </svg>
-  `;
-}
-
-function renderCircularRing(pct, radius = 22, strokeWidth = 4, color = '#10b981') {
-  const normPct = Math.min(100, Math.max(0, pct || 0));
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (normPct / 100) * circumference;
-  const size = (radius + strokeWidth) * 2;
-  return `
-    <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" class="transform -rotate-90 shrink-0">
-      <circle cx="${radius + strokeWidth}" cy="${radius + strokeWidth}" r="${radius}" stroke="#3b2b5e" stroke-width="${strokeWidth}" fill="none"/>
-      <circle cx="${radius + strokeWidth}" cy="${radius + strokeWidth}" r="${radius}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" fill="none" stroke-dasharray="${circumference}" stroke-dashoffset="${strokeDashoffset}"/>
+  `}function U(e,s=22,n=4,t="#10b981"){const i=Math.min(100,Math.max(0,e||0)),l=2*Math.PI*s,a=l-i/100*l,o=(s+n)*2;return`
+    <svg width="${o}" height="${o}" viewBox="0 0 ${o} ${o}" class="transform -rotate-90 shrink-0">
+      <circle cx="${s+n}" cy="${s+n}" r="${s}" stroke="#3b2b5e" stroke-width="${n}" fill="none"/>
+      <circle cx="${s+n}" cy="${s+n}" r="${s}" stroke="${t}" stroke-width="${n}" stroke-linecap="round" fill="none" stroke-dasharray="${l}" stroke-dashoffset="${a}"/>
     </svg>
-  `;
-}
-
-function renderCardControls(metricKey, isHero) {
-  const touchClass = isTouchDevice() ? 'opacity-80' : 'opacity-0 group-hover:opacity-100';
-  return `
-    <div class="flex items-center space-x-1 ${touchClass} transition-opacity">
-      <button type="button" data-wellness-action="prev" data-metric="${metricKey}" title="Move earlier" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
-        ◀
+  `}function p(e,s){return`
+    <div class="flex items-center space-x-1 ${O()?"opacity-80":"opacity-0 group-hover:opacity-100"} transition-opacity">
+      <button type="button" data-wellness-action="prev" data-metric="${e}" title="Move earlier" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
+        \u25C0
       </button>
-      <button type="button" data-wellness-action="next" data-metric="${metricKey}" title="Move later" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
-        ▶
+      <button type="button" data-wellness-action="next" data-metric="${e}" title="Move later" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
+        \u25B6
       </button>
-      <button type="button" data-wellness-action="toggle-section" data-metric="${metricKey}" title="${isHero ? 'Move to At a Glance' : 'Promote to In Focus'}" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
-        ${isHero ? '▼' : '▲'}
+      <button type="button" data-wellness-action="toggle-section" data-metric="${e}" title="${s?"Move to At a Glance":"Promote to In Focus"}" class="p-1 rounded bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-[10px] leading-none transition">
+        ${s?"\u25BC":"\u25B2"}
       </button>
-      <button type="button" data-wellness-action="remove" data-metric="${metricKey}" title="Remove card" class="p-1 rounded bg-[#1b132e] hover:bg-rose-950/40 text-zinc-400 hover:text-rose-400 text-[10px] leading-none transition">
-        ✕
+      <button type="button" data-wellness-action="remove" data-metric="${e}" title="Remove card" class="p-1 rounded bg-[#1b132e] hover:bg-rose-950/40 text-zinc-400 hover:text-rose-400 text-[10px] leading-none transition">
+        \u2715
       </button>
     </div>
-  `;
-}
-
-// ============================================================================
-// METRIC CARD BUILDERS
-// ============================================================================
-
-function buildStepsCard(c, daily, isHero) {
-  const steps = c.steps || 0;
-  const goal = c.steps_goal || 10000;
-  const pct = Math.round((steps / goal) * 100);
-  const stepsHistory = (daily || []).slice(-7).map(d => d.steps || 0);
-
-  if (isHero) {
-    return `
-      <div id="card-wellness-steps" ${getDraggableAttr()} data-metric="steps" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+  `}function Q(e,s,n){const t=e.steps||0,i=e.steps_goal||1e4,l=Math.round(t/i*100),a=(s||[]).slice(-7).map(o=>o.steps||0);return n?`
+      <div id="card-wellness-steps" ${x()} data-metric="steps" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
               <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
               <span>Daily Steps</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${formatSteps(steps)}</div>
-            <div class="text-[11px] text-zinc-400 mt-1">Goal: ${formatSteps(goal)} (${pct}%)</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${E(t)}</div>
+            <div class="text-[11px] text-zinc-400 mt-1">Goal: ${E(i)} (${l}%)</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
-            ${renderCardControls('steps', true)}
-            ${renderCircularRing(pct, 24, 4, '#10b981')}
+            ${p("steps",!0)}
+            ${U(l,24,4,"#10b981")}
           </div>
         </div>
         <div class="pt-4 mt-3 border-t border-[#2d2147] flex items-center justify-between">
           <span class="text-[11px] text-zinc-500">7-Day Daily Steps</span>
-          ${renderMiniBarSparkline(stepsHistory, '#10b981', 22, 90)}
+          ${q(a,"#10b981",22,90)}
         </div>
       </div>
-    `;
-  }
-
-  return `
-    <div id="card-wellness-steps" ${getDraggableAttr()} data-metric="steps" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    `:`
+    <div id="card-wellness-steps" ${x()} data-metric="steps" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Steps</span>
-        ${renderCardControls('steps', false)}
+        ${p("steps",!1)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${formatSteps(steps)}</div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">${pct}% of ${formatSteps(goal)}</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${E(t)}</div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">${l}% of ${E(i)}</div>
       </div>
       <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-        <div class="bg-emerald-500 h-full rounded-full" style="width: ${Math.min(100, pct)}%"></div>
+        <div class="bg-emerald-500 h-full rounded-full" style="width: ${Math.min(100,l)}%"></div>
       </div>
     </div>
-  `;
-}
-
-function buildRhrCard(c, daily, isHero) {
-  const rhr = c.resting_hr || c.resting_heart_rate || 48;
-  const avg7d = c.resting_hr_7d_avg || 49;
-  const rhrHistory = (daily || []).slice(-7).map(d => d.resting_hr || d.resting_heart_rate || 48);
-
-  if (isHero) {
-    return `
-      <div id="card-wellness-rhr" ${getDraggableAttr()} data-metric="resting_hr" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+  `}function Y(e,s,n){const t=e.resting_hr||e.resting_heart_rate||48,i=e.resting_hr_7d_avg||49,l=(s||[]).slice(-7).map(a=>a.resting_hr||a.resting_heart_rate||48);return n?`
+      <div id="card-wellness-rhr" ${x()} data-metric="resting_hr" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
               <span class="w-2 h-2 rounded-full bg-rose-500"></span>
               <span>Resting Heart Rate</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${rhr} <span class="text-sm font-sans font-normal text-zinc-500">bpm</span></div>
-            <div class="text-[11px] text-zinc-400 mt-1">7-Day Avg: ${avg7d} bpm</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${t} <span class="text-sm font-sans font-normal text-zinc-500">bpm</span></div>
+            <div class="text-[11px] text-zinc-400 mt-1">7-Day Avg: ${i} bpm</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
-            ${renderCardControls('resting_hr', true)}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getStatusBadgeColor('Optimal')}">Optimal</span>
+            ${p("resting_hr",!0)}
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${y("Optimal")}">Optimal</span>
           </div>
         </div>
         <div class="pt-4 mt-3 border-t border-[#2d2147] flex items-center justify-between">
           <span class="text-[11px] text-zinc-500">7-Day Trend</span>
-          ${renderMiniLineSparkline(rhrHistory, '#f43f5e', 22, 90)}
+          ${V(l,"#f43f5e",22,90)}
         </div>
       </div>
-    `;
-  }
-
-  return `
-    <div id="card-wellness-rhr" ${getDraggableAttr()} data-metric="resting_hr" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    `:`
+    <div id="card-wellness-rhr" ${x()} data-metric="resting_hr" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Resting HR</span>
-        ${renderCardControls('resting_hr', false)}
+        ${p("resting_hr",!1)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${rhr} <span class="text-xs font-normal text-zinc-500">bpm</span></div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">7d avg: ${avg7d} bpm</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${t} <span class="text-xs font-normal text-zinc-500">bpm</span></div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">7d avg: ${i} bpm</div>
       </div>
-      <span class="inline-block self-start px-2 py-0.5 rounded text-[10px] font-semibold border ${getStatusBadgeColor('Optimal')}">Optimal</span>
+      <span class="inline-block self-start px-2 py-0.5 rounded text-[10px] font-semibold border ${y("Optimal")}">Optimal</span>
     </div>
-  `;
-}
-
-function buildSleepCard(c, daily, isHero) {
-  const sleepSec = c.sleep_seconds || 27900;
-  const score = c.sleep_score || 88;
-  const quality = c.sleep_quality || 'Good';
-  const deep = c.sleep_deep_seconds || 6300;
-  const light = c.sleep_light_seconds || 16200;
-  const rem = c.sleep_rem_seconds || 5400;
-  const awake = c.sleep_awake_seconds || 1800;
-  const totalStages = Math.max(1, deep + light + rem + awake);
-
-  if (isHero) {
-    const deepPct = ((deep / totalStages) * 100).toFixed(1);
-    const lightPct = ((light / totalStages) * 100).toFixed(1);
-    const remPct = ((rem / totalStages) * 100).toFixed(1);
-    const awakePct = ((awake / totalStages) * 100).toFixed(1);
-
-    return `
-      <div id="card-wellness-sleep" ${getDraggableAttr()} data-metric="sleep" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+  `}function X(e,s,n){const t=e.sleep_seconds||27900,i=e.sleep_score||88,l=e.sleep_quality||"Good",a=e.sleep_deep_seconds||6300,o=e.sleep_light_seconds||16200,d=e.sleep_rem_seconds||5400,r=e.sleep_awake_seconds||1800,f=Math.max(1,a+o+d+r);if(n){const u=(a/f*100).toFixed(1),c=(o/f*100).toFixed(1),v=(d/f*100).toFixed(1),m=(r/f*100).toFixed(1);return`
+      <div id="card-wellness-sleep" ${x()} data-metric="sleep" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
               <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
               <span>Sleep</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${formatSleepDuration(sleepSec)}</div>
-            <div class="text-[11px] text-zinc-400 mt-1">Score: ${score}/100 • ${quality}</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${h(t)}</div>
+            <div class="text-[11px] text-zinc-400 mt-1">Score: ${i}/100 \u2022 ${l}</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
-            ${renderCardControls('sleep', true)}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getStatusBadgeColor(quality)}">${quality}</span>
+            ${p("sleep",!0)}
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${y(l)}">${l}</span>
           </div>
         </div>
 
         <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-2">
           <div class="flex items-center justify-between text-[11px] text-zinc-400">
             <span>Sleep Stages</span>
-            <span class="text-zinc-500 font-mono text-[10px]">Deep ${formatSleepDuration(deep)} • REM ${formatSleepDuration(rem)}</span>
+            <span class="text-zinc-500 font-mono text-[10px]">Deep ${h(a)} \u2022 REM ${h(d)}</span>
           </div>
           <div class="w-full bg-zinc-800 rounded-full h-2.5 flex overflow-hidden">
-            <div style="width: ${deepPct}%" class="bg-indigo-600 h-full" title="Deep: ${formatSleepDuration(deep)}"></div>
-            <div style="width: ${lightPct}%" class="bg-indigo-400 h-full" title="Light: ${formatSleepDuration(light)}"></div>
-            <div style="width: ${remPct}%" class="bg-violet-400 h-full" title="REM: ${formatSleepDuration(rem)}"></div>
-            <div style="width: ${awakePct}%" class="bg-rose-500 h-full" title="Awake: ${formatSleepDuration(awake)}"></div>
+            <div style="width: ${u}%" class="bg-indigo-600 h-full" title="Deep: ${h(a)}"></div>
+            <div style="width: ${c}%" class="bg-indigo-400 h-full" title="Light: ${h(o)}"></div>
+            <div style="width: ${v}%" class="bg-violet-400 h-full" title="REM: ${h(d)}"></div>
+            <div style="width: ${m}%" class="bg-rose-500 h-full" title="Awake: ${h(r)}"></div>
           </div>
         </div>
       </div>
-    `;
-  }
-
-  return `
-    <div id="card-wellness-sleep" ${getDraggableAttr()} data-metric="sleep" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    `}return`
+    <div id="card-wellness-sleep" ${x()} data-metric="sleep" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Sleep</span>
-        ${renderCardControls('sleep', false)}
+        ${p("sleep",!1)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${formatSleepDuration(sleepSec)}</div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">Score: ${score} (${quality})</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${h(t)}</div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">Score: ${i} (${l})</div>
       </div>
-      <span class="inline-block self-start px-2 py-0.5 rounded text-[10px] font-semibold border ${getStatusBadgeColor(quality)}">${quality}</span>
+      <span class="inline-block self-start px-2 py-0.5 rounded text-[10px] font-semibold border ${y(l)}">${l}</span>
     </div>
-  `;
-}
-
-function toFiniteWellnessNum(val, fallback = null) {
-  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return fallback;
-  const n = Number(val);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function formatStressDurationShort(seconds) {
-  const s = Math.max(0, Math.round(toFiniteWellnessNum(seconds, 0)));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (h > 0 && m > 0) return `${h}h ${m}m`;
-  if (h > 0) return `${h}h`;
-  return `${m}m`;
-}
-
-function deriveStressQualifier(stress) {
-  if (stress <= 25) return 'Rest';
-  if (stress <= 50) return 'Low';
-  if (stress <= 75) return 'Medium';
-  return 'High';
-}
-
-function buildStressCard(c, daily, isHero) {
-  const rawStress = toFiniteWellnessNum(c?.stress_level, 24);
-  const stress = Math.max(0, Math.min(100, Math.round(rawStress)));
-  const qualifier = c?.stress_qualifier || c?.stress_status || deriveStressQualifier(stress);
-  const stressMax = toFiniteWellnessNum(c?.stress_max, null);
-
-  const restSecRaw = toFiniteWellnessNum(c?.stress_rest_seconds, null);
-  const lowSecRaw = toFiniteWellnessNum(c?.stress_low_seconds, null);
-  const medSecRaw = toFiniteWellnessNum(c?.stress_medium_seconds, null);
-  const highSecRaw = toFiniteWellnessNum(c?.stress_high_seconds, null);
-  const hasDurationFields = restSecRaw !== null || lowSecRaw !== null || medSecRaw !== null || highSecRaw !== null;
-
-  let restPct, lowPct, medPct, highPct;
-  let restLabel, lowLabel, medLabel, highLabel;
-
-  if (hasDurationFields) {
-    const restSec = Math.max(0, restSecRaw ?? 0);
-    const lowSec = Math.max(0, lowSecRaw ?? 0);
-    const medSec = Math.max(0, medSecRaw ?? 0);
-    const highSec = Math.max(0, highSecRaw ?? 0);
-    const totalSec = restSec + lowSec + medSec + highSec;
-    if (totalSec > 0) {
-      restPct = Number(((restSec / totalSec) * 100).toFixed(1));
-      lowPct = Number(((lowSec / totalSec) * 100).toFixed(1));
-      medPct = Number(((medSec / totalSec) * 100).toFixed(1));
-      highPct = Number(Math.max(0, 100 - restPct - lowPct - medPct).toFixed(1));
-    } else {
-      restPct = 100;
-      lowPct = 0;
-      medPct = 0;
-      highPct = 0;
-    }
-    restLabel = formatStressDurationShort(restSec);
-    lowLabel = formatStressDurationShort(lowSec);
-    medLabel = formatStressDurationShort(medSec);
-    highLabel = formatStressDurationShort(highSec);
-  } else {
-    const wRest = Math.max(5, 100 - stress * 1.15);
-    const wLow = Math.max(5, 65 - Math.abs(stress - 38) * 0.9);
-    const wMed = Math.max(4, 55 - Math.abs(stress - 63) * 0.95);
-    const wHigh = Math.max(2, stress > 50 ? (stress - 40) * 0.85 : stress * 0.12);
-    const wSum = wRest + wLow + wMed + wHigh;
-    restPct = Number(((wRest / wSum) * 100).toFixed(1));
-    lowPct = Number(((wLow / wSum) * 100).toFixed(1));
-    medPct = Number(((wMed / wSum) * 100).toFixed(1));
-    highPct = Number(Math.max(0, 100 - restPct - lowPct - medPct).toFixed(1));
-    restLabel = `${Math.round(restPct)}%`;
-    lowLabel = `${Math.round(lowPct)}%`;
-    medLabel = `${Math.round(medPct)}%`;
-    highLabel = `${Math.round(highPct)}%`;
-  }
-
-  const dotColor = stress <= 25 ? '#38bdf8' : stress <= 50 ? '#fbbf24' : stress <= 75 ? '#f97316' : '#f43f5e';
-  const peakText = stressMax !== null ? ` • Peak: ${Math.round(stressMax)}` : '';
-
-  if (isHero) {
-    return `
-      <div id="card-wellness-stress" ${getDraggableAttr()} data-metric="stress" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+  `}function _(e,s=null){if(e==null||e===""||typeof e=="boolean")return s;const n=Number(e);return Number.isFinite(n)?n:s}function D(e){const s=Math.max(0,Math.round(_(e,0))),n=Math.floor(s/3600),t=Math.floor(s%3600/60);return n>0&&t>0?`${n}h ${t}m`:n>0?`${n}h`:`${t}m`}function Z(e){return e<=25?"Rest":e<=50?"Low":e<=75?"Medium":"High"}function K(e,s,n){const t=_(e?.stress_level,24),i=Math.max(0,Math.min(100,Math.round(t))),l=e?.stress_qualifier||e?.stress_status||Z(i),a=_(e?.stress_max,null),o=_(e?.stress_rest_seconds,null),d=_(e?.stress_low_seconds,null),r=_(e?.stress_medium_seconds,null),f=_(e?.stress_high_seconds,null),u=o!==null||d!==null||r!==null||f!==null;let c,v,m,w,$,z,S,M;if(u){const k=Math.max(0,o??0),L=Math.max(0,d??0),j=Math.max(0,r??0),F=Math.max(0,f??0),g=k+L+j+F;g>0?(c=Number((k/g*100).toFixed(1)),v=Number((L/g*100).toFixed(1)),m=Number((j/g*100).toFixed(1)),w=Number(Math.max(0,100-c-v-m).toFixed(1))):(c=100,v=0,m=0,w=0),$=D(k),z=D(L),S=D(j),M=D(F)}else{const k=Math.max(5,100-i*1.15),L=Math.max(5,65-Math.abs(i-38)*.9),j=Math.max(4,55-Math.abs(i-63)*.95),F=Math.max(2,i>50?(i-40)*.85:i*.12),g=k+L+j+F;c=Number((k/g*100).toFixed(1)),v=Number((L/g*100).toFixed(1)),m=Number((j/g*100).toFixed(1)),w=Number(Math.max(0,100-c-v-m).toFixed(1)),$=`${Math.round(c)}%`,z=`${Math.round(v)}%`,S=`${Math.round(m)}%`,M=`${Math.round(w)}%`}const H=i<=25?"#38bdf8":i<=50?"#fbbf24":i<=75?"#f97316":"#f43f5e",J=a!==null?` \u2022 Peak: ${Math.round(a)}`:"";return n?`
+      <div id="card-wellness-stress" ${x()} data-metric="stress" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
-              <span class="w-2 h-2 rounded-full" style="background-color: ${dotColor};"></span>
+              <span class="w-2 h-2 rounded-full" style="background-color: ${H};"></span>
               <span>Stress</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${stress} <span class="text-sm font-sans font-normal text-zinc-500">/ 100</span></div>
-            <div class="text-[11px] text-zinc-400 mt-1">${qualifier} Stress Level${peakText}</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${i} <span class="text-sm font-sans font-normal text-zinc-500">/ 100</span></div>
+            <div class="text-[11px] text-zinc-400 mt-1">${l} Stress Level${J}</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
-            ${renderCardControls('stress', true)}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getStatusBadgeColor(qualifier)}">${qualifier}</span>
+            ${p("stress",!0)}
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${y(l)}">${l}</span>
           </div>
         </div>
 
         <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-2">
           <div class="w-full bg-zinc-900 rounded-full h-2.5 overflow-hidden flex">
-            <div style="width: ${restPct}%; background-color: #38bdf8;" title="Rest: ${restLabel}"></div>
-            <div style="width: ${lowPct}%; background-color: #fbbf24;" title="Low: ${lowLabel}"></div>
-            <div style="width: ${medPct}%; background-color: #f97316;" title="Med: ${medLabel}"></div>
-            <div style="width: ${highPct}%; background-color: #f43f5e;" title="High: ${highLabel}"></div>
+            <div style="width: ${c}%; background-color: #38bdf8;" title="Rest: ${$}"></div>
+            <div style="width: ${v}%; background-color: #fbbf24;" title="Low: ${z}"></div>
+            <div style="width: ${m}%; background-color: #f97316;" title="Med: ${S}"></div>
+            <div style="width: ${w}%; background-color: #f43f5e;" title="High: ${M}"></div>
           </div>
           <div class="grid grid-cols-4 gap-1 text-[10px] text-zinc-400 font-mono">
             <div class="flex items-center space-x-1">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: #38bdf8;"></span>
-              <span class="truncate">Rest ${restLabel}</span>
+              <span class="truncate">Rest ${$}</span>
             </div>
             <div class="flex items-center space-x-1">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: #fbbf24;"></span>
-              <span class="truncate">Low ${lowLabel}</span>
+              <span class="truncate">Low ${z}</span>
             </div>
             <div class="flex items-center space-x-1">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: #f97316;"></span>
-              <span class="truncate">Med ${medLabel}</span>
+              <span class="truncate">Med ${S}</span>
             </div>
             <div class="flex items-center space-x-1">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background-color: #f43f5e;"></span>
-              <span class="truncate">High ${highLabel}</span>
+              <span class="truncate">High ${M}</span>
             </div>
           </div>
         </div>
       </div>
-    `;
-  }
-
-  return `
-    <div id="card-wellness-stress" ${getDraggableAttr()} data-metric="stress" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    `:`
+    <div id="card-wellness-stress" ${x()} data-metric="stress" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Stress</span>
-        ${renderCardControls('stress', false)}
+        ${p("stress",!1)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${stress} <span class="text-xs font-normal text-zinc-500">/ 100</span></div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">${qualifier} Stress</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${i} <span class="text-xs font-normal text-zinc-500">/ 100</span></div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">${l} Stress</div>
       </div>
-      <span class="inline-block self-start px-2 py-0.5 rounded text-[10px] font-semibold border ${getStatusBadgeColor(qualifier)}">${qualifier}</span>
+      <span class="inline-block self-start px-2 py-0.5 rounded text-[10px] font-semibold border ${y(l)}">${l}</span>
     </div>
-  `;
-}
-
-function buildBodyBatteryCard(c, daily, isHero) {
-  const rawCurrent = c.body_battery ?? c.body_battery_high ?? null;
-  const current = (typeof rawCurrent === 'number' && Number.isFinite(rawCurrent)) ? rawCurrent : null;
-  const rawCharged = c.body_battery_charged ?? c.charged ?? null;
-  const rawDrained = c.body_battery_drained ?? c.drained ?? null;
-  const charged = (typeof rawCharged === 'number' && Number.isFinite(rawCharged)) ? rawCharged : null;
-  const drained = (typeof rawDrained === 'number' && Number.isFinite(rawDrained)) ? rawDrained : null;
-  const currentDisplay = current !== null ? current : '—';
-  const chgStr = charged !== null ? `+${charged}` : '—';
-  const drnStr = drained !== null ? `-${drained}` : '—';
-  const barPct = current !== null ? Math.min(100, Math.max(0, current)) : 0;
-
-  if (isHero) {
-    return `
-      <div id="card-wellness-body-battery" ${getDraggableAttr()} data-metric="body_battery" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+  `}function ee(e,s,n){const t=e.body_battery??e.body_battery_high??null,i=typeof t=="number"&&Number.isFinite(t)?t:null,l=e.body_battery_charged??e.charged??null,a=e.body_battery_drained??e.drained??null,o=typeof l=="number"&&Number.isFinite(l)?l:null,d=typeof a=="number"&&Number.isFinite(a)?a:null,r=i!==null?i:"\u2014",f=o!==null?`+${o}`:"\u2014",u=d!==null?`-${d}`:"\u2014",c=i!==null?Math.min(100,Math.max(0,i)):0;return n?`
+      <div id="card-wellness-body-battery" ${x()} data-metric="body_battery" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
               <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
               <span>Body Battery</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${currentDisplay} <span class="text-sm font-sans font-normal text-zinc-500">/ 100</span></div>
-            <div class="text-[11px] text-zinc-400 mt-1">Charged: ${chgStr} • Drained: ${drnStr}</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${r} <span class="text-sm font-sans font-normal text-zinc-500">/ 100</span></div>
+            <div class="text-[11px] text-zinc-400 mt-1">Charged: ${f} \u2022 Drained: ${u}</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
-            ${renderCardControls('body_battery', true)}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border border-cyan-500/30 text-cyan-400 bg-cyan-500/10">${current !== null ? 'Active' : 'No Data'}</span>
+            ${p("body_battery",!0)}
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border border-cyan-500/30 text-cyan-400 bg-cyan-500/10">${i!==null?"Active":"No Data"}</span>
           </div>
         </div>
 
         <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
             <span>Battery Level</span>
-            <span class="font-mono text-[10px] text-cyan-400">${current !== null ? `${current}%` : '—'}</span>
+            <span class="font-mono text-[10px] text-cyan-400">${i!==null?`${i}%`:"\u2014"}</span>
           </div>
           <div class="w-full bg-zinc-800 rounded-full h-2.5 overflow-hidden">
-            <div class="bg-gradient-to-r from-cyan-600 to-cyan-400 h-full rounded-full" style="width: ${barPct}%"></div>
+            <div class="bg-gradient-to-r from-cyan-600 to-cyan-400 h-full rounded-full" style="width: ${c}%"></div>
           </div>
         </div>
       </div>
-    `;
-  }
-
-  return `
-    <div id="card-wellness-body-battery" ${getDraggableAttr()} data-metric="body_battery" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    `:`
+    <div id="card-wellness-body-battery" ${x()} data-metric="body_battery" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Body Battery</span>
-        ${renderCardControls('body_battery', false)}
+        ${p("body_battery",!1)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${currentDisplay} <span class="text-xs font-normal text-zinc-500">/ 100</span></div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">${chgStr} / ${drnStr}</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${r} <span class="text-xs font-normal text-zinc-500">/ 100</span></div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">${f} / ${u}</div>
       </div>
       <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-        <div class="bg-cyan-400 h-full rounded-full" style="width: ${barPct}%"></div>
+        <div class="bg-cyan-400 h-full rounded-full" style="width: ${c}%"></div>
       </div>
     </div>
-  `;
-}
-
-function buildHrvCard(c, daily, isHero) {
-  const status = c.hrv_status ?? '—';
-  const weeklyAvg = c.hrv_weekly_avg ?? c.hrv_7d_avg ?? '—';
-  const lastNight = c.hrv_last_night_avg ?? c.hrv_ms ?? '—';
-  let markerPct = 50;
-  const refVal = typeof weeklyAvg === 'number' ? weeklyAvg : (typeof lastNight === 'number' ? lastNight : null);
-  if (refVal !== null && c.hrv_baseline && typeof c.hrv_baseline.low === 'number' && typeof c.hrv_baseline.high === 'number' && c.hrv_baseline.high > c.hrv_baseline.low) {
-    const span = c.hrv_baseline.high - c.hrv_baseline.low;
-    const norm = (refVal - (c.hrv_baseline.low - span * 0.5)) / (span * 2);
-    markerPct = Math.round(Math.max(4, Math.min(96, norm * 100)));
-  }
-
-  if (isHero) {
-    return `
-      <div id="card-wellness-hrv" ${getDraggableAttr()} data-metric="hrv" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+  `}function te(e,s,n){const t=e.hrv_status??"\u2014",i=e.hrv_weekly_avg??e.hrv_7d_avg??"\u2014",l=e.hrv_last_night_avg??e.hrv_ms??"\u2014";let a=50;const o=typeof i=="number"?i:typeof l=="number"?l:null;if(o!==null&&e.hrv_baseline&&typeof e.hrv_baseline.low=="number"&&typeof e.hrv_baseline.high=="number"&&e.hrv_baseline.high>e.hrv_baseline.low){const d=e.hrv_baseline.high-e.hrv_baseline.low,r=(o-(e.hrv_baseline.low-d*.5))/(d*2);a=Math.round(Math.max(4,Math.min(96,r*100)))}return n?`
+      <div id="card-wellness-hrv" ${x()} data-metric="hrv" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
               <span class="w-2 h-2 rounded-full bg-teal-400"></span>
               <span>HRV Status</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${weeklyAvg} <span class="text-sm font-sans font-normal text-zinc-500">ms</span></div>
-            <div class="text-[11px] text-zinc-400 mt-1">Last Night: ${lastNight} ms (7d avg: ${weeklyAvg} ms)</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${i} <span class="text-sm font-sans font-normal text-zinc-500">ms</span></div>
+            <div class="text-[11px] text-zinc-400 mt-1">Last Night: ${l} ms (7d avg: ${i} ms)</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
-            ${renderCardControls('hrv', true)}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${getStatusBadgeColor(status)}">${status}</span>
+            ${p("hrv",!0)}
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${y(t)}">${t}</span>
           </div>
         </div>
 
         <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
             <span>Baseline Status</span>
-            <span class="text-teal-400 text-[10px] font-semibold">${status}</span>
+            <span class="text-teal-400 text-[10px] font-semibold">${t}</span>
           </div>
           <div class="w-full bg-zinc-800 rounded-full h-2 relative overflow-hidden flex">
             <div class="w-1/3 bg-amber-500/20"></div>
             <div class="w-1/3 bg-emerald-500/40"></div>
             <div class="w-1/3 bg-amber-500/20"></div>
-            <div class="absolute top-0 bottom-0 w-2 bg-teal-300 rounded-full" style="left: calc(${markerPct}% - 4px)"></div>
+            <div class="absolute top-0 bottom-0 w-2 bg-teal-300 rounded-full" style="left: calc(${a}% - 4px)"></div>
           </div>
         </div>
       </div>
-    `;
-  }
-
-  return `
-    <div id="card-wellness-hrv" ${getDraggableAttr()} data-metric="hrv" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    `:`
+    <div id="card-wellness-hrv" ${x()} data-metric="hrv" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">HRV Status</span>
-        ${renderCardControls('hrv', false)}
+        ${p("hrv",!1)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${weeklyAvg} <span class="text-xs font-normal text-zinc-500">ms</span></div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">Last night: ${lastNight} ms</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${i} <span class="text-xs font-normal text-zinc-500">ms</span></div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">Last night: ${l} ms</div>
       </div>
-      <span class="inline-block self-start px-2 py-0.5 rounded text-[10px] font-semibold border ${getStatusBadgeColor(status)}">${status}</span>
+      <span class="inline-block self-start px-2 py-0.5 rounded text-[10px] font-semibold border ${y(t)}">${t}</span>
     </div>
-  `;
-}
-
-function buildIntensityCard(c, daily, isHero) {
-  const weekly = c.intensity_minutes_weekly || c.active_intensity_minutes || 52;
-  const goal = c.intensity_minutes_goal || 150;
-  const pct = Math.round((weekly / goal) * 100);
-  const mod = c.intensity_minutes_moderate || Math.round(weekly * 0.6);
-  const vig = c.intensity_minutes_vigorous || Math.round(weekly * 0.4);
-
-  if (isHero) {
-    return `
-      <div id="card-wellness-intensity" ${getDraggableAttr()} data-metric="intensity_minutes" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+  `}function se(e,s,n){const t=e.intensity_minutes_weekly||e.active_intensity_minutes||52,i=e.intensity_minutes_goal||150,l=Math.round(t/i*100),a=e.intensity_minutes_moderate||Math.round(t*.6),o=e.intensity_minutes_vigorous||Math.round(t*.4);return n?`
+      <div id="card-wellness-intensity" ${x()} data-metric="intensity_minutes" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
               <span class="w-2 h-2 rounded-full bg-lime-400"></span>
               <span>Active Intensity Minutes</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${weekly} <span class="text-sm font-sans font-normal text-zinc-500">min/wk</span></div>
-            <div class="text-[11px] text-zinc-400 mt-1">Goal: ${goal} min (${pct}%)</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${t} <span class="text-sm font-sans font-normal text-zinc-500">min/wk</span></div>
+            <div class="text-[11px] text-zinc-400 mt-1">Goal: ${i} min (${l}%)</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
-            ${renderCardControls('intensity_minutes', true)}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${pct >= 100 ? 'text-lime-400 border-lime-500/30 bg-lime-500/10' : 'text-zinc-400 border-zinc-700 bg-zinc-800'}">${pct >= 100 ? 'Goal Met' : 'In Progress'}</span>
+            ${p("intensity_minutes",!0)}
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${l>=100?"text-lime-400 border-lime-500/30 bg-lime-500/10":"text-zinc-400 border-zinc-700 bg-zinc-800"}">${l>=100?"Goal Met":"In Progress"}</span>
           </div>
         </div>
 
         <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
-            <span>Moderate (${mod}m) • Vigorous (${vig}m)</span>
-            <span class="text-lime-400 font-mono text-[10px]">${pct}%</span>
+            <span>Moderate (${a}m) \u2022 Vigorous (${o}m)</span>
+            <span class="text-lime-400 font-mono text-[10px]">${l}%</span>
           </div>
           <div class="w-full bg-zinc-800 rounded-full h-2.5 overflow-hidden">
-            <div class="bg-lime-400 h-full rounded-full" style="width: ${Math.min(100, pct)}%"></div>
+            <div class="bg-lime-400 h-full rounded-full" style="width: ${Math.min(100,l)}%"></div>
           </div>
         </div>
       </div>
-    `;
-  }
-
-  return `
-    <div id="card-wellness-intensity" ${getDraggableAttr()} data-metric="intensity_minutes" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    `:`
+    <div id="card-wellness-intensity" ${x()} data-metric="intensity_minutes" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Intensity Min</span>
-        ${renderCardControls('intensity_minutes', false)}
+        ${p("intensity_minutes",!1)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${weekly} <span class="text-xs font-normal text-zinc-500">min</span></div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">${pct}% of ${goal}m goal</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${t} <span class="text-xs font-normal text-zinc-500">min</span></div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">${l}% of ${i}m goal</div>
       </div>
       <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-        <div class="bg-lime-400 h-full rounded-full" style="width: ${Math.min(100, pct)}%"></div>
+        <div class="bg-lime-400 h-full rounded-full" style="width: ${Math.min(100,l)}%"></div>
       </div>
     </div>
-  `;
-}
-
-function buildCaloriesCard(c, daily, isHero) {
-  const total = c.daily_calories || 2410;
-  const active = c.active_calories || 680;
-  const bmr = c.bmr_calories || Math.max(0, total - active);
-  const activePct = Math.round((active / Math.max(1, total)) * 100);
-
-  if (isHero) {
-    return `
-      <div id="card-wellness-calories" ${getDraggableAttr()} data-metric="calories" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
+  `}function ne(e,s,n){const t=e.daily_calories||2410,i=e.active_calories||680,l=e.bmr_calories||Math.max(0,t-i),a=Math.round(i/Math.max(1,t)*100);return n?`
+      <div id="card-wellness-calories" ${x()} data-metric="calories" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-5 flex flex-col justify-between group transition relative hover:border-zinc-700">
         <div class="flex items-start justify-between">
           <div>
             <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center space-x-1.5">
               <span class="w-2 h-2 rounded-full bg-orange-400"></span>
               <span>Daily Calories</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${formatCalories(total)} <span class="text-sm font-sans font-normal text-zinc-500">kcal</span></div>
-            <div class="text-[11px] text-zinc-400 mt-1">Active: ${formatCalories(active)} • Resting: ${formatCalories(bmr)}</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${A(t)} <span class="text-sm font-sans font-normal text-zinc-500">kcal</span></div>
+            <div class="text-[11px] text-zinc-400 mt-1">Active: ${A(i)} \u2022 Resting: ${A(l)}</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
-            ${renderCardControls('calories', true)}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border text-orange-400 border-orange-500/30 bg-orange-500/10">${activePct}% Active</span>
+            ${p("calories",!0)}
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border text-orange-400 border-orange-500/30 bg-orange-500/10">${a}% Active</span>
           </div>
         </div>
 
         <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
             <span>Calorie Burn Split</span>
-            <span class="font-mono text-[10px] text-orange-400">${active} Active / ${bmr} BMR</span>
+            <span class="font-mono text-[10px] text-orange-400">${i} Active / ${l} BMR</span>
           </div>
           <div class="w-full bg-zinc-800 rounded-full h-2.5 flex overflow-hidden">
-            <div class="bg-orange-500 h-full" style="width: ${activePct}%" title="Active: ${active} kcal"></div>
-            <div class="bg-zinc-700 h-full flex-1" title="Resting: ${bmr} kcal"></div>
+            <div class="bg-orange-500 h-full" style="width: ${a}%" title="Active: ${i} kcal"></div>
+            <div class="bg-zinc-700 h-full flex-1" title="Resting: ${l} kcal"></div>
           </div>
         </div>
       </div>
-    `;
-  }
-
-  return `
-    <div id="card-wellness-calories" ${getDraggableAttr()} data-metric="calories" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
+    `:`
+    <div id="card-wellness-calories" ${x()} data-metric="calories" class="bg-[#130d21] border border-[#2d2147] rounded-xl p-4 flex flex-col justify-between group transition relative hover:border-zinc-700">
       <div class="flex items-start justify-between">
         <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Calories</span>
-        ${renderCardControls('calories', false)}
+        ${p("calories",!1)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${formatCalories(total)} <span class="text-xs font-normal text-zinc-500">kcal</span></div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">Active: ${formatCalories(active)} kcal</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${A(t)} <span class="text-xs font-normal text-zinc-500">kcal</span></div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">Active: ${A(i)} kcal</div>
       </div>
       <div class="w-full bg-zinc-800 rounded-full h-1.5 flex overflow-hidden">
-        <div class="bg-orange-500 h-full" style="width: ${activePct}%"></div>
+        <div class="bg-orange-500 h-full" style="width: ${a}%"></div>
         <div class="bg-zinc-700 h-full flex-1"></div>
       </div>
     </div>
-  `;
-}
-
-function renderMetricCard(metricKey, c, daily, isHero) {
-  switch (metricKey) {
-    case 'steps': return buildStepsCard(c, daily, isHero);
-    case 'resting_hr': return buildRhrCard(c, daily, isHero);
-    case 'sleep': return buildSleepCard(c, daily, isHero);
-    case 'stress': return buildStressCard(c, daily, isHero);
-    case 'body_battery': return buildBodyBatteryCard(c, daily, isHero);
-    case 'hrv': return buildHrvCard(c, daily, isHero);
-    case 'intensity_minutes': return buildIntensityCard(c, daily, isHero);
-    case 'calories': return buildCaloriesCard(c, daily, isHero);
-    default: return '';
-  }
-}
-
-// ============================================================================
-// MAIN DASHBOARD RENDERER & EVENT ATTACHMENT
-// ============================================================================
-
-/**
- * Renders the entire Health & Fitness Dashboard ("In Focus" and "At a Glance").
- * @param {object} rollup
- * @param {string} [containerId]
- */
-export function renderWellnessDashboard(rollup, containerId = 'wellness-dashboard') {
-  if (!rollup) return;
-  activeRollupCache = rollup;
-
-  const rootEl = document.getElementById(containerId) || document.getElementById('wellness-dashboard');
-  const inFocusContainer = document.getElementById('wellness-in-focus');
-  const atAGlanceContainer = document.getElementById('wellness-at-a-glance');
-  const emptyNoticeId = 'wellness-empty-notice';
-  let emptyNotice = document.getElementById(emptyNoticeId);
-
-  const current = rollup?.wellness?.current;
-  const hasWellness = !!(current && typeof current === 'object' && Object.keys(current).length > 0);
-
-  if (!hasWellness) {
-    if (inFocusContainer) {
-      inFocusContainer.innerHTML = '';
-      if (inFocusContainer.style) inFocusContainer.style.display = 'none';
-    }
-    if (atAGlanceContainer) {
-      atAGlanceContainer.innerHTML = '';
-      if (atAGlanceContainer.style) atAGlanceContainer.style.display = 'none';
-    }
-    const vitalsContainer = document.getElementById('wellness-readiness-vitals');
-    if (vitalsContainer) {
-      vitalsContainer.innerHTML = '';
-      if (vitalsContainer.style) vitalsContainer.style.display = 'none';
-    }
-
-    if (rootEl) {
-      if (!emptyNotice) {
-        emptyNotice = document.createElement('div');
-        emptyNotice.id = emptyNoticeId;
-        emptyNotice.className = 'border border-dashed border-[#2d2147] rounded-xl p-8 text-center flex flex-col items-center justify-center space-y-3';
-        emptyNotice.innerHTML = `
+  `}function P(e,s,n,t){switch(e){case"steps":return Q(s,n,t);case"resting_hr":return Y(s,n,t);case"sleep":return X(s,n,t);case"stress":return K(s,n,t);case"body_battery":return ee(s,n,t);case"hrv":return te(s,n,t);case"intensity_minutes":return se(s,n,t);case"calories":return ne(s,n,t);default:return""}}function I(e,s="wellness-dashboard"){if(!e)return;b=e;const n=document.getElementById(s)||document.getElementById("wellness-dashboard"),t=document.getElementById("wellness-in-focus"),i=document.getElementById("wellness-at-a-glance"),l="wellness-empty-notice";let a=document.getElementById(l);const o=e?.wellness?.current;if(!!!(o&&typeof o=="object"&&Object.keys(o).length>0)){t&&(t.innerHTML="",t.style&&(t.style.display="none")),i&&(i.innerHTML="",i.style&&(i.style.display="none"));const c=document.getElementById("wellness-readiness-vitals");c&&(c.innerHTML="",c.style&&(c.style.display="none")),n&&(a||(a=document.createElement("div"),a.id=l,a.className="border border-dashed border-[#2d2147] rounded-xl p-8 text-center flex flex-col items-center justify-center space-y-3",a.innerHTML=`
           <div class="w-10 h-10 rounded-full bg-zinc-900 border border-[#2d2147] flex items-center justify-center mb-1">
             <svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
@@ -942,113 +363,26 @@ export function renderWellnessDashboard(rollup, containerId = 'wellness-dashboar
           </div>
           <p class="text-xs font-semibold text-zinc-300">No Synced Garmin Wellness Metrics Available</p>
           <p class="text-xs text-zinc-500 max-w-md">No synced Garmin wellness metrics available. Sync with Garmin Connect to view daily wellness data.</p>
-        `;
-        rootEl.appendChild(emptyNotice);
-      }
-      if (emptyNotice.classList && typeof emptyNotice.classList.remove === 'function') {
-        emptyNotice.classList.remove('hidden');
-      }
-      if (emptyNotice.style) emptyNotice.style.display = 'flex';
-    }
-    return;
-  }
-
-  // Restore container displays if previously hidden and hide empty notice
-  if (emptyNotice) {
-    if (emptyNotice.classList && typeof emptyNotice.classList.add === 'function') {
-      emptyNotice.classList.add('hidden');
-    }
-    if (emptyNotice.style) emptyNotice.style.display = 'none';
-  }
-  if (inFocusContainer && inFocusContainer.style) inFocusContainer.style.display = '';
-  if (atAGlanceContainer && atAGlanceContainer.style) atAGlanceContainer.style.display = '';
-
-  const daily = rollup?.wellness?.daily || [];
-  const layout = loadWellnessLayout();
-
-  if (inFocusContainer) {
-    if (layout.in_focus.length === 0) {
-      inFocusContainer.innerHTML = `
+        `,n.appendChild(a)),a.classList&&typeof a.classList.remove=="function"&&a.classList.remove("hidden"),a.style&&(a.style.display="flex"));return}a&&(a.classList&&typeof a.classList.add=="function"&&a.classList.add("hidden"),a.style&&(a.style.display="none")),t&&t.style&&(t.style.display=""),i&&i.style&&(i.style.display="");const r=e?.wellness?.daily||[],f=B();t&&(f.in_focus.length===0?t.innerHTML=`
         <div class="col-span-full border border-dashed border-[#2d2147] rounded-xl p-6 text-center text-zinc-500 text-xs">
           No cards currently In Focus. Click "Edit Cards" or use the quick action buttons to promote priority metrics.
         </div>
-      `;
-    } else {
-      inFocusContainer.innerHTML = layout.in_focus
-        .map(k => renderMetricCard(k, current, daily, true))
-        .join('');
-    }
-  }
-
-  if (atAGlanceContainer) {
-    if (layout.at_a_glance.length === 0) {
-      atAGlanceContainer.innerHTML = `
+      `:t.innerHTML=f.in_focus.map(c=>P(c,o,r,!0)).join("")),i&&(f.at_a_glance.length===0?i.innerHTML=`
         <div class="col-span-full border border-dashed border-[#2d2147] rounded-xl p-4 text-center text-zinc-500 text-xs">
           No cards in At a Glance.
         </div>
-      `;
-    } else {
-      atAGlanceContainer.innerHTML = layout.at_a_glance
-        .map(k => renderMetricCard(k, current, daily, false))
-        .join('');
-    }
-  }
-
-  let vitalsContainer = document.getElementById('wellness-readiness-vitals');
-  if (!vitalsContainer && rootEl && typeof document !== 'undefined') {
-    vitalsContainer = document.createElement('div');
-    vitalsContainer.id = 'wellness-readiness-vitals';
-    vitalsContainer.className = 'grid grid-cols-1 lg:grid-cols-12 gap-4';
-    rootEl.appendChild(vitalsContainer);
-  }
-  if (vitalsContainer) {
-    if (vitalsContainer.style) vitalsContainer.style.display = '';
-    vitalsContainer.innerHTML = renderReadinessAndVitalsStrip(current);
-  }
-
-  attachCardActionListeners();
-  attachDragAndDropListeners();
-}
-
-function renderReadinessAndVitalsStrip(current) {
-  const trScore = Number(current.training_readiness_score ?? 78);
-  const trLevel = current.training_readiness_level || (trScore >= 80 ? 'Prime' : trScore >= 60 ? 'High' : trScore >= 40 ? 'Moderate' : 'Low');
-  const trColor = trScore >= 80 ? 'text-emerald-400' : trScore >= 60 ? 'text-cyan-400' : trScore >= 40 ? 'text-amber-400' : 'text-rose-400';
-  const trBg = trScore >= 80 ? 'bg-emerald-500' : trScore >= 60 ? 'bg-cyan-500' : trScore >= 40 ? 'bg-amber-500' : 'bg-rose-500';
-
-  const vo2Run = current.vo2max_running != null ? Number(current.vo2max_running).toFixed(1) : '--';
-  const vo2Cyc = current.vo2max_cycling != null ? Number(current.vo2max_cycling).toFixed(1) : '--';
-
-  const spo2Avg = current.spo2_avg != null ? Number(current.spo2_avg).toFixed(1) : '--';
-  const spo2Low = current.spo2_low != null ? Number(current.spo2_low).toFixed(1) : '--';
-
-  const respWake = current.respiration_waking != null ? Number(current.respiration_waking).toFixed(1) : '--';
-  const respSleep = current.respiration_sleep != null ? Number(current.respiration_sleep).toFixed(1) : '--';
-
-  const floorsAsc = current.floors_ascended != null ? current.floors_ascended : '--';
-  const floorsDesc = current.floors_descended != null ? current.floors_descended : '--';
-
-  const hydMl = current.hydration_ml != null ? Number(current.hydration_ml) : null;
-  const hydGoal = Number(current.hydration_goal_ml || 2500);
-  const hydLiters = hydMl != null ? (hydMl / 1000).toFixed(2) : '--';
-  const hydPct = hydMl != null ? Math.min(100, Math.round((hydMl / hydGoal) * 100)) : 0;
-
-  const weightKg = current.weight_kg != null ? Number(current.weight_kg).toFixed(1) : '--';
-  const bodyFat = current.body_fat_pct != null ? Number(current.body_fat_pct).toFixed(1) : '--';
-  const bmi = current.bmi != null ? Number(current.bmi).toFixed(1) : '--';
-
-  return `
+      `:i.innerHTML=f.at_a_glance.map(c=>P(c,o,r,!1)).join(""));let u=document.getElementById("wellness-readiness-vitals");!u&&n&&typeof document<"u"&&(u=document.createElement("div"),u.id="wellness-readiness-vitals",u.className="grid grid-cols-1 lg:grid-cols-12 gap-4",n.appendChild(u)),u&&(u.style&&(u.style.display=""),u.innerHTML=ie(o)),le(),ae()}function ie(e){const s=Number(e.training_readiness_score??78),n=e.training_readiness_level||(s>=80?"Prime":s>=60?"High":s>=40?"Moderate":"Low"),t=s>=80?"text-emerald-400":s>=60?"text-cyan-400":s>=40?"text-amber-400":"text-rose-400",i=s>=80?"bg-emerald-500":s>=60?"bg-cyan-500":s>=40?"bg-amber-500":"bg-rose-500",l=e.vo2max_running!=null?Number(e.vo2max_running).toFixed(1):"--",a=e.vo2max_cycling!=null?Number(e.vo2max_cycling).toFixed(1):"--",o=e.spo2_avg!=null?Number(e.spo2_avg).toFixed(1):"--",d=e.spo2_low!=null?Number(e.spo2_low).toFixed(1):"--",r=e.respiration_waking!=null?Number(e.respiration_waking).toFixed(1):"--",f=e.respiration_sleep!=null?Number(e.respiration_sleep).toFixed(1):"--",u=e.floors_ascended!=null?e.floors_ascended:"--",c=e.floors_descended!=null?e.floors_descended:"--",v=e.hydration_ml!=null?Number(e.hydration_ml):null,m=Number(e.hydration_goal_ml||2500),w=v!=null?(v/1e3).toFixed(2):"--",$=v!=null?Math.min(100,Math.round(v/m*100)):0,z=e.weight_kg!=null?Number(e.weight_kg).toFixed(1):"--",S=e.body_fat_pct!=null?Number(e.body_fat_pct).toFixed(1):"--",M=e.bmi!=null?Number(e.bmi).toFixed(1):"--";return`
     <div id="card-wellness-training-readiness" data-metric="training_readiness" class="lg:col-span-4 bg-[#130d21] border border-[#2d2147] hover:border-cyan-500/40 rounded-xl p-5 flex flex-col justify-between transition-colors cursor-pointer">
       <div class="flex items-center justify-between">
         <span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Training Readiness</span>
-        <span class="text-[10px] font-mono px-2 py-0.5 rounded border border-[#2d2147] bg-[#1b132e] ${trColor}">${trLevel}</span>
+        <span class="text-[10px] font-mono px-2 py-0.5 rounded border border-[#2d2147] bg-[#1b132e] ${t}">${n}</span>
       </div>
       <div class="mt-3 flex items-baseline space-x-2">
-        <span class="text-3xl font-bold font-mono tabular-nums ${trColor}">${trScore}</span>
+        <span class="text-3xl font-bold font-mono tabular-nums ${t}">${s}</span>
         <span class="text-xs text-zinc-500 font-mono">/ 100</span>
       </div>
       <div class="mt-3 w-full h-2 bg-[#1b132e] rounded-full overflow-hidden">
-        <div class="h-full ${trBg} rounded-full" style="width: ${Math.max(0, Math.min(100, trScore))}%"></div>
+        <div class="h-full ${i} rounded-full" style="width: ${Math.max(0,Math.min(100,s))}%"></div>
       </div>
       <div class="mt-2 text-[11px] text-zinc-500">Click for readiness trend &amp; history</div>
     </div>
@@ -1056,148 +390,38 @@ function renderReadinessAndVitalsStrip(current) {
     <div class="lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 gap-4">
       <div id="card-wellness-vo2max" data-metric="vo2max" class="bg-[#130d21] border border-[#2d2147] hover:border-violet-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">VO2 Max</div>
-        <div class="mt-2 text-2xl font-bold font-mono text-violet-400 tabular-nums">${vo2Run}</div>
-        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Run · Cyc ${vo2Cyc}</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-violet-400 tabular-nums">${l}</div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Run \xB7 Cyc ${a}</div>
       </div>
 
       <div id="card-wellness-spo2" data-metric="spo2" class="bg-[#130d21] border border-[#2d2147] hover:border-sky-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Pulse Ox (SpO2)</div>
-        <div class="mt-2 text-2xl font-bold font-mono text-sky-400 tabular-nums">${spo2Avg}%</div>
-        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Low ${spo2Low}%</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-sky-400 tabular-nums">${o}%</div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Low ${d}%</div>
       </div>
 
       <div id="card-wellness-respiration" data-metric="respiration" class="bg-[#130d21] border border-[#2d2147] hover:border-teal-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Respiration</div>
-        <div class="mt-2 text-2xl font-bold font-mono text-teal-400 tabular-nums">${respWake} <span class="text-xs font-normal text-zinc-500">brpm</span></div>
-        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Sleep ${respSleep} brpm</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-teal-400 tabular-nums">${r} <span class="text-xs font-normal text-zinc-500">brpm</span></div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Sleep ${f} brpm</div>
       </div>
 
       <div id="card-wellness-floors" data-metric="floors" class="bg-[#130d21] border border-[#2d2147] hover:border-amber-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Floors Climbed</div>
-        <div class="mt-2 text-2xl font-bold font-mono text-amber-400 tabular-nums">${floorsAsc}</div>
-        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Descended ${floorsDesc}</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-amber-400 tabular-nums">${u}</div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">Descended ${c}</div>
       </div>
 
       <div id="card-wellness-hydration" data-metric="hydration" class="bg-[#130d21] border border-[#2d2147] hover:border-blue-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Hydration</div>
-        <div class="mt-2 text-2xl font-bold font-mono text-blue-400 tabular-nums">${hydLiters} <span class="text-xs font-normal text-zinc-500">L</span></div>
-        <div class="mt-1 text-[11px] text-zinc-500 font-mono">${hydPct}% of ${(hydGoal / 1000).toFixed(1)}L</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-blue-400 tabular-nums">${w} <span class="text-xs font-normal text-zinc-500">L</span></div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">${$}% of ${(m/1e3).toFixed(1)}L</div>
       </div>
 
       <div id="card-wellness-weight" data-metric="weight" class="bg-[#130d21] border border-[#2d2147] hover:border-fuchsia-500/40 rounded-xl p-4 flex flex-col justify-between transition-colors cursor-pointer">
         <div class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Weight &amp; Body</div>
-        <div class="mt-2 text-2xl font-bold font-mono text-fuchsia-400 tabular-nums">${weightKg} <span class="text-xs font-normal text-zinc-500">kg</span></div>
-        <div class="mt-1 text-[11px] text-zinc-500 font-mono">BF ${bodyFat}% · BMI ${bmi}</div>
+        <div class="mt-2 text-2xl font-bold font-mono text-fuchsia-400 tabular-nums">${z} <span class="text-xs font-normal text-zinc-500">kg</span></div>
+        <div class="mt-1 text-[11px] text-zinc-500 font-mono">BF ${S}% \xB7 BMI ${M}</div>
       </div>
     </div>
-  `;
-}
-
-/**
- * Attaches click event listeners to card action buttons (prev, next, toggle-section, remove).
- */
-function attachCardActionListeners() {
-  const root = document.getElementById('wellness-dashboard') || document.getElementById('health-fitness-dashboard') || document;
-  if (!root || !root.querySelectorAll) return;
-
-  root.querySelectorAll('[data-wellness-action]').forEach(btn => {
-    btn.onclick = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const action = btn.getAttribute('data-wellness-action');
-      const metric = btn.getAttribute('data-metric');
-      if (action && metric) {
-        moveWellnessCard(metric, action);
-      }
-    };
-  });
-
-  // Attach modal opening click handlers to metric cards
-  root.querySelectorAll('[data-metric]').forEach(card => {
-    if (card.hasAttribute('data-wellness-action')) return;
-    card.classList.add('cursor-pointer');
-    card.onclick = (e) => {
-      if (e.target && e.target.closest && e.target.closest('[data-wellness-action]')) {
-        return;
-      }
-      const metric = card.getAttribute('data-metric');
-      if (metric) {
-        openMetricTrendModal(metric, activeRollupCache);
-      }
-    };
-  });
-}
-
-/**
- * HTML5 Drag-and-Drop support for cards.
- * Disabled on touch-capable screens to prevent touch gesture conflicts with scrolling.
- */
-function attachDragAndDropListeners() {
-  if (isTouchDevice()) return;
-  const cards = document.querySelectorAll ? document.querySelectorAll('[data-metric][draggable="true"]') : [];
-  let draggedMetric = null;
-
-  cards.forEach(card => {
-    card.ondragstart = (e) => {
-      draggedMetric = card.getAttribute('data-metric');
-      if (e.dataTransfer) {
-        e.dataTransfer.setData('text/plain', draggedMetric);
-        e.dataTransfer.effectAllowed = 'move';
-      }
-      card.classList.add('opacity-50');
-    };
-
-    card.ondragend = () => {
-      card.classList.remove('opacity-50');
-      draggedMetric = null;
-    };
-
-    card.ondragover = (e) => {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    };
-
-    card.ondrop = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const targetMetric = card.getAttribute('data-metric');
-      if (!draggedMetric || !targetMetric || draggedMetric === targetMetric) return;
-
-      const layout = loadWellnessLayout();
-      // Remove dragged from wherever it was
-      const wasInFocus = layout.in_focus.includes(draggedMetric);
-      const isTargetInFocus = layout.in_focus.includes(targetMetric);
-
-      layout.in_focus = layout.in_focus.filter(k => k !== draggedMetric);
-      layout.at_a_glance = layout.at_a_glance.filter(k => k !== draggedMetric);
-
-      if (isTargetInFocus) {
-        const targetIdx = layout.in_focus.indexOf(targetMetric);
-        layout.in_focus.splice(targetIdx, 0, draggedMetric);
-      } else {
-        const targetIdx = layout.at_a_glance.indexOf(targetMetric);
-        layout.at_a_glance.splice(targetIdx, 0, draggedMetric);
-      }
-
-      saveWellnessLayout(layout);
-      if (activeRollupCache) {
-        renderWellnessDashboard(activeRollupCache);
-      }
-    };
-  });
-}
-
-/**
- * Initializes global wellness event listeners (e.g. Edit Cards button in header).
- */
-export function setupWellnessEventListeners() {
-  const editBtn = document.getElementById('btn-edit-home');
-  if (editBtn) {
-    editBtn.addEventListener('click', () => {
-      const modal = document.getElementById('customize-modal');
-      if (modal) {
-        modal.classList.remove('hidden');
-      }
-    });
-  }
-}
+  `}function le(){const e=document.getElementById("wellness-dashboard")||document.getElementById("health-fitness-dashboard")||document;!e||!e.querySelectorAll||(e.querySelectorAll("[data-wellness-action]").forEach(s=>{s.onclick=n=>{n.preventDefault(),n.stopPropagation();const t=s.getAttribute("data-wellness-action"),i=s.getAttribute("data-metric");t&&i&&W(i,t)}}),e.querySelectorAll("[data-metric]").forEach(s=>{s.hasAttribute("data-wellness-action")||(s.classList.add("cursor-pointer"),s.onclick=n=>{if(n.target&&n.target.closest&&n.target.closest("[data-wellness-action]"))return;const t=s.getAttribute("data-metric");t&&T(t,b)})}))}function ae(){if(O())return;const e=document.querySelectorAll?document.querySelectorAll('[data-metric][draggable="true"]'):[];let s=null;e.forEach(n=>{n.ondragstart=t=>{s=n.getAttribute("data-metric"),t.dataTransfer&&(t.dataTransfer.setData("text/plain",s),t.dataTransfer.effectAllowed="move"),n.classList.add("opacity-50")},n.ondragend=()=>{n.classList.remove("opacity-50"),s=null},n.ondragover=t=>{t.preventDefault(),t.dataTransfer&&(t.dataTransfer.dropEffect="move")},n.ondrop=t=>{t.preventDefault(),t.stopPropagation();const i=n.getAttribute("data-metric");if(!s||!i||s===i)return;const l=B(),a=l.in_focus.includes(s),o=l.in_focus.includes(i);if(l.in_focus=l.in_focus.filter(d=>d!==s),l.at_a_glance=l.at_a_glance.filter(d=>d!==s),o){const d=l.in_focus.indexOf(i);l.in_focus.splice(d,0,s)}else{const d=l.at_a_glance.indexOf(i);l.at_a_glance.splice(d,0,s)}R(l),b&&I(b)}})}function ce(){b=null}function ue(){const e=document.getElementById("btn-edit-home");e&&e.addEventListener("click",()=>{let s=!1;if(typeof CustomEvent=="function"&&typeof document<"u"&&typeof document.dispatchEvent=="function"){const n=new CustomEvent("garmin-dash:open-customize",{bubbles:!0,cancelable:!0});s=!document.dispatchEvent(n)}if(!s){const n=document.getElementById("customize-modal");n&&n.classList.remove("hidden")}})}export{N as DEFAULT_WELLNESS_LAYOUT,G as WELLNESS_METRIC_METADATA,de as addWellnessCard,C as canonicalizeMetricKey,ce as clearWellnessCache,A as formatCalories,h as formatSleepDuration,E as formatSteps,y as getStatusBadgeColor,O as isTouchDevice,B as loadWellnessLayout,W as moveWellnessCard,T as openMetricTrendModal,I as renderWellnessDashboard,re as resetWellnessLayout,R as saveWellnessLayout,ue as setupWellnessEventListeners};

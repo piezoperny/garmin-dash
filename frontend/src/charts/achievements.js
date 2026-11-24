@@ -472,7 +472,7 @@ export function renderConsistencyHeatmap(rollup, containerEl = null, options = {
     </div>
 
     <div class="overflow-x-auto pt-2">
-      <div class="inline-grid grid-flow-col gap-1" style="grid-template-rows: repeat(7, minmax(0, 1fr));">
+      <div data-heatmap-grid="true" class="inline-grid grid-flow-col gap-1" style="grid-template-rows: repeat(7, minmax(0, 1fr));">
         ${weeks.map(week => week.map(cell => {
           const colorCls = cell.inRange ? (LEVEL_COLORS[cell.level] || LEVEL_COLORS[0]) : 'opacity-0 pointer-events-none';
           const metricLabel = activeHeatmapMode === 'tss'
@@ -494,12 +494,20 @@ export function renderConsistencyHeatmap(rollup, containerEl = null, options = {
     });
   });
 
-  target.querySelectorAll('[data-heatmap-date]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const dateStr = btn.getAttribute('data-heatmap-date');
-      if (dateStr && typeof options.onSelectDate === 'function') {
-        options.onSelectDate(dateStr);
+  const gridEl = target.querySelector('[data-heatmap-grid="true"]') || target;
+  gridEl.addEventListener('click', (e) => {
+    let btn = null;
+    if (e && e.target) {
+      if (typeof e.target.closest === 'function') {
+        btn = e.target.closest('[data-heatmap-date]');
+      } else if (typeof e.target.getAttribute === 'function' && e.target.getAttribute('data-heatmap-date')) {
+        btn = e.target;
       }
-    });
+    }
+    if (!btn) return;
+    const dateStr = btn.getAttribute('data-heatmap-date');
+    if (dateStr && typeof options.onSelectDate === 'function') {
+      options.onSelectDate(dateStr);
+    }
   });
 }

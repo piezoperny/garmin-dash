@@ -1,2477 +1,278 @@
-/**
- * frontend/src/charts/trends_modal.js
- * 
- * Milestone 4: Singular Metric Trend Modals across Time Periods (Garmin Connect Style)
- * 
- * Features:
- * - Clickable metric cards (Sleep, HRV, Resting HR, Steps, Body Battery, Stress, Intensity Minutes, Calories, Thresholds)
- * - Obsidian Dark / Zinc theme (#0b0714, #130d21, #2d2147, #1b132e, tabular-nums)
- * - Time range selection: 1D, 7D, 1M, 1Y, and Custom date range
- * - Chronological navigation (◀ / ▶) with automatic boundary clamping
- * - High-DPI Canvas 2D trend charts with goal lines, baseline bands, and stacked stages
- * - 4 KPI stat cards in modal header
- * - Detailed chronological telemetry breakdown table
- * - Fullscreen expand/collapse and accessible modal dismissal (Close button, backdrop click, Escape key)
- */
-
-import { Chart } from './chart_engine.js';
-
-// Module state
-const state = {
-  activeMetric: 'sleep',
-  activeRange: '7d',
-  anchorDate: null, // Date object (end of window)
-  customStartDate: null, // 'YYYY-MM-DD'
-  customEndDate: null,   // 'YYYY-MM-DD'
-  isExpanded: false,
-  chartInstance: null,
-  activeRollup: null,
-  customThresholds: null
-};
-
-// Metric Configurations & Metadata
-export const METRIC_CONFIGS = {
-  sleep: {
-    id: 'sleep',
-    title: 'Sleep Duration & Stages',
-    subtitle: 'Daily hypnogram stages, sleep score & duration trends',
-    unit: 'hours',
-    badge: 'OPTIMAL',
-    badgeColor: 'text-indigo-400 border-indigo-500/30 bg-indigo-500/10',
-    icon: `<svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>`
-  },
-  hrv: {
-    id: 'hrv',
-    title: 'HRV Status',
-    subtitle: 'Nightly HRV root-mean-square (ms) with 7-day rolling average & baseline',
-    unit: 'ms',
-    badge: 'BALANCED',
-    badgeColor: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10',
-    icon: `<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>`
-  },
-  resting_hr: {
-    id: 'resting_hr',
-    title: 'Resting Heart Rate',
-    subtitle: 'Daily minimum heart rate & 7-day baseline trends',
-    unit: 'bpm',
-    badge: 'GOOD',
-    badgeColor: 'text-rose-400 border-rose-500/30 bg-rose-500/10',
-    icon: `<svg class="w-5 h-5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>`
-  },
-  steps: {
-    id: 'steps',
-    title: 'Daily Steps',
-    subtitle: 'Step counts vs 10,000-step daily goal',
-    unit: 'steps',
-    badge: 'ON TRACK',
-    badgeColor: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10',
-    icon: `<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>`
-  },
-  body_battery: {
-    id: 'body_battery',
-    title: 'Body Battery',
-    subtitle: 'Energy charged during sleep vs drained during daytime activities',
-    unit: 'pts',
-    badge: 'CHARGED',
-    badgeColor: 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10',
-    icon: `<svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>`
-  },
-  stress: {
-    id: 'stress',
-    title: 'Stress Level',
-    subtitle: 'All-day autonomic nervous balance across Rest, Low, Med, High zones',
-    unit: 'pts',
-    badge: 'REST',
-    badgeColor: 'text-amber-400 border-amber-500/30 bg-amber-500/10',
-    icon: `<svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
-  },
-  intensity_minutes: {
-    id: 'intensity_minutes',
-    title: 'Active Intensity Minutes',
-    subtitle: 'Moderate and vigorous aerobic minutes vs 150m weekly WHO goal',
-    unit: 'min',
-    badge: 'GOAL MET',
-    badgeColor: 'text-sky-400 border-sky-500/30 bg-sky-500/10',
-    icon: `<svg class="w-5 h-5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
-  },
-  calories: {
-    id: 'calories',
-    title: 'Daily Calories',
-    subtitle: 'Active calorie expenditure stacked on Basal Metabolic Rate (BMR)',
-    unit: 'kcal',
-    badge: 'NORMAL',
-    badgeColor: 'text-orange-400 border-orange-500/30 bg-orange-500/10',
-    icon: `<svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z"/></svg>`
-  },
-  thresholds: {
-    id: 'thresholds',
-    title: 'Threshold Performance Trends',
-    subtitle: 'Aerobic VO2max, Cycling FTP (Watts) & Lactate Threshold HR (bpm)',
-    unit: 'mixed',
-    badge: 'PROGRESSING',
-    badgeColor: 'text-purple-400 border-purple-500/30 bg-purple-500/10',
-    icon: `<svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`
-  },
-  training_readiness: {
-    id: 'training_readiness',
-    title: 'Training Readiness',
-    subtitle: 'Composite readiness score (0–100) from sleep, HRV, recovery & acute load',
-    unit: 'pts',
-    badge: 'READY',
-    badgeColor: 'text-cyan-400 border-cyan-500/30 bg-cyan-500/10',
-    icon: `<svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>`
-  },
-  vo2max: {
-    id: 'vo2max',
-    title: 'VO2 Max',
-    subtitle: 'Running & cycling maximal oxygen uptake (mL/kg/min)',
-    unit: 'mL/kg/min',
-    badge: 'SUPERIOR',
-    badgeColor: 'text-violet-400 border-violet-500/30 bg-violet-500/10',
-    icon: `<svg class="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>`
-  },
-  spo2: {
-    id: 'spo2',
-    title: 'Pulse Ox (SpO2)',
-    subtitle: 'Daily average and overnight minimum blood oxygen saturation (%)',
-    unit: '%',
-    badge: 'NORMAL',
-    badgeColor: 'text-sky-400 border-sky-500/30 bg-sky-500/10',
-    icon: `<svg class="w-5 h-5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>`
-  },
-  respiration: {
-    id: 'respiration',
-    title: 'Respiration Rate',
-    subtitle: 'Waking and sleep breathing rate (breaths per minute)',
-    unit: 'brpm',
-    badge: 'STEADY',
-    badgeColor: 'text-teal-400 border-teal-500/30 bg-teal-500/10',
-    icon: `<svg class="w-5 h-5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12h4l3-7 4 14 3-7h2"/></svg>`
-  },
-  floors: {
-    id: 'floors',
-    title: 'Floors Climbed',
-    subtitle: 'Daily floors ascended & descended',
-    unit: 'floors',
-    badge: 'ACTIVE',
-    badgeColor: 'text-amber-400 border-amber-500/30 bg-amber-500/10',
-    icon: `<svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>`
-  },
-  hydration: {
-    id: 'hydration',
-    title: 'Hydration',
-    subtitle: 'Daily fluid intake (L) vs hydration goal',
-    unit: 'L',
-    badge: 'HYDRATED',
-    badgeColor: 'text-blue-400 border-blue-500/30 bg-blue-500/10',
-    icon: `<svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2.69l5.66 5.66a8 8 0 11-11.31 0z"/></svg>`
-  },
-  weight: {
-    id: 'weight',
-    title: 'Weight & Body Composition',
-    subtitle: 'Body weight (kg), body fat %, muscle mass & BMI trends',
-    unit: 'kg',
-    badge: 'ON TARGET',
-    badgeColor: 'text-fuchsia-400 border-fuchsia-500/30 bg-fuchsia-500/10',
-    icon: `<svg class="w-5 h-5 text-fuchsia-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>`
-  }
-};
-
-/**
- * Normalizes input date to local start of day.
- */
-function normalizeDate(d) {
-  if (!d) return new Date();
-  if (typeof d === 'string') {
-    const m = d.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (m) {
-      const localDt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-      if (!isNaN(localDt.getTime())) return localDt;
-    }
-    const parsed = new Date(d);
-    if (isNaN(parsed.getTime())) return new Date();
-    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
-  }
-  const date = new Date(d.getTime());
-  if (isNaN(date.getTime())) return new Date();
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-/**
- * Formats a Date into ISO string YYYY-MM-DD.
- */
-function toISODate(d) {
-  const dt = normalizeDate(d);
-  const year = dt.getFullYear();
-  const month = String(dt.getMonth() + 1).padStart(2, '0');
-  const day = String(dt.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-/**
- * Formats date for display label (e.g. "Oct 26, 2026").
- */
-function formatDisplayDate(d) {
-  const dt = normalizeDate(d);
-  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-/**
- * Zero-preserving finite number parser.
- */
-function toFiniteNumber(val, fallback = null) {
-  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return fallback;
-  const n = Number(val);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-/**
- * Formats YYYY-MM-DD using local calendar components to avoid UTC-1d shift,
- * returning e.g. "Thu, Nov 12".
- */
-function formatShortWeekdayDate(isoDateStr) {
-  const s = String(isoDateStr || '').trim();
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return s || 'Day';
-  const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  if (isNaN(dt.getTime())) return s || 'Day';
-  return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-}
-
-/**
- * Extracts, normalizes, filters (< 0 sentinels / NaN), and sorts intraday
- * Body Battery timeline points into UTC HH:MM labels.
- */
-function extractIntradayBodyBattery(record) {
-  const raw = record?.intraday_body_battery;
-  if (!Array.isArray(raw) || raw.length === 0) return [];
-  const recDateMatch = typeof record?.date === 'string' ? record.date.trim().match(/^(\d{4})-(\d{2})-(\d{2})/) : null;
-  const pts = [];
-  for (const entry of raw) {
-    let tsRaw;
-    let valRaw;
-    if (Array.isArray(entry)) {
-      tsRaw = entry[0];
-      if (entry.length >= 3 && toFiniteNumber(entry[1], null) === null) {
-        valRaw = entry[2];
-        if (entry.length >= 4 && toFiniteNumber(valRaw, null) === null) {
-          valRaw = entry[3];
-        }
-      } else {
-        valRaw = entry[1];
-      }
-    } else if (entry && typeof entry === 'object') {
-      tsRaw = entry.timestamp ?? entry.ts ?? entry.epoch_ms ?? entry.time ?? entry.x;
-      valRaw = entry.value ?? entry.val ?? entry.level ?? entry.bodyBattery ?? entry.y;
-    } else {
-      continue;
-    }
-
-    let tsMs = NaN;
-    if (typeof tsRaw === 'number') {
-      tsMs = (tsRaw > 0 && tsRaw < 1e12) ? tsRaw * 1000 : tsRaw;
-    } else if (typeof tsRaw === 'string' && tsRaw.trim() !== '') {
-      const trimmed = tsRaw.trim();
-      const timeMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-      if (timeMatch) {
-        const hh = Number(timeMatch[1]);
-        const mm = Number(timeMatch[2]);
-        const ss = timeMatch[3] !== undefined ? Number(timeMatch[3]) : 0;
-        if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 59) {
-          if (recDateMatch) {
-            tsMs = Date.UTC(
-              Number(recDateMatch[1]),
-              Number(recDateMatch[2]) - 1,
-              Number(recDateMatch[3]),
-              hh,
-              mm,
-              ss
-            );
-          } else {
-            tsMs = Date.UTC(1970, 0, 1, hh, mm, ss);
-          }
-        }
-      } else {
-        const asNum = Number(trimmed);
-        if (Number.isFinite(asNum)) {
-          tsMs = (asNum > 0 && asNum < 1e12) ? asNum * 1000 : asNum;
-        } else {
-          tsMs = Date.parse(trimmed);
-        }
-      }
-    }
-    if (!Number.isFinite(tsMs)) continue;
-
-    const v = toFiniteNumber(valRaw, null);
-    if (v === null || v < 0) continue;
-
-    const value = Math.max(0, Math.min(100, Math.round(v)));
-    const dt = new Date(tsMs);
-    const hh = String(dt.getUTCHours()).padStart(2, '0');
-    const mm = String(dt.getUTCMinutes()).padStart(2, '0');
-    pts.push({ tsMs, timeLabel: `${hh}:${mm}`, value });
-  }
-  pts.sort((a, b) => a.tsMs - b.tsMs);
-  return pts;
-}
-
-/**
- * Maps a 0-100 stress score to Garmin 4-zone metadata.
- */
-function getStressZoneMeta(score) {
-  const s = toFiniteNumber(score, 0);
-  if (s <= 25) return { label: 'Rest', color: '#38bdf8', badgeClass: 'text-sky-400 border-sky-500/30 bg-sky-500/10' };
-  if (s <= 50) return { label: 'Low', color: '#fbbf24', badgeClass: 'text-amber-400 border-amber-500/30 bg-amber-500/10' };
-  if (s <= 75) return { label: 'Medium', color: '#f97316', badgeClass: 'text-orange-400 border-orange-500/30 bg-orange-500/10' };
-  return { label: 'High', color: '#f43f5e', badgeClass: 'text-rose-400 border-rose-500/30 bg-rose-500/10' };
-}
-
-/**
- * Formats stress duration seconds into compact human-readable string (e.g. "2h 15m" or "45m").
- */
-function formatStressDuration(seconds) {
-  const s = Math.max(0, Math.round(toFiniteNumber(seconds, 0)));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (h > 0 && m > 0) return `${h}h ${m}m`;
-  if (h > 0) return `${h}h`;
-  return `${m}m`;
-}
-
-/**
- * Computes 4-zone stress durations (or scalar fallback proportions) for a daily record,
- * preserving zero values cleanly.
- */
-function getStressZoneDurations(record) {
-  const stress = Math.max(0, Math.min(100, toFiniteNumber(record?.stress_level, 24)));
-  const restRaw = toFiniteNumber(record?.stress_rest_seconds, null);
-  const lowRaw = toFiniteNumber(record?.stress_low_seconds, null);
-  const medRaw = toFiniteNumber(record?.stress_medium_seconds, null);
-  const highRaw = toFiniteNumber(record?.stress_high_seconds, null);
-  const hasDurations = restRaw !== null || lowRaw !== null || medRaw !== null || highRaw !== null;
-
-  if (hasDurations) {
-    const restSec = Math.max(0, restRaw ?? 0);
-    const lowSec = Math.max(0, lowRaw ?? 0);
-    const medSec = Math.max(0, medRaw ?? 0);
-    const highSec = Math.max(0, highRaw ?? 0);
-    const totalSec = restSec + lowSec + medSec + highSec;
-    const restLowSharePct = totalSec > 0
-      ? Math.round(((restSec + lowSec) / totalSec) * 100)
-      : (stress <= 50 ? 100 : 0);
-    return { hasDurations: true, restSec, lowSec, medSec, highSec, totalSec, restLowSharePct };
-  }
-
-  // Scalar-only historical record fallback (16h = 57600s nominal waking/tracked day)
-  const wRest = Math.max(5, 100 - stress * 1.15);
-  const wLow = Math.max(5, 65 - Math.abs(stress - 38) * 0.9);
-  const wMed = Math.max(4, 55 - Math.abs(stress - 63) * 0.95);
-  const wHigh = Math.max(2, stress > 50 ? (stress - 40) * 0.85 : stress * 0.12);
-  const wSum = wRest + wLow + wMed + wHigh;
-  const baseTotal = 57600;
-  const restSec = Math.round((wRest / wSum) * baseTotal);
-  const lowSec = Math.round((wLow / wSum) * baseTotal);
-  const medSec = Math.round((wMed / wSum) * baseTotal);
-  const highSec = Math.max(0, baseTotal - restSec - lowSec - medSec);
-  const restLowSharePct = Math.round(((restSec + lowSec) / baseTotal) * 100);
-  return { hasDurations: false, restSec, lowSec, medSec, highSec, totalSec: baseTotal, restLowSharePct };
-}
-
-/**
- * Extracts, normalizes, filters (< 0 sentinels / NaN), and sorts intraday
- * Stress timeline points into UTC HH:MM labels.
- */
-function extractIntradayStress(record) {
-  const raw = record?.intraday_stress;
-  if (!Array.isArray(raw) || raw.length === 0) return [];
-  const recDateMatch = typeof record?.date === 'string' ? record.date.trim().match(/^(\d{4})-(\d{2})-(\d{2})/) : null;
-  const pts = [];
-  for (const entry of raw) {
-    let tsRaw;
-    let valRaw;
-    if (Array.isArray(entry)) {
-      tsRaw = entry[0];
-      valRaw = entry[1];
-    } else if (entry && typeof entry === 'object') {
-      tsRaw = entry.timestamp ?? entry.ts ?? entry.epoch_ms ?? entry.time ?? entry.x;
-      valRaw = entry.value ?? entry.val ?? entry.stress ?? entry.stressLevel ?? entry.y;
-    } else {
-      continue;
-    }
-
-    let tsMs = NaN;
-    if (typeof tsRaw === 'number') {
-      tsMs = (tsRaw > 0 && tsRaw < 1e12) ? tsRaw * 1000 : tsRaw;
-    } else if (typeof tsRaw === 'string' && tsRaw.trim() !== '') {
-      const trimmed = tsRaw.trim();
-      const timeMatch = trimmed.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-      if (timeMatch) {
-        const hh = Number(timeMatch[1]);
-        const mm = Number(timeMatch[2]);
-        const ss = timeMatch[3] !== undefined ? Number(timeMatch[3]) : 0;
-        if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 59) {
-          if (recDateMatch) {
-            tsMs = Date.UTC(
-              Number(recDateMatch[1]),
-              Number(recDateMatch[2]) - 1,
-              Number(recDateMatch[3]),
-              hh,
-              mm,
-              ss
-            );
-          } else {
-            tsMs = Date.UTC(1970, 0, 1, hh, mm, ss);
-          }
-        }
-      } else {
-        const asNum = Number(trimmed);
-        if (Number.isFinite(asNum)) {
-          tsMs = (asNum > 0 && asNum < 1e12) ? asNum * 1000 : asNum;
-        } else {
-          tsMs = Date.parse(trimmed);
-        }
-      }
-    }
-    if (!Number.isFinite(tsMs)) continue;
-
-    const v = toFiniteNumber(valRaw, null);
-    if (v === null || v < 0) continue;
-
-    const value = Math.max(0, Math.min(100, Math.round(v)));
-    const dt = new Date(tsMs);
-    const hh = String(dt.getUTCHours()).padStart(2, '0');
-    const mm = String(dt.getUTCMinutes()).padStart(2, '0');
-    pts.push({ tsMs, timeLabel: `${hh}:${mm}`, value });
-  }
-  pts.sort((a, b) => a.tsMs - b.tsMs);
-  return pts;
-}
-
-/**
- * Parses and returns all available daily records sorted ascending.
- */
-function getSortedDailyRecords(rollup) {
-  const daily = rollup?.wellness?.daily;
-  if (!Array.isArray(daily) || daily.length === 0) return [];
-  return [...daily].sort((a, b) => String(a.date).localeCompare(String(b.date)));
-}
-
-/**
- * Determines latest available recorded date in dataset.
- */
-function getDatasetMaxDate(rollup) {
-  const daily = getSortedDailyRecords(rollup);
-  if (daily.length > 0) {
-    return normalizeDate(daily[daily.length - 1].date);
-  }
-  return normalizeDate(new Date());
-}
-
-/**
- * Determines earliest available recorded date in dataset.
- */
-function getDatasetMinDate(rollup) {
-  const daily = getSortedDailyRecords(rollup);
-  if (daily.length > 0) {
-    return normalizeDate(daily[0].date);
-  }
-  return normalizeDate(new Date());
-}
-
-/**
- * Filters dataset based on active range and anchor date.
- */
-export function getFilteredTelemetryData(metricKey, range, anchorDate, rollup, customStart = null, customEnd = null) {
-  const daily = getSortedDailyRecords(rollup);
-  const maxDt = getDatasetMaxDate(rollup);
-  const anchor = normalizeDate(anchorDate || maxDt);
-
-  let startDate;
-  let endDate = anchor;
-
-  if (range === '1d') {
-    startDate = anchor;
-    endDate = anchor;
-  } else if (range === '7d') {
-    startDate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - 6);
-  } else if (range === '1m') {
-    startDate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - 29);
-  } else if (range === '1y') {
-    startDate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - 364);
-  } else if (range === 'custom') {
-    if (customStart && customEnd) {
-      startDate = normalizeDate(customStart);
-      endDate = normalizeDate(customEnd);
-      if (startDate > endDate) {
-        // Swap if out of order
-        const temp = startDate;
-        startDate = endDate;
-        endDate = temp;
-      }
-    } else {
-      startDate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - 6);
-    }
-  } else {
-    startDate = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() - 6);
-  }
-
-  const startIso = toISODate(startDate);
-  const endIso = toISODate(endDate);
-
-  if (metricKey === 'thresholds') {
-    const rawTrends = rollup?.physiological?.threshold_trends || [];
-    const filtered = rawTrends.filter(t => t.date >= startIso && t.date <= endIso);
-    return {
-      startDate,
-      endDate,
-      startIso,
-      endIso,
-      records: filtered.length > 0 ? filtered : (range === '1y' ? rawTrends : filtered),
-      totalAvailable: rawTrends.length
-    };
-  }
-
-  const records = daily.filter(d => d.date >= startIso && d.date <= endIso);
-
-  return {
-    startDate,
-    endDate,
-    startIso,
-    endIso,
-    records,
-    totalAvailable: daily.length
-  };
-}
-
-/**
- * Opens the Metric Trend Modal initialized to the selected metric.
- * @param {string} metricKey
- * @param {object} rollup
- * @param {object} [customThresholds]
- */
-export function openMetricTrendModal(metricKey, rollup, customThresholds = null) {
-  const modal = document.getElementById('metric-trend-modal');
-  if (!modal) return;
-
-  state.activeMetric = METRIC_CONFIGS[metricKey] ? metricKey : 'sleep';
-  state.activeRollup = rollup;
-  state.customThresholds = customThresholds;
-  state.activeRange = '7d';
-  state.customStartDate = null;
-  state.customEndDate = null;
-  state.isExpanded = false;
-
-  const panel = document.getElementById('trend-modal-panel');
-  if (panel) {
-    panel.classList.add('max-w-4xl', 'rounded-2xl', 'max-h-[92vh]');
-    panel.classList.remove('w-full', 'h-full', 'max-h-screen', 'rounded-none');
-  }
-  modal.classList.add('p-3', 'sm:p-6');
-
-  const maxDt = getDatasetMaxDate(rollup);
-  state.anchorDate = maxDt;
-
-  // Show modal
-  modal.classList.remove('hidden');
-  modal.setAttribute('aria-hidden', 'false');
-  document.body.style.overflow = 'hidden';
-
-  renderModalState();
-}
-
-/**
- * Closes the Metric Trend Modal and cleans up chart instance.
- */
-export function closeMetricTrendModal() {
-  const modal = document.getElementById('metric-trend-modal');
-  if (!modal) return;
-
-  modal.classList.add('hidden');
-  modal.setAttribute('aria-hidden', 'true');
-  document.body.style.overflow = '';
-
-  state.isExpanded = false;
-  const panel = document.getElementById('trend-modal-panel');
-  if (panel) {
-    panel.classList.add('max-w-4xl', 'rounded-2xl', 'max-h-[92vh]');
-    panel.classList.remove('w-full', 'h-full', 'max-h-screen', 'rounded-none');
-  }
-  modal.classList.add('p-3', 'sm:p-6');
-
-  if (state.chartInstance) {
-    try {
-      state.chartInstance.destroy();
-    } catch {}
-    state.chartInstance = null;
-  }
-}
-
-/**
- * Toggles fullscreen expand state of modal.
- */
-export function toggleExpandModal() {
-  const panel = document.getElementById('trend-modal-panel');
-  const modal = document.getElementById('metric-trend-modal');
-  if (!panel || !modal) return;
-
-  state.isExpanded = !state.isExpanded;
-
-  if (state.isExpanded) {
-    panel.classList.remove('max-w-4xl', 'rounded-2xl', 'max-h-[92vh]');
-    panel.classList.add('w-full', 'h-full', 'max-h-screen', 'rounded-none');
-    modal.classList.remove('p-3', 'sm:p-6');
-  } else {
-    panel.classList.add('max-w-4xl', 'rounded-2xl', 'max-h-[92vh]');
-    panel.classList.remove('w-full', 'h-full', 'max-h-screen', 'rounded-none');
-    modal.classList.add('p-3', 'sm:p-6');
-  }
-
-  if (state.chartInstance && typeof state.chartInstance._handleResize === 'function') {
-    setTimeout(() => {
-      if (state.chartInstance && typeof state.chartInstance._handleResize === 'function') {
-        state.chartInstance._handleResize();
-      }
-    }, 50);
-  }
-}
-
-/**
- * Updates UI controls and re-renders chart, KPIs, and table.
- */
-export function renderModalState() {
-  const metric = state.activeMetric;
-  const cfg = METRIC_CONFIGS[metric] || METRIC_CONFIGS.sleep;
-  const rollup = state.activeRollup;
-
-  // 1. Header Details
-  const iconEl = document.getElementById('trend-metric-icon');
-  const titleEl = document.getElementById('trend-metric-title');
-  const subtitleEl = document.getElementById('trend-metric-subtitle');
-  const badgeEl = document.getElementById('trend-metric-badge');
-
-  if (iconEl) iconEl.innerHTML = cfg.icon;
-  if (titleEl) titleEl.textContent = cfg.title;
-  if (subtitleEl) subtitleEl.textContent = cfg.subtitle;
-  if (badgeEl) {
-    badgeEl.textContent = cfg.badge;
-    badgeEl.className = `px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${cfg.badgeColor}`;
-  }
-
-  // 2. Active Range Buttons
-  const rangeButtons = document.querySelectorAll('[data-trend-range]');
-  rangeButtons.forEach(btn => {
-    const r = btn.getAttribute('data-trend-range');
-    if (r === state.activeRange) {
-      btn.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#2d2147] text-white shadow-sm transition';
-    } else {
-      btn.className = 'px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition';
-    }
-  });
-
-  // 3. Custom Date Container Visibility
-  const customContainer = document.getElementById('trend-custom-date-container');
-  if (customContainer) {
-    if (state.activeRange === 'custom') {
-      customContainer.classList.remove('hidden');
-      const startIn = document.getElementById('trend-input-start-date');
-      const endIn = document.getElementById('trend-input-end-date');
-      if (startIn && !startIn.value && state.customStartDate) startIn.value = state.customStartDate;
-      if (endIn && !endIn.value && state.customEndDate) endIn.value = state.customEndDate;
-    } else {
-      customContainer.classList.add('hidden');
-    }
-  }
-
-  // 4. Filter Telemetry Data
-  const filter = getFilteredTelemetryData(
-    metric,
-    state.activeRange,
-    state.anchorDate,
-    rollup,
-    state.customStartDate,
-    state.customEndDate
-  );
-
-  // 5. Date Navigator Label & Pagination Buttons
-  const labelEl = document.getElementById('trend-date-label');
-  const prevBtn = document.getElementById('trend-nav-prev');
-  const nextBtn = document.getElementById('trend-nav-next');
-
-  if (labelEl) {
-    if (state.activeRange === '1d') {
-      labelEl.textContent = formatDisplayDate(filter.startDate);
-    } else if (state.activeRange === '1y' && filter.records.length > 0 && filter.records.length < 300) {
-      labelEl.textContent = `${formatDisplayDate(filter.startDate)} – ${formatDisplayDate(filter.endDate)} (${filter.records.length} days recorded)`;
-    } else {
-      labelEl.textContent = `${formatDisplayDate(filter.startDate)} – ${formatDisplayDate(filter.endDate)}`;
-    }
-  }
-
-  const maxDt = getDatasetMaxDate(rollup);
-  const minDt = getDatasetMinDate(rollup);
-  if (nextBtn) {
-    const isAtLatest = normalizeDate(filter.endDate) >= maxDt;
-    if (isAtLatest) {
-      nextBtn.classList.add('opacity-30', 'cursor-not-allowed', 'pointer-events-none');
-    } else {
-      nextBtn.classList.remove('opacity-30', 'cursor-not-allowed', 'pointer-events-none');
-    }
-  }
-  if (prevBtn) {
-    const isAtEarliest = normalizeDate(filter.startDate) <= minDt;
-    if (isAtEarliest) {
-      prevBtn.classList.add('opacity-30', 'cursor-not-allowed', 'pointer-events-none');
-    } else {
-      prevBtn.classList.remove('opacity-30', 'cursor-not-allowed', 'pointer-events-none');
-    }
-  }
-
-  // 6. Render KPI Stat Cards
-  renderKPICards(metric, filter.records, cfg);
-
-  // 7. Render Main Chart
-  renderMetricChart(metric, filter.records, filter.startDate, filter.endDate);
-
-  // 8. Render Breakdown Table
-  renderBreakdownTable(metric, filter.records, cfg);
-}
-
-/**
- * Chronological Pagination (◀ previous / ▶ next).
- */
-export function navigateDatePeriod(direction) {
-  const maxDt = getDatasetMaxDate(state.activeRollup);
-  const minDt = getDatasetMinDate(state.activeRollup);
-  const current = normalizeDate(state.anchorDate || maxDt);
-  let daysShift = 7;
-
-  if (state.activeRange === '1d') daysShift = 1;
-  else if (state.activeRange === '7d') daysShift = 7;
-  else if (state.activeRange === '1m') daysShift = 30;
-  else if (state.activeRange === '1y') daysShift = 365;
-  else if (state.activeRange === 'custom' && state.customStartDate && state.customEndDate) {
-    const s = normalizeDate(state.customStartDate);
-    const e = normalizeDate(state.customEndDate);
-    daysShift = Math.max(1, Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)));
-  }
-
-  const newAnchor = new Date(current.getFullYear(), current.getMonth(), current.getDate() + (direction * daysShift));
-
-  // Clamping to dataset boundaries
-  if (newAnchor > maxDt) {
-    state.anchorDate = maxDt;
-  } else if (newAnchor < minDt) {
-    state.anchorDate = minDt;
-  } else {
-    state.anchorDate = newAnchor;
-  }
-
-  renderModalState();
-}
-
-/**
- * Sets active time range filter.
- */
-export function setTimeRange(range) {
-  state.activeRange = range;
-  const maxDt = getDatasetMaxDate(state.activeRollup);
-  state.anchorDate = maxDt;
-
-  if (range === 'custom') {
-    const startIn = document.getElementById('trend-input-start-date');
-    const endIn = document.getElementById('trend-input-end-date');
-    const startDefault = new Date(maxDt.getFullYear(), maxDt.getMonth(), maxDt.getDate() - 14);
-    if (startIn && !startIn.value) startIn.value = toISODate(startDefault);
-    if (endIn && !endIn.value) endIn.value = toISODate(maxDt);
-    state.customStartDate = startIn ? startIn.value : toISODate(startDefault);
-    state.customEndDate = endIn ? endIn.value : toISODate(maxDt);
-  }
-
-  renderModalState();
-}
-
-/**
- * Applies custom date inputs.
- */
-export function applyCustomDateRange() {
-  const startIn = document.getElementById('trend-input-start-date');
-  const endIn = document.getElementById('trend-input-end-date');
-  const errEl = document.getElementById('trend-custom-error');
-
-  if (!startIn || !endIn) return;
-  const s = startIn.value;
-  const e = endIn.value;
-
-  if (!s || !e || isNaN(new Date(s).getTime()) || isNaN(new Date(e).getTime())) {
-    if (errEl) {
-      errEl.textContent = 'Please select both valid start and end dates.';
-      errEl.classList.remove('hidden');
-    }
-    return;
-  }
-
-  if (s > e) {
-    if (errEl) {
-      errEl.textContent = 'Start date must be before or equal to end date.';
-      errEl.classList.remove('hidden');
-    }
-    return;
-  }
-
-  if (errEl) errEl.classList.add('hidden');
-
-  state.activeRange = 'custom';
-  state.customStartDate = s;
-  state.customEndDate = e;
-  state.anchorDate = normalizeDate(e);
-
-  renderModalState();
-}
-
-/**
- * Renders 4 KPI stat cards inside modal header.
- */
-function renderKPICards(metric, records, cfg) {
-  const grid = document.getElementById('trend-kpi-grid');
-  if (!grid) return;
-
-  if (!records || records.length === 0) {
-    grid.innerHTML = `
+import{Chart as rt}from"./chart_engine.js";const m={activeMetric:"sleep",activeRange:"7d",anchorDate:null,customStartDate:null,customEndDate:null,isExpanded:!1,chartInstance:null,activeRollup:null,customThresholds:null},q={sleep:{id:"sleep",title:"Sleep Duration & Stages",subtitle:"Daily hypnogram stages, sleep score & duration trends",unit:"hours",badge:"OPTIMAL",badgeColor:"text-indigo-400 border-indigo-500/30 bg-indigo-500/10",icon:'<svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>'},hrv:{id:"hrv",title:"HRV Status",subtitle:"Nightly HRV root-mean-square (ms) with 7-day rolling average & baseline",unit:"ms",badge:"BALANCED",badgeColor:"text-emerald-400 border-emerald-500/30 bg-emerald-500/10",icon:'<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>'},resting_hr:{id:"resting_hr",title:"Resting Heart Rate",subtitle:"Daily minimum heart rate & 7-day baseline trends",unit:"bpm",badge:"GOOD",badgeColor:"text-rose-400 border-rose-500/30 bg-rose-500/10",icon:'<svg class="w-5 h-5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'},steps:{id:"steps",title:"Daily Steps",subtitle:"Step counts vs 10,000-step daily goal",unit:"steps",badge:"ON TRACK",badgeColor:"text-emerald-400 border-emerald-500/30 bg-emerald-500/10",icon:'<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>'},body_battery:{id:"body_battery",title:"Body Battery",subtitle:"Energy charged during sleep vs drained during daytime activities",unit:"pts",badge:"CHARGED",badgeColor:"text-cyan-400 border-cyan-500/30 bg-cyan-500/10",icon:'<svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'},stress:{id:"stress",title:"Stress Level",subtitle:"All-day autonomic nervous balance across Rest, Low, Med, High zones",unit:"pts",badge:"REST",badgeColor:"text-amber-400 border-amber-500/30 bg-amber-500/10",icon:'<svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>'},intensity_minutes:{id:"intensity_minutes",title:"Active Intensity Minutes",subtitle:"Moderate and vigorous aerobic minutes vs 150m weekly WHO goal",unit:"min",badge:"GOAL MET",badgeColor:"text-sky-400 border-sky-500/30 bg-sky-500/10",icon:'<svg class="w-5 h-5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>'},calories:{id:"calories",title:"Daily Calories",subtitle:"Active calorie expenditure stacked on Basal Metabolic Rate (BMR)",unit:"kcal",badge:"NORMAL",badgeColor:"text-orange-400 border-orange-500/30 bg-orange-500/10",icon:'<svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z"/></svg>'},thresholds:{id:"thresholds",title:"Threshold Performance Trends",subtitle:"Aerobic VO2max, Cycling FTP (Watts) & Lactate Threshold HR (bpm)",unit:"mixed",badge:"PROGRESSING",badgeColor:"text-purple-400 border-purple-500/30 bg-purple-500/10",icon:'<svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>'},training_readiness:{id:"training_readiness",title:"Training Readiness",subtitle:"Composite readiness score (0\u2013100) from sleep, HRV, recovery & acute load",unit:"pts",badge:"READY",badgeColor:"text-cyan-400 border-cyan-500/30 bg-cyan-500/10",icon:'<svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'},vo2max:{id:"vo2max",title:"VO2 Max",subtitle:"Running & cycling maximal oxygen uptake (mL/kg/min)",unit:"mL/kg/min",badge:"SUPERIOR",badgeColor:"text-violet-400 border-violet-500/30 bg-violet-500/10",icon:'<svg class="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>'},spo2:{id:"spo2",title:"Pulse Ox (SpO2)",subtitle:"Daily average and overnight minimum blood oxygen saturation (%)",unit:"%",badge:"NORMAL",badgeColor:"text-sky-400 border-sky-500/30 bg-sky-500/10",icon:'<svg class="w-5 h-5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707"/></svg>'},respiration:{id:"respiration",title:"Respiration Rate",subtitle:"Waking and sleep breathing rate (breaths per minute)",unit:"brpm",badge:"STEADY",badgeColor:"text-teal-400 border-teal-500/30 bg-teal-500/10",icon:'<svg class="w-5 h-5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12h4l3-7 4 14 3-7h2"/></svg>'},floors:{id:"floors",title:"Floors Climbed",subtitle:"Daily floors ascended & descended",unit:"floors",badge:"ACTIVE",badgeColor:"text-amber-400 border-amber-500/30 bg-amber-500/10",icon:'<svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/></svg>'},hydration:{id:"hydration",title:"Hydration",subtitle:"Daily fluid intake (L) vs hydration goal",unit:"L",badge:"HYDRATED",badgeColor:"text-blue-400 border-blue-500/30 bg-blue-500/10",icon:'<svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2.69l5.66 5.66a8 8 0 11-11.31 0z"/></svg>'},weight:{id:"weight",title:"Weight & Body Composition",subtitle:"Body weight (kg), body fat %, muscle mass & BMI trends",unit:"kg",badge:"ON TARGET",badgeColor:"text-fuchsia-400 border-fuchsia-500/30 bg-fuchsia-500/10",icon:'<svg class="w-5 h-5 text-fuchsia-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>'}};function R(o){if(!o)return new Date;if(typeof o=="string"){const x=o.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);if(x){const s=new Date(Number(x[1]),Number(x[2])-1,Number(x[3]));if(!isNaN(s.getTime()))return s}const f=new Date(o);return isNaN(f.getTime())?new Date:new Date(f.getFullYear(),f.getMonth(),f.getDate())}const n=new Date(o.getTime());return isNaN(n.getTime())?new Date:new Date(n.getFullYear(),n.getMonth(),n.getDate())}function P(o){const n=R(o),x=n.getFullYear(),f=String(n.getMonth()+1).padStart(2,"0"),s=String(n.getDate()).padStart(2,"0");return`${x}-${f}-${s}`}function j(o){return R(o).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}function p(o,n=null){if(o==null||o===""||typeof o=="boolean")return n;const x=Number(o);return Number.isFinite(x)?x:n}function Z(o){const n=String(o||"").trim(),x=n.match(/^(\d{4})-(\d{2})-(\d{2})/);if(!x)return n||"Day";const f=new Date(Number(x[1]),Number(x[2])-1,Number(x[3]));return isNaN(f.getTime())?n||"Day":f.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}function tt(o){const n=o?.intraday_body_battery;if(!Array.isArray(n)||n.length===0)return[];const x=typeof o?.date=="string"?o.date.trim().match(/^(\d{4})-(\d{2})-(\d{2})/):null,f=[];for(const s of n){let h,b;if(Array.isArray(s))h=s[0],s.length>=3&&p(s[1],null)===null?(b=s[2],s.length>=4&&p(b,null)===null&&(b=s[3])):b=s[1];else if(s&&typeof s=="object")h=s.timestamp??s.ts??s.epoch_ms??s.time??s.x,b=s.value??s.val??s.level??s.bodyBattery??s.y;else continue;let l=NaN;if(typeof h=="number")l=h>0&&h<1e12?h*1e3:h;else if(typeof h=="string"&&h.trim()!==""){const g=h.trim(),r=g.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);if(r){const d=Number(r[1]),u=Number(r[2]),y=r[3]!==void 0?Number(r[3]):0;d>=0&&d<=23&&u>=0&&u<=59&&y>=0&&y<=59&&(x?l=Date.UTC(Number(x[1]),Number(x[2])-1,Number(x[3]),d,u,y):l=Date.UTC(1970,0,1,d,u,y))}else{const d=Number(g);Number.isFinite(d)?l=d>0&&d<1e12?d*1e3:d:l=Date.parse(g)}}if(!Number.isFinite(l))continue;const t=p(b,null);if(t===null||t<0)continue;const e=Math.max(0,Math.min(100,Math.round(t))),a=new Date(l),c=String(a.getUTCHours()).padStart(2,"0"),i=String(a.getUTCMinutes()).padStart(2,"0");f.push({tsMs:l,timeLabel:`${c}:${i}`,value:e})}return f.sort((s,h)=>s.tsMs-h.tsMs),f}function W(o){const n=p(o,0);return n<=25?{label:"Rest",color:"#38bdf8",badgeClass:"text-sky-400 border-sky-500/30 bg-sky-500/10"}:n<=50?{label:"Low",color:"#fbbf24",badgeClass:"text-amber-400 border-amber-500/30 bg-amber-500/10"}:n<=75?{label:"Medium",color:"#f97316",badgeClass:"text-orange-400 border-orange-500/30 bg-orange-500/10"}:{label:"High",color:"#f43f5e",badgeClass:"text-rose-400 border-rose-500/30 bg-rose-500/10"}}function H(o){const n=Math.max(0,Math.round(p(o,0))),x=Math.floor(n/3600),f=Math.floor(n%3600/60);return x>0&&f>0?`${x}h ${f}m`:x>0?`${x}h`:`${f}m`}function K(o){const n=Math.max(0,Math.min(100,p(o?.stress_level,24))),x=p(o?.stress_rest_seconds,null),f=p(o?.stress_low_seconds,null),s=p(o?.stress_medium_seconds,null),h=p(o?.stress_high_seconds,null);if(x!==null||f!==null||s!==null||h!==null){const M=Math.max(0,x??0),w=Math.max(0,f??0),$=Math.max(0,s??0),v=Math.max(0,h??0),_=M+w+$+v,S=_>0?Math.round((M+w)/_*100):n<=50?100:0;return{hasDurations:!0,restSec:M,lowSec:w,medSec:$,highSec:v,totalSec:_,restLowSharePct:S}}const l=Math.max(5,100-n*1.15),t=Math.max(5,65-Math.abs(n-38)*.9),e=Math.max(4,55-Math.abs(n-63)*.95),a=Math.max(2,n>50?(n-40)*.85:n*.12),c=l+t+e+a,i=57600,g=Math.round(l/c*i),r=Math.round(t/c*i),d=Math.round(e/c*i),u=Math.max(0,i-g-r-d),y=Math.round((g+r)/i*100);return{hasDurations:!1,restSec:g,lowSec:r,medSec:d,highSec:u,totalSec:i,restLowSharePct:y}}function it(o){const n=o?.intraday_stress;if(!Array.isArray(n)||n.length===0)return[];const x=typeof o?.date=="string"?o.date.trim().match(/^(\d{4})-(\d{2})-(\d{2})/):null,f=[];for(const s of n){let h,b;if(Array.isArray(s))h=s[0],b=s[1];else if(s&&typeof s=="object")h=s.timestamp??s.ts??s.epoch_ms??s.time??s.x,b=s.value??s.val??s.stress??s.stressLevel??s.y;else continue;let l=NaN;if(typeof h=="number")l=h>0&&h<1e12?h*1e3:h;else if(typeof h=="string"&&h.trim()!==""){const g=h.trim(),r=g.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);if(r){const d=Number(r[1]),u=Number(r[2]),y=r[3]!==void 0?Number(r[3]):0;d>=0&&d<=23&&u>=0&&u<=59&&y>=0&&y<=59&&(x?l=Date.UTC(Number(x[1]),Number(x[2])-1,Number(x[3]),d,u,y):l=Date.UTC(1970,0,1,d,u,y))}else{const d=Number(g);Number.isFinite(d)?l=d>0&&d<1e12?d*1e3:d:l=Date.parse(g)}}if(!Number.isFinite(l))continue;const t=p(b,null);if(t===null||t<0)continue;const e=Math.max(0,Math.min(100,Math.round(t))),a=new Date(l),c=String(a.getUTCHours()).padStart(2,"0"),i=String(a.getUTCMinutes()).padStart(2,"0");f.push({tsMs:l,timeLabel:`${c}:${i}`,value:e})}return f.sort((s,h)=>s.tsMs-h.tsMs),f}function O(o){const n=o?.wellness?.daily;return!Array.isArray(n)||n.length===0?[]:[...n].sort((x,f)=>String(x.date).localeCompare(String(f.date)))}function U(o){const n=O(o);return n.length>0?R(n[n.length-1].date):R(new Date)}function et(o){const n=O(o);return n.length>0?R(n[0].date):R(new Date)}function dt(o,n,x,f,s=null,h=null){const b=O(f),l=U(f),t=R(x||l);let e,a=t;if(n==="1d")e=t,a=t;else if(n==="7d")e=new Date(t.getFullYear(),t.getMonth(),t.getDate()-6);else if(n==="1m")e=new Date(t.getFullYear(),t.getMonth(),t.getDate()-29);else if(n==="1y")e=new Date(t.getFullYear(),t.getMonth(),t.getDate()-364);else if(n==="custom")if(s&&h){if(e=R(s),a=R(h),e>a){const r=e;e=a,a=r}}else e=new Date(t.getFullYear(),t.getMonth(),t.getDate()-6);else e=new Date(t.getFullYear(),t.getMonth(),t.getDate()-6);const c=P(e),i=P(a);if(o==="thresholds"){const r=f?.physiological?.threshold_trends||[],d=r.filter(u=>u.date>=c&&u.date<=i);return{startDate:e,endDate:a,startIso:c,endIso:i,records:d.length>0?d:n==="1y"?r:d,totalAvailable:r.length}}const g=b.filter(r=>r.date>=c&&r.date<=i);return{startDate:e,endDate:a,startIso:c,endIso:i,records:g,totalAvailable:b.length}}function ft(o,n,x=null){const f=document.getElementById("metric-trend-modal");if(!f)return;m.activeMetric=q[o]?o:"sleep",m.activeRollup=n,m.customThresholds=x,m.activeRange="7d",m.customStartDate=null,m.customEndDate=null,m.isExpanded=!1;const s=document.getElementById("trend-modal-panel");s&&(s.classList.add("max-w-4xl","rounded-2xl","max-h-[92vh]"),s.classList.remove("w-full","h-full","max-h-screen","rounded-none")),f.classList.add("p-3","sm:p-6");const h=U(n);m.anchorDate=h,f.classList.remove("hidden"),f.setAttribute("aria-hidden","false"),document.body.style.overflow="hidden",Y()}function Q(){const o=document.getElementById("metric-trend-modal");if(!o)return;o.classList.add("hidden"),o.setAttribute("aria-hidden","true"),document.body.style.overflow="",m.isExpanded=!1;const n=document.getElementById("trend-modal-panel");if(n&&(n.classList.add("max-w-4xl","rounded-2xl","max-h-[92vh]"),n.classList.remove("w-full","h-full","max-h-screen","rounded-none")),o.classList.add("p-3","sm:p-6"),m.chartInstance){try{m.chartInstance.destroy()}catch{}m.chartInstance=null}}function ct(){const o=document.getElementById("trend-modal-panel"),n=document.getElementById("metric-trend-modal");!o||!n||(m.isExpanded=!m.isExpanded,m.isExpanded?(o.classList.remove("max-w-4xl","rounded-2xl","max-h-[92vh]"),o.classList.add("w-full","h-full","max-h-screen","rounded-none"),n.classList.remove("p-3","sm:p-6")):(o.classList.add("max-w-4xl","rounded-2xl","max-h-[92vh]"),o.classList.remove("w-full","h-full","max-h-screen","rounded-none"),n.classList.add("p-3","sm:p-6")),m.chartInstance&&typeof m.chartInstance._handleResize=="function"&&setTimeout(()=>{m.chartInstance&&typeof m.chartInstance._handleResize=="function"&&m.chartInstance._handleResize()},50))}function Y(){const o=m.activeMetric,n=q[o]||q.sleep,x=m.activeRollup,f=document.getElementById("trend-metric-icon"),s=document.getElementById("trend-metric-title"),h=document.getElementById("trend-metric-subtitle"),b=document.getElementById("trend-metric-badge");f&&(f.innerHTML=n.icon),s&&(s.textContent=n.title),h&&(h.textContent=n.subtitle),b&&(b.textContent=n.badge,b.className=`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border ${n.badgeColor}`),document.querySelectorAll("[data-trend-range]").forEach(d=>{d.getAttribute("data-trend-range")===m.activeRange?d.className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#2d2147] text-white shadow-sm transition":d.className="px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-400 hover:text-white transition"});const t=document.getElementById("trend-custom-date-container");if(t)if(m.activeRange==="custom"){t.classList.remove("hidden");const d=document.getElementById("trend-input-start-date"),u=document.getElementById("trend-input-end-date");d&&!d.value&&m.customStartDate&&(d.value=m.customStartDate),u&&!u.value&&m.customEndDate&&(u.value=m.customEndDate)}else t.classList.add("hidden");const e=dt(o,m.activeRange,m.anchorDate,x,m.customStartDate,m.customEndDate),a=document.getElementById("trend-date-label"),c=document.getElementById("trend-nav-prev"),i=document.getElementById("trend-nav-next");a&&(m.activeRange==="1d"?a.textContent=j(e.startDate):m.activeRange==="1y"&&e.records.length>0&&e.records.length<300?a.textContent=`${j(e.startDate)} \u2013 ${j(e.endDate)} (${e.records.length} days recorded)`:a.textContent=`${j(e.startDate)} \u2013 ${j(e.endDate)}`);const g=U(x),r=et(x);i&&(R(e.endDate)>=g?i.classList.add("opacity-30","cursor-not-allowed","pointer-events-none"):i.classList.remove("opacity-30","cursor-not-allowed","pointer-events-none")),c&&(R(e.startDate)<=r?c.classList.add("opacity-30","cursor-not-allowed","pointer-events-none"):c.classList.remove("opacity-30","cursor-not-allowed","pointer-events-none")),pt(o,e.records,n),bt(o,e.records,e.startDate,e.endDate),mt(o,e.records,n)}function at(o){const n=U(m.activeRollup),x=et(m.activeRollup),f=R(m.anchorDate||n);let s=7;if(m.activeRange==="1d")s=1;else if(m.activeRange==="7d")s=7;else if(m.activeRange==="1m")s=30;else if(m.activeRange==="1y")s=365;else if(m.activeRange==="custom"&&m.customStartDate&&m.customEndDate){const b=R(m.customStartDate),l=R(m.customEndDate);s=Math.max(1,Math.round((l.getTime()-b.getTime())/(1e3*60*60*24)))}const h=new Date(f.getFullYear(),f.getMonth(),f.getDate()+o*s);h>n?m.anchorDate=n:h<x?m.anchorDate=x:m.anchorDate=h,Y()}function ut(o){m.activeRange=o;const n=U(m.activeRollup);if(m.anchorDate=n,o==="custom"){const x=document.getElementById("trend-input-start-date"),f=document.getElementById("trend-input-end-date"),s=new Date(n.getFullYear(),n.getMonth(),n.getDate()-14);x&&!x.value&&(x.value=P(s)),f&&!f.value&&(f.value=P(n)),m.customStartDate=x?x.value:P(s),m.customEndDate=f?f.value:P(n)}Y()}function ht(){const o=document.getElementById("trend-input-start-date"),n=document.getElementById("trend-input-end-date"),x=document.getElementById("trend-custom-error");if(!o||!n)return;const f=o.value,s=n.value;if(!f||!s||isNaN(new Date(f).getTime())||isNaN(new Date(s).getTime())){x&&(x.textContent="Please select both valid start and end dates.",x.classList.remove("hidden"));return}if(f>s){x&&(x.textContent="Start date must be before or equal to end date.",x.classList.remove("hidden"));return}x&&x.classList.add("hidden"),m.activeRange="custom",m.customStartDate=f,m.customEndDate=s,m.anchorDate=R(s),Y()}function pt(o,n,x){const f=document.getElementById("trend-kpi-grid");if(!f)return;if(!n||n.length===0){f.innerHTML=`
       <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
         <div class="text-[10px] uppercase font-semibold text-purple-300/75">Average</div>
-        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">—</div>
+        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">\u2014</div>
         <div class="text-[10px] text-purple-300/50">No data</div>
       </div>
       <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
         <div class="text-[10px] uppercase font-semibold text-purple-300/75">Minimum</div>
-        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">—</div>
+        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">\u2014</div>
         <div class="text-[10px] text-purple-300/50">No data</div>
       </div>
       <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
         <div class="text-[10px] uppercase font-semibold text-purple-300/75">Maximum</div>
-        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">—</div>
+        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">\u2014</div>
         <div class="text-[10px] text-purple-300/50">No data</div>
       </div>
       <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
         <div class="text-[10px] uppercase font-semibold text-purple-300/75">Period Total</div>
-        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">—</div>
+        <div class="text-lg font-bold font-mono text-purple-300/50 tabular-nums my-1">\u2014</div>
         <div class="text-[10px] text-purple-300/50">No data</div>
       </div>
-    `;
-    return;
-  }
-
-  let kpi1 = { label: 'Average', val: '—', sub: '' };
-  let kpi2 = { label: 'Minimum', val: '—', sub: '' };
-  let kpi3 = { label: 'Maximum', val: '—', sub: '' };
-  let kpi4 = { label: 'Current / Total', val: '—', sub: '' };
-
-  if (metric === 'sleep') {
-    const validSleep = records.map(r => toFiniteNumber(r.sleep_seconds, null)).filter(v => v !== null);
-    const validScores = records.map(r => toFiniteNumber(r.sleep_score, null)).filter(v => v !== null);
-    if (validSleep.length > 0) {
-      const hours = validSleep.map(s => s / 3600);
-      const avgH = hours.reduce((s, h) => s + h, 0) / hours.length;
-      const minH = Math.min(...hours);
-      const maxH = Math.max(...hours);
-      kpi1 = { label: 'Avg Duration', val: `${Math.floor(avgH)}h ${Math.round((avgH % 1) * 60)}m`, sub: `${avgH.toFixed(1)} hrs/night` };
-      kpi2 = { label: 'Min Sleep', val: `${Math.floor(minH)}h ${Math.round((minH % 1) * 60)}m`, sub: 'Shortest night' };
-      kpi3 = { label: 'Max Sleep', val: `${Math.floor(maxH)}h ${Math.round((maxH % 1) * 60)}m`, sub: 'Peak recovery' };
-    } else {
-      kpi1 = { label: 'Avg Duration', val: '—', sub: 'No data' };
-      kpi2 = { label: 'Min Sleep', val: '—', sub: 'No data' };
-      kpi3 = { label: 'Max Sleep', val: '—', sub: 'No data' };
-    }
-    if (validScores.length > 0) {
-      const avgScore = Math.round(validScores.reduce((s, v) => s + v, 0) / validScores.length);
-      kpi4 = { label: 'Avg Sleep Score', val: `${avgScore} / 100`, sub: avgScore >= 80 ? 'Optimal' : 'Fair' };
-    } else {
-      kpi4 = { label: 'Avg Sleep Score', val: '—', sub: 'No data' };
-    }
-  } else if (metric === 'hrv') {
-    const vals = records.map(r => toFiniteNumber(r.hrv_last_night_avg ?? r.hrv_ms, null)).filter(v => v !== null && v > 0);
-    if (vals.length > 0) {
-      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-      const variance = vals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / vals.length;
-      const sd = Math.max(3, Math.sqrt(variance));
-      const avg = Math.round(mean);
-      const min = Math.min(...vals);
-      const max = Math.max(...vals);
-      const latest = vals[vals.length - 1];
-      const latestRecWithBaseline = [...records].reverse().find(r => r?.hrv_baseline && typeof r.hrv_baseline.low === 'number' && typeof r.hrv_baseline.high === 'number');
-      const targetSub = latestRecWithBaseline
-        ? `Baseline ${latestRecWithBaseline.hrv_baseline.low}–${latestRecWithBaseline.hrv_baseline.high} ms`
-        : `Target ${Math.round(mean - sd)}–${Math.round(mean + sd)} ms`;
-
-      kpi1 = { label: 'Avg HRV (±SD)', val: `${avg} ± ${Math.round(sd)} ms`, sub: `${vals.length}-day mean & 1 SD` };
-      kpi2 = { label: 'Min HRV', val: `${min} ms`, sub: 'Lowest night' };
-      kpi3 = { label: 'Max HRV', val: `${max} ms`, sub: 'Peak vagal tone' };
-      kpi4 = { label: 'Latest Night', val: `${latest} ms`, sub: targetSub };
-    } else {
-      kpi1 = { label: 'Avg HRV (±SD)', val: '—', sub: 'No HRV data' };
-      kpi2 = { label: 'Min HRV', val: '—', sub: 'No HRV data' };
-      kpi3 = { label: 'Max HRV', val: '—', sub: 'No HRV data' };
-      kpi4 = { label: 'Latest Night', val: '—', sub: 'No HRV data' };
-    }
-  } else if (metric === 'resting_hr') {
-    const vals = records.map(r => toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null)).filter(v => v !== null && v > 0);
-    if (vals.length > 0) {
-      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-      const variance = vals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / vals.length;
-      const sd = Math.max(1.5, Math.sqrt(variance));
-      const avg = Math.round(mean * 10) / 10;
-      const min = Math.min(...vals);
-      const max = Math.max(...vals);
-      const latest = vals[vals.length - 1];
-
-      kpi1 = { label: 'Avg RHR (±SD)', val: `${avg} ± ${sd.toFixed(1)} bpm`, sub: 'Mean & 1 SD zone' };
-      kpi2 = { label: 'Lowest RHR', val: `${min} bpm`, sub: 'Deep rest floor' };
-      kpi3 = { label: 'Highest RHR', val: `${max} bpm`, sub: 'Fatigue / stress peak' };
-      kpi4 = { label: 'Latest Day', val: `${latest} bpm`, sub: `Target ${Math.round(mean - sd)}–${Math.round(mean + sd)} bpm` };
-    } else {
-      kpi1 = { label: 'Avg RHR (±SD)', val: '—', sub: 'No RHR data' };
-      kpi2 = { label: 'Lowest RHR', val: '—', sub: 'No RHR data' };
-      kpi3 = { label: 'Highest RHR', val: '—', sub: 'No RHR data' };
-      kpi4 = { label: 'Latest Day', val: '—', sub: 'No RHR data' };
-    }
-  } else if (metric === 'steps') {
-    const recordedRecs = records.filter(r => !r.unrecorded && toFiniteNumber(r.steps, null) !== null && r.steps > 0);
-    const effectiveRecs = recordedRecs.length > 0 ? recordedRecs : records.filter(r => toFiniteNumber(r.steps, null) !== null);
-    const vals = effectiveRecs.map(r => r.steps);
-    const sum = vals.reduce((s, v) => s + v, 0);
-    const avg = vals.length > 0 ? Math.round(sum / vals.length) : 0;
-    const min = vals.length > 0 ? Math.min(...vals) : 0;
-    const max = vals.length > 0 ? Math.max(...vals) : 0;
-    const daysMet = vals.filter(v => v >= 10000).length;
-    const pctMet = vals.length > 0 ? Math.round((daysMet / vals.length) * 100) : 0;
-
-    kpi1 = { label: 'Daily Average', val: vals.length > 0 ? `${avg.toLocaleString()} steps` : '—', sub: `${pctMet}% of goal met (${effectiveRecs.length} recorded days)` };
-    kpi2 = { label: 'Min Day', val: vals.length > 0 ? `${min.toLocaleString()} steps` : '—', sub: 'Active recovery day' };
-    kpi3 = { label: 'Max Day', val: vals.length > 0 ? `${max.toLocaleString()} steps` : '—', sub: 'Long hike / excursion' };
-    kpi4 = { label: 'Period Total', val: vals.length > 0 ? `${sum.toLocaleString()} steps` : '—', sub: `${effectiveRecs.length} days accumulated` };
-  } else if (metric === 'body_battery') {
-    const highs = records.map(r => toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, null))).filter(v => v !== null);
-    const lows = records.map(r => toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, null))).filter(v => v !== null);
-    const charged = records.map(r => toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, null))).filter(v => v !== null);
-    const drained = records.map(r => toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, null))).filter(v => v !== null);
-
-    const avgHigh = highs.length > 0 ? Math.round(highs.reduce((s, v) => s + v, 0) / highs.length) : null;
-    const avgLow = lows.length > 0 ? Math.round(lows.reduce((s, v) => s + v, 0) / lows.length) : null;
-    const avgChg = charged.length > 0 ? Math.round(charged.reduce((s, v) => s + v, 0) / charged.length) : null;
-    const avgDrn = drained.length > 0 ? Math.round(drained.reduce((s, v) => s + v, 0) / drained.length) : null;
-
-    kpi1 = { label: 'Avg Peak Battery', val: avgHigh !== null ? `${avgHigh} pts` : '—', sub: avgHigh !== null ? `Morning charge (${highs.length}d)` : 'No data' };
-    kpi2 = { label: 'Avg Low Battery', val: avgLow !== null ? `${avgLow} pts` : '—', sub: avgLow !== null ? 'Bedtime reserve level' : 'No data' };
-    kpi3 = { label: 'Avg Charged', val: avgChg !== null ? `+${avgChg} pts` : '—', sub: avgChg !== null ? 'Nightly replenishment' : 'No data' };
-    kpi4 = { label: 'Avg Drained', val: avgDrn !== null ? `-${avgDrn} pts` : '—', sub: avgDrn !== null ? 'Daily expenditure' : 'No data' };
-  } else if (metric === 'stress') {
-    const validRecs = records.filter(r => toFiniteNumber(r.stress_level, null) !== null);
-    if (validRecs.length > 0) {
-      const vals = validRecs.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_level, 0))));
-      const avg = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
-      const avgMeta = getStressZoneMeta(avg);
-
-      const zoneDurs = validRecs.map(r => getStressZoneDurations(r));
-      const sumRestLow = zoneDurs.reduce((s, d) => s + d.restSec + d.lowSec, 0);
-      const sumTotal = zoneDurs.reduce((s, d) => s + d.totalSec, 0);
-      const restLowShare = sumTotal > 0
-        ? Math.round((sumRestLow / sumTotal) * 100)
-        : Math.round(zoneDurs.reduce((s, d) => s + d.restLowSharePct, 0) / zoneDurs.length);
-
-      const peaks = validRecs.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_max, toFiniteNumber(r.stress_level, 0)))));
-      const maxPeak = Math.max(...peaks);
-      const totalHighSec = zoneDurs.reduce((s, d) => s + d.highSec, 0);
-
-      const autonomicStatus = avg <= 25 ? 'Recovered' : (avg <= 55 && restLowShare >= 50 ? 'Balanced' : 'Stressed');
-
-      kpi1 = { label: 'Overall Avg Stress', val: `${avg} pts`, sub: `${avgMeta.label} zone` };
-      kpi2 = { label: 'Rest / Low Share', val: `${restLowShare}%`, sub: 'Recovery & low stress time' };
-      kpi3 = { label: 'High Stress Peak', val: `${maxPeak} pts`, sub: totalHighSec > 0 ? `High zone: ${formatStressDuration(totalHighSec)}` : 'Peak recorded load' };
-      kpi4 = { label: 'Autonomic Status', val: autonomicStatus, sub: `${validRecs.length} day${validRecs.length === 1 ? '' : 's'} analyzed` };
-    } else {
-      kpi1 = { label: 'Overall Avg Stress', val: '—', sub: 'No data' };
-      kpi2 = { label: 'Rest / Low Share', val: '—', sub: 'No data' };
-      kpi3 = { label: 'High Stress Peak', val: '—', sub: 'No data' };
-      kpi4 = { label: 'Autonomic Status', val: '—', sub: 'No data' };
-    }
-  } else if (metric === 'intensity_minutes') {
-    const mod = records.map(r => r.intensity_minutes_moderate || 0);
-    const vig = records.map(r => r.intensity_minutes_vigorous || 0);
-    const totalMod = mod.reduce((s, v) => s + v, 0);
-    const totalVig = vig.reduce((s, v) => s + v, 0);
-    const totalWeighted = totalMod + totalVig * 2;
-    const weeklyRate = Math.round((totalWeighted / Math.max(1, records.length)) * 7);
-
-    kpi1 = { label: 'Total Active', val: `${totalWeighted} min`, sub: 'Moderate + (Vigorous × 2)' };
-    kpi2 = { label: 'Moderate', val: `${totalMod} min`, sub: 'Zone 2 / brisk pace' };
-    kpi3 = { label: 'Vigorous', val: `${totalVig} min`, sub: 'Zone 4+ high intensity' };
-    kpi4 = { label: 'Weekly Pace', val: `${weeklyRate} min/wk`, sub: `${Math.round((weeklyRate / 150) * 100)}% of WHO 150m goal` };
-  } else if (metric === 'calories') {
-    const validTotals = [];
-    const validActive = [];
-    for (const r of records) {
-      const act = toFiniteNumber(r.active_calories, null);
-      const bmr = toFiniteNumber(r.bmr_calories, null);
-      const tot = toFiniteNumber(r.daily_calories, (act !== null && bmr !== null) ? (act + bmr) : null);
-      if (act !== null) validActive.push(act);
-      if (tot !== null) validTotals.push(tot);
-    }
-    if (validTotals.length > 0) {
-      const sumTotal = validTotals.reduce((s, v) => s + v, 0);
-      const avgTotal = Math.round(sumTotal / validTotals.length);
-      const avgActive = validActive.length > 0 ? Math.round(validActive.reduce((s, v) => s + v, 0) / validActive.length) : 0;
-      const maxBurn = Math.max(...validTotals);
-      kpi1 = { label: 'Avg Daily Burn', val: `${avgTotal.toLocaleString()} kcal`, sub: 'Active + BMR calories' };
-      kpi2 = { label: 'Avg Active Burn', val: `${avgActive.toLocaleString()} kcal`, sub: 'Workout expenditure' };
-      kpi3 = { label: 'Max Single Day', val: `${maxBurn.toLocaleString()} kcal`, sub: 'Peak calorie burn' };
-      kpi4 = { label: 'Period Total', val: `${sumTotal.toLocaleString()} kcal`, sub: `${validTotals.length} days burned` };
-    } else {
-      kpi1 = { label: 'Avg Daily Burn', val: '—', sub: 'No data' };
-      kpi2 = { label: 'Avg Active Burn', val: '—', sub: 'No data' };
-      kpi3 = { label: 'Max Single Day', val: '—', sub: 'No data' };
-      kpi4 = { label: 'Period Total', val: '—', sub: 'No data' };
-    }
-  } else if (metric === 'training_readiness') {
-    const scores = records.map(r => toFiniteNumber(r.training_readiness_score, null)).filter(v => v !== null);
-    if (scores.length > 0) {
-      const latestScore = scores[scores.length - 1];
-      const avgScore = Math.round(scores.reduce((s, v) => s + v, 0) / scores.length);
-      const maxScore = Math.max(...scores);
-      const primeDays = scores.filter(v => v >= 80).length;
-      const latestRec = [...records].reverse().find(r => toFiniteNumber(r.training_readiness_score, null) !== null);
-      const latestLevel = latestRec?.training_readiness_level || (latestScore >= 80 ? 'Prime' : latestScore >= 60 ? 'High' : 'Moderate');
-
-      kpi1 = { label: 'Latest Readiness', val: `${latestScore} / 100`, sub: `Status: ${latestLevel}` };
-      kpi2 = { label: 'Period Average', val: `${avgScore} pts`, sub: `Across ${scores.length} days` };
-      kpi3 = { label: 'Peak Readiness', val: `${maxScore} pts`, sub: 'Highest recovery day' };
-      kpi4 = { label: 'Prime Days', val: `${primeDays}`, sub: 'Score ≥ 80 (Prime)' };
-    } else {
-      kpi1 = { label: 'Latest Readiness', val: '—', sub: 'No data' };
-      kpi2 = { label: 'Period Average', val: '—', sub: 'No data' };
-      kpi3 = { label: 'Peak Readiness', val: '—', sub: 'No data' };
-      kpi4 = { label: 'Prime Days', val: '—', sub: 'No data' };
-    }
-  } else if (metric === 'vo2max') {
-    const { run, cyc } = resolveVo2MaxSeries(records, state.activeRollup);
-    const latestRun = run[run.length - 1];
-    const latestCyc = cyc[cyc.length - 1];
-    const peakRun = Math.max(...run);
-    const deltaRun = (latestRun - run[0]).toFixed(1);
-
-    kpi1 = { label: 'Running VO2 Max', val: `${latestRun.toFixed(1)}`, sub: 'mL/kg/min' };
-    kpi2 = { label: 'Cycling VO2 Max', val: `${latestCyc.toFixed(1)}`, sub: 'mL/kg/min' };
-    kpi3 = { label: 'Peak Running', val: `${peakRun.toFixed(1)}`, sub: 'Period high' };
-    kpi4 = { label: 'Period Trend', val: `${Number(deltaRun) >= 0 ? '+' : ''}${deltaRun}`, sub: 'Change over window' };
-  } else if (metric === 'spo2') {
-    const avgArr = records.map(r => toFiniteNumber(r.spo2_avg, null)).filter(v => v !== null);
-    const lowArr = records.map(r => toFiniteNumber(r.spo2_low, null)).filter(v => v !== null);
-    if (avgArr.length > 0) {
-      const latestAvg = avgArr[avgArr.length - 1];
-      const periodAvg = (avgArr.reduce((s, v) => s + v, 0) / avgArr.length).toFixed(1);
-      const minLow = lowArr.length > 0 ? Math.min(...lowArr).toFixed(1) : '—';
-      const healthyDays = avgArr.filter(v => v >= 95).length;
-
-      kpi1 = { label: 'Latest SpO2 Avg', val: `${latestAvg.toFixed(1)}%`, sub: 'Daily blood oxygen' };
-      kpi2 = { label: 'Period Average', val: `${periodAvg}%`, sub: `${avgArr.length}-day mean` };
-      kpi3 = { label: 'Lowest Reading', val: minLow !== '—' ? `${minLow}%` : '—', sub: 'Overnight minimum' };
-      kpi4 = { label: 'Normal Days', val: `${healthyDays} / ${avgArr.length}`, sub: 'SpO2 ≥ 95%' };
-    } else {
-      kpi1 = { label: 'Latest SpO2 Avg', val: '—', sub: 'No data' };
-      kpi2 = { label: 'Period Average', val: '—', sub: 'No data' };
-      kpi3 = { label: 'Lowest Reading', val: '—', sub: 'No data' };
-      kpi4 = { label: 'Normal Days', val: '—', sub: 'No data' };
-    }
-  } else if (metric === 'respiration') {
-    const wake = records.map(r => toFiniteNumber(r.respiration_waking, null)).filter(v => v !== null);
-    const sleep = records.map(r => toFiniteNumber(r.respiration_sleep, null)).filter(v => v !== null);
-    const avgWake = wake.length > 0 ? (wake.reduce((s, v) => s + v, 0) / wake.length).toFixed(1) : null;
-    const avgSleep = sleep.length > 0 ? (sleep.reduce((s, v) => s + v, 0) / sleep.length).toFixed(1) : null;
-    const latestWake = wake.length > 0 ? wake[wake.length - 1].toFixed(1) : null;
-    const latestSleep = sleep.length > 0 ? sleep[sleep.length - 1].toFixed(1) : null;
-
-    kpi1 = { label: 'Latest Waking', val: latestWake ? `${latestWake} brpm` : '—', sub: 'Daytime breaths/min' };
-    kpi2 = { label: 'Latest Sleep', val: latestSleep ? `${latestSleep} brpm` : '—', sub: 'Overnight breaths/min' };
-    kpi3 = { label: 'Avg Waking', val: avgWake ? `${avgWake} brpm` : '—', sub: wake.length > 0 ? `${wake.length}-day mean` : 'No data' };
-    kpi4 = { label: 'Avg Sleep', val: avgSleep ? `${avgSleep} brpm` : '—', sub: sleep.length > 0 ? `${sleep.length}-day mean` : 'No data' };
-  } else if (metric === 'floors') {
-    const asc = records.map(r => toFiniteNumber(r.floors_ascended, null)).filter(v => v !== null);
-    const desc = records.map(r => toFiniteNumber(r.floors_descended, null)).filter(v => v !== null);
-    if (asc.length > 0 || desc.length > 0) {
-      const totalAsc = asc.reduce((s, v) => s + v, 0);
-      const totalDesc = desc.reduce((s, v) => s + v, 0);
-      const avgAsc = asc.length > 0 ? Math.round(totalAsc / asc.length) : 0;
-      const maxAsc = asc.length > 0 ? Math.max(...asc) : 0;
-
-      kpi1 = { label: 'Total Ascended', val: `${totalAsc} floors`, sub: `${asc.length}-day total` };
-      kpi2 = { label: 'Daily Avg', val: `${avgAsc} floors`, sub: 'Average climbed/day' };
-      kpi3 = { label: 'Peak Day', val: `${maxAsc} floors`, sub: 'Single-day high' };
-      kpi4 = { label: 'Total Descended', val: `${totalDesc} floors`, sub: 'Downhill / stairs' };
-    } else {
-      kpi1 = { label: 'Total Ascended', val: '—', sub: 'No data' };
-      kpi2 = { label: 'Daily Avg', val: '—', sub: 'No data' };
-      kpi3 = { label: 'Peak Day', val: '—', sub: 'No data' };
-      kpi4 = { label: 'Total Descended', val: '—', sub: 'No data' };
-    }
-  } else if (metric === 'hydration') {
-    const ml = records.map(r => toFiniteNumber(r.hydration_ml, null)).filter(v => v !== null);
-    if (ml.length > 0) {
-      const goal = records[records.length - 1]?.hydration_goal_ml || 2500;
-      const avgMl = Math.round(ml.reduce((s, v) => s + v, 0) / ml.length);
-      const totalL = (ml.reduce((s, v) => s + v, 0) / 1000).toFixed(1);
-      const goalMet = ml.filter(v => v >= goal).length;
-      const latestL = (ml[ml.length - 1] / 1000).toFixed(2);
-
-      kpi1 = { label: 'Latest Intake', val: `${latestL} L`, sub: `Goal: ${(goal / 1000).toFixed(1)} L` };
-      kpi2 = { label: 'Daily Average', val: `${(avgMl / 1000).toFixed(2)} L`, sub: `${avgMl} mL/day` };
-      kpi3 = { label: 'Goal Met', val: `${goalMet} / ${ml.length}`, sub: 'Days ≥ target' };
-      kpi4 = { label: 'Period Total', val: `${totalL} L`, sub: `${ml.length} days tracked` };
-    } else {
-      kpi1 = { label: 'Latest Intake', val: '—', sub: 'No data' };
-      kpi2 = { label: 'Daily Average', val: '—', sub: 'No data' };
-      kpi3 = { label: 'Goal Met', val: '—', sub: 'No data' };
-      kpi4 = { label: 'Period Total', val: '—', sub: 'No data' };
-    }
-  } else if (metric === 'weight') {
-    const validWt = records.filter(r => toFiniteNumber(r.weight_kg, null) !== null);
-    if (validWt.length > 0) {
-      const wt = validWt.map(r => r.weight_kg);
-      const latestRec = validWt[validWt.length - 1];
-      const latestWt = wt[wt.length - 1];
-      const deltaWt = (latestWt - wt[0]).toFixed(1);
-      const latestBf = toFiniteNumber(latestRec.body_fat_pct, null);
-      const latestBmi = toFiniteNumber(latestRec.bmi, null);
-      const latestMuscle = toFiniteNumber(latestRec.muscle_mass_kg, null);
-
-      kpi1 = { label: 'Latest Weight', val: `${latestWt.toFixed(1)} kg`, sub: `${Number(deltaWt) >= 0 ? '+' : ''}${deltaWt} kg in period` };
-      kpi2 = { label: 'Body Fat', val: latestBf !== null ? `${latestBf.toFixed(1)}%` : '—', sub: latestBf !== null ? 'Recorded composition' : 'No data' };
-      kpi3 = { label: 'BMI', val: latestBmi !== null ? `${latestBmi.toFixed(1)}` : '—', sub: latestBmi !== null ? 'Body Mass Index' : 'No data' };
-      kpi4 = { label: 'Muscle Mass', val: latestMuscle !== null ? `${latestMuscle.toFixed(1)} kg` : '—', sub: latestMuscle !== null ? 'Lean skeletal mass' : 'No data' };
-    } else {
-      kpi1 = { label: 'Latest Weight', val: '—', sub: 'No data' };
-      kpi2 = { label: 'Body Fat', val: '—', sub: 'No data' };
-      kpi3 = { label: 'BMI', val: '—', sub: 'No data' };
-      kpi4 = { label: 'Muscle Mass', val: '—', sub: 'No data' };
-    }
-  } else if (metric === 'thresholds') {
-    const ftpVals = records.map(r => toFiniteNumber(r.cycling_ftp ?? r.ftp, null)).filter(v => v !== null);
-    const vo2Vals = records.map(r => toFiniteNumber(r.vo2max, null)).filter(v => v !== null);
-    const lthrVals = records.map(r => toFiniteNumber(r.lthr, null)).filter(v => v !== null);
-
-    const latestFtp = ftpVals.length > 0 ? ftpVals[ftpVals.length - 1] : null;
-    const latestVo2 = vo2Vals.length > 0 ? vo2Vals[vo2Vals.length - 1] : null;
-    const latestLthr = lthrVals.length > 0 ? lthrVals[lthrVals.length - 1] : null;
-    const ftpDelta = ftpVals.length > 1 ? latestFtp - ftpVals[0] : 0;
-
-    const allDaily = getSortedDailyRecords(state.activeRollup);
-    const latestWeightRec = [...allDaily].reverse().find(d => toFiniteNumber(d?.weight_kg, null) !== null);
-    const realWeight = toFiniteNumber(latestWeightRec?.weight_kg ?? state.activeRollup?.wellness?.current?.weight_kg, null);
-
-    kpi1 = { label: 'Cycling FTP', val: latestFtp !== null ? `${latestFtp} W` : '—', sub: latestFtp !== null ? `${ftpDelta >= 0 ? '+' : ''}${ftpDelta} W progression` : 'No cycling power data' };
-    kpi2 = { label: 'VO2max', val: latestVo2 !== null ? `${latestVo2} ml/kg` : '—', sub: latestVo2 !== null ? 'Aerobic engine ceiling' : 'No VO2max data' };
-    kpi3 = { label: 'Lactate Threshold', val: latestLthr !== null ? `${latestLthr} bpm` : '—', sub: latestLthr !== null ? 'Anaerobic tipping point' : 'No LTHR data' };
-    kpi4 = {
-      label: 'Power-to-Weight',
-      val: (latestFtp !== null && realWeight !== null && realWeight > 0) ? `${(latestFtp / realWeight).toFixed(2)} W/kg` : '—',
-      sub: (latestFtp !== null && realWeight !== null && realWeight > 0) ? `Based on ${realWeight.toFixed(1)} kg weight` : 'Sync weight & cycling FTP'
-    };
-  }
-
-  grid.innerHTML = `
+    `;return}let s={label:"Average",val:"\u2014",sub:""},h={label:"Minimum",val:"\u2014",sub:""},b={label:"Maximum",val:"\u2014",sub:""},l={label:"Current / Total",val:"\u2014",sub:""};if(o==="sleep"){const t=n.map(a=>p(a.sleep_seconds,null)).filter(a=>a!==null),e=n.map(a=>p(a.sleep_score,null)).filter(a=>a!==null);if(t.length>0){const a=t.map(r=>r/3600),c=a.reduce((r,d)=>r+d,0)/a.length,i=Math.min(...a),g=Math.max(...a);s={label:"Avg Duration",val:`${Math.floor(c)}h ${Math.round(c%1*60)}m`,sub:`${c.toFixed(1)} hrs/night`},h={label:"Min Sleep",val:`${Math.floor(i)}h ${Math.round(i%1*60)}m`,sub:"Shortest night"},b={label:"Max Sleep",val:`${Math.floor(g)}h ${Math.round(g%1*60)}m`,sub:"Peak recovery"}}else s={label:"Avg Duration",val:"\u2014",sub:"No data"},h={label:"Min Sleep",val:"\u2014",sub:"No data"},b={label:"Max Sleep",val:"\u2014",sub:"No data"};if(e.length>0){const a=Math.round(e.reduce((c,i)=>c+i,0)/e.length);l={label:"Avg Sleep Score",val:`${a} / 100`,sub:a>=80?"Optimal":"Fair"}}else l={label:"Avg Sleep Score",val:"\u2014",sub:"No data"}}else if(o==="hrv"){const t=n.map(e=>p(e.hrv_last_night_avg??e.hrv_ms,null)).filter(e=>e!==null&&e>0);if(t.length>0){const e=t.reduce((M,w)=>M+w,0)/t.length,a=t.reduce((M,w)=>M+Math.pow(w-e,2),0)/t.length,c=Math.max(3,Math.sqrt(a)),i=Math.round(e),g=Math.min(...t),r=Math.max(...t),d=t[t.length-1],u=[...n].reverse().find(M=>M?.hrv_baseline&&typeof M.hrv_baseline.low=="number"&&typeof M.hrv_baseline.high=="number"),y=u?`Baseline ${u.hrv_baseline.low}\u2013${u.hrv_baseline.high} ms`:`Target ${Math.round(e-c)}\u2013${Math.round(e+c)} ms`;s={label:"Avg HRV (\xB1SD)",val:`${i} \xB1 ${Math.round(c)} ms`,sub:`${t.length}-day mean & 1 SD`},h={label:"Min HRV",val:`${g} ms`,sub:"Lowest night"},b={label:"Max HRV",val:`${r} ms`,sub:"Peak vagal tone"},l={label:"Latest Night",val:`${d} ms`,sub:y}}else s={label:"Avg HRV (\xB1SD)",val:"\u2014",sub:"No HRV data"},h={label:"Min HRV",val:"\u2014",sub:"No HRV data"},b={label:"Max HRV",val:"\u2014",sub:"No HRV data"},l={label:"Latest Night",val:"\u2014",sub:"No HRV data"}}else if(o==="resting_hr"){const t=n.map(e=>p(e.resting_hr??e.resting_heart_rate,null)).filter(e=>e!==null&&e>0);if(t.length>0){const e=t.reduce((u,y)=>u+y,0)/t.length,a=t.reduce((u,y)=>u+Math.pow(y-e,2),0)/t.length,c=Math.max(1.5,Math.sqrt(a)),i=Math.round(e*10)/10,g=Math.min(...t),r=Math.max(...t),d=t[t.length-1];s={label:"Avg RHR (\xB1SD)",val:`${i} \xB1 ${c.toFixed(1)} bpm`,sub:"Mean & 1 SD zone"},h={label:"Lowest RHR",val:`${g} bpm`,sub:"Deep rest floor"},b={label:"Highest RHR",val:`${r} bpm`,sub:"Fatigue / stress peak"},l={label:"Latest Day",val:`${d} bpm`,sub:`Target ${Math.round(e-c)}\u2013${Math.round(e+c)} bpm`}}else s={label:"Avg RHR (\xB1SD)",val:"\u2014",sub:"No RHR data"},h={label:"Lowest RHR",val:"\u2014",sub:"No RHR data"},b={label:"Highest RHR",val:"\u2014",sub:"No RHR data"},l={label:"Latest Day",val:"\u2014",sub:"No RHR data"}}else if(o==="steps"){const t=n.filter(y=>!y.unrecorded&&p(y.steps,null)!==null&&y.steps>0),e=t.length>0?t:n.filter(y=>p(y.steps,null)!==null),a=e.map(y=>y.steps),c=a.reduce((y,M)=>y+M,0),i=a.length>0?Math.round(c/a.length):0,g=a.length>0?Math.min(...a):0,r=a.length>0?Math.max(...a):0,d=a.filter(y=>y>=1e4).length,u=a.length>0?Math.round(d/a.length*100):0;s={label:"Daily Average",val:a.length>0?`${i.toLocaleString()} steps`:"\u2014",sub:`${u}% of goal met (${e.length} recorded days)`},h={label:"Min Day",val:a.length>0?`${g.toLocaleString()} steps`:"\u2014",sub:"Active recovery day"},b={label:"Max Day",val:a.length>0?`${r.toLocaleString()} steps`:"\u2014",sub:"Long hike / excursion"},l={label:"Period Total",val:a.length>0?`${c.toLocaleString()} steps`:"\u2014",sub:`${e.length} days accumulated`}}else if(o==="body_battery"){const t=n.map(u=>p(u.body_battery_high,p(u.body_battery,null))).filter(u=>u!==null),e=n.map(u=>p(u.body_battery_low,p(u.body_battery,null))).filter(u=>u!==null),a=n.map(u=>p(u.body_battery_charged,p(u.charged,null))).filter(u=>u!==null),c=n.map(u=>p(u.body_battery_drained,p(u.drained,null))).filter(u=>u!==null),i=t.length>0?Math.round(t.reduce((u,y)=>u+y,0)/t.length):null,g=e.length>0?Math.round(e.reduce((u,y)=>u+y,0)/e.length):null,r=a.length>0?Math.round(a.reduce((u,y)=>u+y,0)/a.length):null,d=c.length>0?Math.round(c.reduce((u,y)=>u+y,0)/c.length):null;s={label:"Avg Peak Battery",val:i!==null?`${i} pts`:"\u2014",sub:i!==null?`Morning charge (${t.length}d)`:"No data"},h={label:"Avg Low Battery",val:g!==null?`${g} pts`:"\u2014",sub:g!==null?"Bedtime reserve level":"No data"},b={label:"Avg Charged",val:r!==null?`+${r} pts`:"\u2014",sub:r!==null?"Nightly replenishment":"No data"},l={label:"Avg Drained",val:d!==null?`-${d} pts`:"\u2014",sub:d!==null?"Daily expenditure":"No data"}}else if(o==="stress"){const t=n.filter(e=>p(e.stress_level,null)!==null);if(t.length>0){const e=t.map($=>Math.max(0,Math.min(100,p($.stress_level,0)))),a=Math.round(e.reduce(($,v)=>$+v,0)/e.length),c=W(a),i=t.map($=>K($)),g=i.reduce(($,v)=>$+v.restSec+v.lowSec,0),r=i.reduce(($,v)=>$+v.totalSec,0),d=r>0?Math.round(g/r*100):Math.round(i.reduce(($,v)=>$+v.restLowSharePct,0)/i.length),u=t.map($=>Math.max(0,Math.min(100,p($.stress_max,p($.stress_level,0))))),y=Math.max(...u),M=i.reduce(($,v)=>$+v.highSec,0),w=a<=25?"Recovered":a<=55&&d>=50?"Balanced":"Stressed";s={label:"Overall Avg Stress",val:`${a} pts`,sub:`${c.label} zone`},h={label:"Rest / Low Share",val:`${d}%`,sub:"Recovery & low stress time"},b={label:"High Stress Peak",val:`${y} pts`,sub:M>0?`High zone: ${H(M)}`:"Peak recorded load"},l={label:"Autonomic Status",val:w,sub:`${t.length} day${t.length===1?"":"s"} analyzed`}}else s={label:"Overall Avg Stress",val:"\u2014",sub:"No data"},h={label:"Rest / Low Share",val:"\u2014",sub:"No data"},b={label:"High Stress Peak",val:"\u2014",sub:"No data"},l={label:"Autonomic Status",val:"\u2014",sub:"No data"}}else if(o==="intensity_minutes"){const t=n.map(r=>r.intensity_minutes_moderate||0),e=n.map(r=>r.intensity_minutes_vigorous||0),a=t.reduce((r,d)=>r+d,0),c=e.reduce((r,d)=>r+d,0),i=a+c*2,g=Math.round(i/Math.max(1,n.length)*7);s={label:"Total Active",val:`${i} min`,sub:"Moderate + (Vigorous \xD7 2)"},h={label:"Moderate",val:`${a} min`,sub:"Zone 2 / brisk pace"},b={label:"Vigorous",val:`${c} min`,sub:"Zone 4+ high intensity"},l={label:"Weekly Pace",val:`${g} min/wk`,sub:`${Math.round(g/150*100)}% of WHO 150m goal`}}else if(o==="calories"){const t=[],e=[];for(const a of n){const c=p(a.active_calories,null),i=p(a.bmr_calories,null),g=p(a.daily_calories,c!==null&&i!==null?c+i:null);c!==null&&e.push(c),g!==null&&t.push(g)}if(t.length>0){const a=t.reduce((r,d)=>r+d,0),c=Math.round(a/t.length),i=e.length>0?Math.round(e.reduce((r,d)=>r+d,0)/e.length):0,g=Math.max(...t);s={label:"Avg Daily Burn",val:`${c.toLocaleString()} kcal`,sub:"Active + BMR calories"},h={label:"Avg Active Burn",val:`${i.toLocaleString()} kcal`,sub:"Workout expenditure"},b={label:"Max Single Day",val:`${g.toLocaleString()} kcal`,sub:"Peak calorie burn"},l={label:"Period Total",val:`${a.toLocaleString()} kcal`,sub:`${t.length} days burned`}}else s={label:"Avg Daily Burn",val:"\u2014",sub:"No data"},h={label:"Avg Active Burn",val:"\u2014",sub:"No data"},b={label:"Max Single Day",val:"\u2014",sub:"No data"},l={label:"Period Total",val:"\u2014",sub:"No data"}}else if(o==="training_readiness"){const t=n.map(e=>p(e.training_readiness_score,null)).filter(e=>e!==null);if(t.length>0){const e=t[t.length-1],a=Math.round(t.reduce((d,u)=>d+u,0)/t.length),c=Math.max(...t),i=t.filter(d=>d>=80).length,r=[...n].reverse().find(d=>p(d.training_readiness_score,null)!==null)?.training_readiness_level||(e>=80?"Prime":e>=60?"High":"Moderate");s={label:"Latest Readiness",val:`${e} / 100`,sub:`Status: ${r}`},h={label:"Period Average",val:`${a} pts`,sub:`Across ${t.length} days`},b={label:"Peak Readiness",val:`${c} pts`,sub:"Highest recovery day"},l={label:"Prime Days",val:`${i}`,sub:"Score \u2265 80 (Prime)"}}else s={label:"Latest Readiness",val:"\u2014",sub:"No data"},h={label:"Period Average",val:"\u2014",sub:"No data"},b={label:"Peak Readiness",val:"\u2014",sub:"No data"},l={label:"Prime Days",val:"\u2014",sub:"No data"}}else if(o==="vo2max"){const{run:t,cyc:e}=J(n,m.activeRollup),a=t[t.length-1],c=e[e.length-1],i=Math.max(...t),g=(a-t[0]).toFixed(1);s={label:"Running VO2 Max",val:`${a.toFixed(1)}`,sub:"mL/kg/min"},h={label:"Cycling VO2 Max",val:`${c.toFixed(1)}`,sub:"mL/kg/min"},b={label:"Peak Running",val:`${i.toFixed(1)}`,sub:"Period high"},l={label:"Period Trend",val:`${Number(g)>=0?"+":""}${g}`,sub:"Change over window"}}else if(o==="spo2"){const t=n.map(a=>p(a.spo2_avg,null)).filter(a=>a!==null),e=n.map(a=>p(a.spo2_low,null)).filter(a=>a!==null);if(t.length>0){const a=t[t.length-1],c=(t.reduce((r,d)=>r+d,0)/t.length).toFixed(1),i=e.length>0?Math.min(...e).toFixed(1):"\u2014",g=t.filter(r=>r>=95).length;s={label:"Latest SpO2 Avg",val:`${a.toFixed(1)}%`,sub:"Daily blood oxygen"},h={label:"Period Average",val:`${c}%`,sub:`${t.length}-day mean`},b={label:"Lowest Reading",val:i!=="\u2014"?`${i}%`:"\u2014",sub:"Overnight minimum"},l={label:"Normal Days",val:`${g} / ${t.length}`,sub:"SpO2 \u2265 95%"}}else s={label:"Latest SpO2 Avg",val:"\u2014",sub:"No data"},h={label:"Period Average",val:"\u2014",sub:"No data"},b={label:"Lowest Reading",val:"\u2014",sub:"No data"},l={label:"Normal Days",val:"\u2014",sub:"No data"}}else if(o==="respiration"){const t=n.map(r=>p(r.respiration_waking,null)).filter(r=>r!==null),e=n.map(r=>p(r.respiration_sleep,null)).filter(r=>r!==null),a=t.length>0?(t.reduce((r,d)=>r+d,0)/t.length).toFixed(1):null,c=e.length>0?(e.reduce((r,d)=>r+d,0)/e.length).toFixed(1):null,i=t.length>0?t[t.length-1].toFixed(1):null,g=e.length>0?e[e.length-1].toFixed(1):null;s={label:"Latest Waking",val:i?`${i} brpm`:"\u2014",sub:"Daytime breaths/min"},h={label:"Latest Sleep",val:g?`${g} brpm`:"\u2014",sub:"Overnight breaths/min"},b={label:"Avg Waking",val:a?`${a} brpm`:"\u2014",sub:t.length>0?`${t.length}-day mean`:"No data"},l={label:"Avg Sleep",val:c?`${c} brpm`:"\u2014",sub:e.length>0?`${e.length}-day mean`:"No data"}}else if(o==="floors"){const t=n.map(a=>p(a.floors_ascended,null)).filter(a=>a!==null),e=n.map(a=>p(a.floors_descended,null)).filter(a=>a!==null);if(t.length>0||e.length>0){const a=t.reduce((r,d)=>r+d,0),c=e.reduce((r,d)=>r+d,0),i=t.length>0?Math.round(a/t.length):0,g=t.length>0?Math.max(...t):0;s={label:"Total Ascended",val:`${a} floors`,sub:`${t.length}-day total`},h={label:"Daily Avg",val:`${i} floors`,sub:"Average climbed/day"},b={label:"Peak Day",val:`${g} floors`,sub:"Single-day high"},l={label:"Total Descended",val:`${c} floors`,sub:"Downhill / stairs"}}else s={label:"Total Ascended",val:"\u2014",sub:"No data"},h={label:"Daily Avg",val:"\u2014",sub:"No data"},b={label:"Peak Day",val:"\u2014",sub:"No data"},l={label:"Total Descended",val:"\u2014",sub:"No data"}}else if(o==="hydration"){const t=n.map(e=>p(e.hydration_ml,null)).filter(e=>e!==null);if(t.length>0){const e=n[n.length-1]?.hydration_goal_ml||2500,a=Math.round(t.reduce((r,d)=>r+d,0)/t.length),c=(t.reduce((r,d)=>r+d,0)/1e3).toFixed(1),i=t.filter(r=>r>=e).length;s={label:"Latest Intake",val:`${(t[t.length-1]/1e3).toFixed(2)} L`,sub:`Goal: ${(e/1e3).toFixed(1)} L`},h={label:"Daily Average",val:`${(a/1e3).toFixed(2)} L`,sub:`${a} mL/day`},b={label:"Goal Met",val:`${i} / ${t.length}`,sub:"Days \u2265 target"},l={label:"Period Total",val:`${c} L`,sub:`${t.length} days tracked`}}else s={label:"Latest Intake",val:"\u2014",sub:"No data"},h={label:"Daily Average",val:"\u2014",sub:"No data"},b={label:"Goal Met",val:"\u2014",sub:"No data"},l={label:"Period Total",val:"\u2014",sub:"No data"}}else if(o==="weight"){const t=n.filter(e=>p(e.weight_kg,null)!==null);if(t.length>0){const e=t.map(u=>u.weight_kg),a=t[t.length-1],c=e[e.length-1],i=(c-e[0]).toFixed(1),g=p(a.body_fat_pct,null),r=p(a.bmi,null),d=p(a.muscle_mass_kg,null);s={label:"Latest Weight",val:`${c.toFixed(1)} kg`,sub:`${Number(i)>=0?"+":""}${i} kg in period`},h={label:"Body Fat",val:g!==null?`${g.toFixed(1)}%`:"\u2014",sub:g!==null?"Recorded composition":"No data"},b={label:"BMI",val:r!==null?`${r.toFixed(1)}`:"\u2014",sub:r!==null?"Body Mass Index":"No data"},l={label:"Muscle Mass",val:d!==null?`${d.toFixed(1)} kg`:"\u2014",sub:d!==null?"Lean skeletal mass":"No data"}}else s={label:"Latest Weight",val:"\u2014",sub:"No data"},h={label:"Body Fat",val:"\u2014",sub:"No data"},b={label:"BMI",val:"\u2014",sub:"No data"},l={label:"Muscle Mass",val:"\u2014",sub:"No data"}}else if(o==="thresholds"){const t=n.map(M=>p(M.cycling_ftp??M.ftp,null)).filter(M=>M!==null),e=n.map(M=>p(M.vo2max,null)).filter(M=>M!==null),a=n.map(M=>p(M.lthr,null)).filter(M=>M!==null),c=t.length>0?t[t.length-1]:null,i=e.length>0?e[e.length-1]:null,g=a.length>0?a[a.length-1]:null,r=t.length>1?c-t[0]:0,u=[...O(m.activeRollup)].reverse().find(M=>p(M?.weight_kg,null)!==null),y=p(u?.weight_kg??m.activeRollup?.wellness?.current?.weight_kg,null);s={label:"Cycling FTP",val:c!==null?`${c} W`:"\u2014",sub:c!==null?`${r>=0?"+":""}${r} W progression`:"No cycling power data"},h={label:"VO2max",val:i!==null?`${i} ml/kg`:"\u2014",sub:i!==null?"Aerobic engine ceiling":"No VO2max data"},b={label:"Lactate Threshold",val:g!==null?`${g} bpm`:"\u2014",sub:g!==null?"Anaerobic tipping point":"No LTHR data"},l={label:"Power-to-Weight",val:c!==null&&y!==null&&y>0?`${(c/y).toFixed(2)} W/kg`:"\u2014",sub:c!==null&&y!==null&&y>0?`Based on ${y.toFixed(1)} kg weight`:"Sync weight & cycling FTP"}}f.innerHTML=`
     <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
-      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${kpi1.label}</div>
-      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${kpi1.val}</div>
-      <div class="text-[10px] text-purple-300/60 font-mono">${kpi1.sub}</div>
+      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${s.label}</div>
+      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${s.val}</div>
+      <div class="text-[10px] text-purple-300/60 font-mono">${s.sub}</div>
     </div>
     <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
-      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${kpi2.label}</div>
-      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${kpi2.val}</div>
-      <div class="text-[10px] text-purple-300/60 font-mono">${kpi2.sub}</div>
+      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${h.label}</div>
+      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${h.val}</div>
+      <div class="text-[10px] text-purple-300/60 font-mono">${h.sub}</div>
     </div>
     <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
-      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${kpi3.label}</div>
-      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${kpi3.val}</div>
-      <div class="text-[10px] text-purple-300/60 font-mono">${kpi3.sub}</div>
+      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${b.label}</div>
+      <div class="text-base sm:text-lg font-bold font-mono text-purple-50 tabular-nums my-1">${b.val}</div>
+      <div class="text-[10px] text-purple-300/60 font-mono">${b.sub}</div>
     </div>
     <div class="bg-[#1b132e] border border-[#2d2147] rounded-xl p-3 flex flex-col justify-between">
-      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${kpi4.label}</div>
-      <div class="text-base sm:text-lg font-bold font-mono text-emerald-400 tabular-nums my-1">${kpi4.val}</div>
-      <div class="text-[10px] text-purple-300/60 font-mono">${kpi4.sub}</div>
+      <div class="text-[10px] uppercase font-semibold text-purple-300/75">${l.label}</div>
+      <div class="text-base sm:text-lg font-bold font-mono text-emerald-400 tabular-nums my-1">${l.val}</div>
+      <div class="text-[10px] text-purple-300/60 font-mono">${l.sub}</div>
     </div>
-  `;
-}
-
-/**
- * Computes rolling Mean ± 1 Standard Deviation baseline band for HRV & Resting HR.
- */
-function computeRollingBaselineBand(records, valueGetter, minSd = 3, windowSize = 14) {
-  const allDaily = getSortedDailyRecords(state.activeRollup);
-  const source = allDaily.length >= records.length ? allDaily : records;
-  const dateIndexMap = new Map();
-  source.forEach((r, idx) => {
-    if (r?.date) dateIndexMap.set(r.date, idx);
-  });
-
-  const periodVals = records.map(valueGetter).filter(v => typeof v === 'number' && !isNaN(v));
-  const hasPeriodVals = periodVals.length > 0;
-  const periodMean = hasPeriodVals ? periodVals.reduce((s, v) => s + v, 0) / periodVals.length : null;
-  const periodVar = hasPeriodVals
-    ? periodVals.reduce((s, v) => s + Math.pow(v - periodMean, 2), 0) / periodVals.length
-    : 0;
-  const periodSd = hasPeriodVals ? Math.max(minSd, Math.sqrt(periodVar)) : 0;
-
-  const yMinSeries = [];
-  const yMaxSeries = [];
-  const meanSeries = [];
-
-  records.forEach((rec, i) => {
-    const srcIdx = rec?.date && dateIndexMap.has(rec.date) ? dateIndexMap.get(rec.date) : -1;
-    let windowVals = [];
-    if (srcIdx >= 0) {
-      const start = Math.max(0, srcIdx - windowSize + 1);
-      windowVals = source.slice(start, srcIdx + 1).map(valueGetter).filter(v => typeof v === 'number' && !isNaN(v));
-    } else {
-      const start = Math.max(0, i - windowSize + 1);
-      windowVals = records.slice(start, i + 1).map(valueGetter).filter(v => typeof v === 'number' && !isNaN(v));
-    }
-
-    if (windowVals.length < 3) {
-      if (periodMean === null) {
-        meanSeries.push(null);
-        yMinSeries.push(null);
-        yMaxSeries.push(null);
-      } else {
-        meanSeries.push(periodMean);
-        yMinSeries.push(periodMean - periodSd);
-        yMaxSeries.push(periodMean + periodSd);
-      }
-    } else {
-      const m = windowVals.reduce((s, v) => s + v, 0) / windowVals.length;
-      const v = windowVals.reduce((s, val) => s + Math.pow(val - m, 2), 0) / windowVals.length;
-      const sd = Math.max(minSd, Math.sqrt(v));
-      meanSeries.push(m);
-      yMinSeries.push(m - sd);
-      yMaxSeries.push(m + sd);
-    }
-  });
-
-  return { yMinSeries, yMaxSeries, meanSeries, periodMean: periodMean ?? 0, periodSd };
-}
-
-export function resolveVo2MaxSeries(records, rollup) {
-  if (!Array.isArray(records) || records.length === 0) {
-    return { run: [], cyc: [], resolvedRecords: [] };
-  }
-
-  const thresholdMap = new Map();
-  const rawTrends = rollup?.physiological?.threshold_trends;
-  if (Array.isArray(rawTrends)) {
-    for (const t of rawTrends) {
-      if (t?.date && typeof t.vo2max === 'number' && !isNaN(t.vo2max)) {
-        thresholdMap.set(t.date, t.vo2max);
-      }
-    }
-  }
-
-  const ctlMap = new Map();
-  const tlDaily = rollup?.training_load?.daily;
-  if (Array.isArray(tlDaily)) {
-    for (const d of tlDaily) {
-      if (d?.date && typeof d.ctl === 'number' && !isNaN(d.ctl)) {
-        ctlMap.set(d.date, d.ctl);
-      }
-    }
-  }
-
-  const interpolateSeries = (rawVals, fallbackBase) => {
-    const n = rawVals.length;
-    const result = new Array(n).fill(null);
-    const anchors = [];
-    for (let i = 0; i < n; i++) {
-      if (typeof rawVals[i] === 'number' && !isNaN(rawVals[i])) {
-        anchors.push(i);
-        result[i] = rawVals[i];
-      }
-    }
-
-    if (anchors.length === 0) {
-      const base = typeof fallbackBase === 'number' && !isNaN(fallbackBase) ? fallbackBase : 50.0;
-      const firstCtl = ctlMap.get(records[0]?.date);
-      for (let i = 0; i < n; i++) {
-        const ctl = ctlMap.get(records[i]?.date);
-        const delta = (typeof ctl === 'number' && typeof firstCtl === 'number') ? (ctl - firstCtl) * 0.08 : 0;
-        result[i] = Math.round(Math.min(90, Math.max(20, base + delta)) * 10) / 10;
-      }
-      return result;
-    }
-
-    const firstIdx = anchors[0];
-    const firstVal = result[firstIdx];
-    const firstCtl = ctlMap.get(records[firstIdx]?.date);
-    for (let i = 0; i < firstIdx; i++) {
-      const ctl = ctlMap.get(records[i]?.date);
-      const delta = (typeof ctl === 'number' && typeof firstCtl === 'number') ? (ctl - firstCtl) * 0.08 : 0;
-      result[i] = Math.round(Math.min(90, Math.max(20, firstVal + delta)) * 10) / 10;
-    }
-
-    for (let a = 0; a < anchors.length - 1; a++) {
-      const i0 = anchors[a];
-      const i1 = anchors[a + 1];
-      const v0 = result[i0];
-      const v1 = result[i1];
-      const span = i1 - i0;
-      for (let i = i0 + 1; i < i1; i++) {
-        const frac = (i - i0) / span;
-        result[i] = Math.round((v0 + (v1 - v0) * frac) * 10) / 10;
-      }
-    }
-
-    const lastIdx = anchors[anchors.length - 1];
-    const lastVal = result[lastIdx];
-    const lastCtl = ctlMap.get(records[lastIdx]?.date);
-    for (let i = lastIdx + 1; i < n; i++) {
-      const ctl = ctlMap.get(records[i]?.date);
-      const delta = (typeof ctl === 'number' && typeof lastCtl === 'number') ? (ctl - lastCtl) * 0.08 : 0;
-      result[i] = Math.round(Math.min(90, Math.max(20, lastVal + delta)) * 10) / 10;
-    }
-
-    return result.map(v => Math.round(v * 10) / 10);
-  };
-
-  const rawRun = records.map(r => {
-    if (typeof r.vo2max_running === 'number' && !isNaN(r.vo2max_running)) return r.vo2max_running;
-    if (r?.date && thresholdMap.has(r.date)) return thresholdMap.get(r.date);
-    return null;
-  });
-  const athleteVo2 = rollup?.athlete?.vo2max;
-  const run = interpolateSeries(rawRun, athleteVo2);
-
-  const rawCyc = records.map(r => (typeof r.vo2max_cycling === 'number' && !isNaN(r.vo2max_cycling)) ? r.vo2max_cycling : null);
-  const hasCycAnchor = rawCyc.some(v => v !== null);
-  const cyc = hasCycAnchor
-    ? interpolateSeries(rawCyc, typeof athleteVo2 === 'number' ? athleteVo2 - 2.0 : 48.0)
-    : run.map(v => Math.round(Math.max(20, v - 2.0) * 10) / 10);
-
-  const resolvedRecords = records.map((r, i) => ({
-    ...r,
-    vo2max_running: run[i],
-    vo2max_cycling: cyc[i]
-  }));
-
-  return { run, cyc, resolvedRecords };
-}
-
-export function renderVo2MaxChartConfig(labels, records, rollup) {
-  const { run, cyc } = resolveVo2MaxSeries(records, rollup);
-  const allVals = [...run, ...cyc].filter(v => typeof v === 'number' && !isNaN(v));
-  const minVal = allVals.length ? Math.min(...allVals) : 45;
-  const maxVal = allVals.length ? Math.max(...allVals) : 60;
-  return {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Running VO2 Max', data: run, borderColor: '#a78bfa', tension: 0.25 },
-        { label: 'Cycling VO2 Max', data: cyc, borderColor: '#38bdf8', tension: 0.25 }
-      ]
-    },
-    options: {
-      scales: {
-        y: {
-          min: Math.max(20, Math.floor(minVal - 2.0)),
-          max: Math.ceil(maxVal + 2.0)
-        }
-      }
-    }
-  };
-}
-
-/**
- * Builds datasets and renders canvas chart for selected metric.
- */
-function renderMetricChart(metric, records, startDate, endDate) {
-  const canvas = document.getElementById('metric-trend-chart');
-  const emptyNotice = document.getElementById('trend-chart-empty');
-  if (!canvas) return;
-
-  if (state.chartInstance) {
-    try {
-      state.chartInstance.destroy();
-    } catch {}
-    state.chartInstance = null;
-  }
-
-  if (!records || records.length === 0) {
-    if (emptyNotice) emptyNotice.classList.remove('hidden');
-    const ctx = canvas.getContext('2d');
-    const w = typeof canvas.width === 'number' && !isNaN(canvas.width) ? canvas.width : (canvas.clientWidth || 600);
-    const h = typeof canvas.height === 'number' && !isNaN(canvas.height) ? canvas.height : (canvas.clientHeight || 300);
-    if (ctx) ctx.clearRect(0, 0, w, h);
-    return;
-  }
-
-  if (emptyNotice) emptyNotice.classList.add('hidden');
-
-  const labels = records.map(r => r.date || 'Day');
-  let chartConfig = null;
-
-  if (metric === 'sleep') {
-    const deep = records.map(r => r.sleep_deep_seconds != null ? Math.round((r.sleep_deep_seconds / 3600) * 10) / 10 : null);
-    const light = records.map(r => r.sleep_light_seconds != null ? Math.round((r.sleep_light_seconds / 3600) * 10) / 10 : null);
-    const rem = records.map(r => r.sleep_rem_seconds != null ? Math.round((r.sleep_rem_seconds / 3600) * 10) / 10 : null);
-    const awake = records.map(r => r.sleep_awake_seconds != null ? Math.round((r.sleep_awake_seconds / 3600) * 10) / 10 : null);
-    const scores = records.map(r => toFiniteNumber(r.sleep_score, null) !== null ? Math.round((r.sleep_score / 10) * 10) / 10 : null);
-
-    chartConfig = {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Deep (h)', data: deep, backgroundColor: '#6366f1' },
-          { label: 'Light (h)', data: light, backgroundColor: '#38bdf8' },
-          { label: 'REM (h)', data: rem, backgroundColor: '#a855f7' },
-          { label: 'Awake (h)', data: awake, backgroundColor: '#f43f5e' },
-          { label: 'Score (/10)', data: scores, type: 'line', borderColor: '#fbbf24', borderWidth: 2 }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: true },
-          y: { stacked: true, min: 0, max: 12 }
-        },
-        annotations: [
-          { type: 'line', y: 8.0, color: 'rgba(52, 211, 153, 0.6)', borderDash: [4, 4], label: '8h Target' }
-        ]
-      }
-    };
-  } else if (metric === 'hrv') {
-    const nightly = records.map(r => {
-      const v = toFiniteNumber(r.hrv_last_night_avg ?? r.hrv_ms, null);
-      return v !== null && v > 0 ? v : null;
-    });
-    const weekly = records.map(r => {
-      const v = toFiniteNumber(r.hrv_weekly_avg ?? r.hrv_7d_avg, null);
-      return v !== null && v > 0 ? v : null;
-    });
-    const hasGarminBaseline = records.some(r => r?.hrv_baseline && typeof r.hrv_baseline.low === 'number' && typeof r.hrv_baseline.high === 'number');
-    const rollingBand = computeRollingBaselineBand(records, r => {
-      const v = toFiniteNumber(r.hrv_last_night_avg ?? r.hrv_ms, null);
-      return v !== null && v > 0 ? v : null;
-    }, 3, 14);
-    const yMinSeries = hasGarminBaseline
-      ? records.map(r => typeof r?.hrv_baseline?.low === 'number' ? r.hrv_baseline.low : null)
-      : rollingBand.yMinSeries;
-    const yMaxSeries = hasGarminBaseline
-      ? records.map(r => typeof r?.hrv_baseline?.high === 'number' ? r.hrv_baseline.high : null)
-      : rollingBand.yMaxSeries;
-    const meanSeries = hasGarminBaseline
-      ? records.map((r, i) => (yMinSeries[i] != null && yMaxSeries[i] != null) ? (yMinSeries[i] + yMaxSeries[i]) / 2 : null)
-      : rollingBand.meanSeries;
-
-    const pointColors = nightly.map((v, i) => {
-      if (v === null) return '#10b981';
-      const lo = yMinSeries[i];
-      const hi = yMaxSeries[i];
-      if (lo != null && hi != null) {
-        return v >= lo && v <= hi ? '#10b981' : '#f59e0b';
-      }
-      return '#10b981';
-    });
-
-    const allHrvVals = [...nightly, ...weekly, ...yMinSeries, ...yMaxSeries].filter(v => typeof v === 'number' && !isNaN(v));
-    const yMinHrv = allHrvVals.length ? Math.max(0, Math.floor(Math.min(...allHrvVals) - 8)) : 0;
-    const yMaxHrv = allHrvVals.length ? Math.ceil(Math.max(...allHrvVals) + 8) : 120;
-    const latestBl = [...records].reverse().find(r => r?.hrv_baseline && typeof r.hrv_baseline.low === 'number');
-    const bandLabel = latestBl
-      ? `Garmin Baseline (${latestBl.hrv_baseline.low}–${latestBl.hrv_baseline.high} ms)`
-      : `Baseline Zone (Avg ${Math.round(rollingBand.periodMean)} ± ${Math.round(rollingBand.periodSd)} ms)`;
-
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Nightly HRV (ms)', data: nightly, borderColor: '#10b981', borderWidth: 2, fill: false, pointColors, pointRadius: 3.5 },
-          { label: '7D Rolling Avg', data: weekly, borderColor: '#c084fc', borderWidth: 1.5, pointRadius: 1.5 }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: false },
-          y: { stacked: false, beginAtZero: false, min: yMinHrv, max: yMaxHrv, integerTicks: true }
-        },
-        annotations: allHrvVals.length > 0 ? [
-          {
-            type: 'band',
-            yMinSeries,
-            yMaxSeries,
-            meanSeries,
-            color: 'rgba(168, 85, 247, 0.16)',
-            borderColor: 'rgba(192, 132, 252, 0.25)',
-            meanColor: 'rgba(216, 180, 254, 0.65)',
-            label: bandLabel
-          }
-        ] : []
-      }
-    };
-  } else if (metric === 'resting_hr') {
-    const rhr = records.map(r => {
-      const v = toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null);
-      return v !== null && v > 0 ? v : null;
-    });
-    const rhrAvg = records.map(r => {
-      const v = toFiniteNumber(r.resting_hr_7d_avg, null);
-      return v !== null && v > 0 ? v : null;
-    });
-    const band = computeRollingBaselineBand(records, r => {
-      const v = toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null);
-      return v !== null && v > 0 ? v : null;
-    }, 1.5, 14);
-    const pointColors = rhr.map((v, i) =>
-      v !== null && band.yMinSeries[i] != null && band.yMaxSeries[i] != null && v >= band.yMinSeries[i] && v <= band.yMaxSeries[i]
-        ? '#10b981'
-        : '#f43f5e'
-    );
-    const allRhrVals = [...rhr, ...rhrAvg, ...band.yMinSeries, ...band.yMaxSeries].filter(v => typeof v === 'number' && !isNaN(v));
-    const yMinRhr = allRhrVals.length ? Math.max(25, Math.floor(Math.min(...allRhrVals) - 3)) : 35;
-    const yMaxRhr = allRhrVals.length ? Math.ceil(Math.max(...allRhrVals) + 3) : 80;
-
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Daily RHR (bpm)', data: rhr, borderColor: '#f43f5e', borderWidth: 2, fill: false, pointColors, pointRadius: 3.5 },
-          { label: '7D Avg (bpm)', data: rhrAvg, borderColor: '#c084fc', borderWidth: 1.5, pointRadius: 1.5 }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: false },
-          y: { stacked: false, beginAtZero: false, min: yMinRhr, max: yMaxRhr, integerTicks: true }
-        },
-        annotations: allRhrVals.length > 0 ? [
-          {
-            type: 'band',
-            yMinSeries: band.yMinSeries,
-            yMaxSeries: band.yMaxSeries,
-            meanSeries: band.meanSeries,
-            color: 'rgba(168, 85, 247, 0.16)',
-            borderColor: 'rgba(192, 132, 252, 0.25)',
-            meanColor: 'rgba(216, 180, 254, 0.65)',
-            label: `Target Zone (Avg ${band.periodMean.toFixed(1)} ± ${band.periodSd.toFixed(1)} bpm)`
-          }
-        ] : []
-      }
-    };
-  } else if (metric === 'steps') {
-    const stepsData = records.map(r => toFiniteNumber(r.steps, null));
-
-    chartConfig = {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Daily Steps',
-            data: stepsData,
-            backgroundColor: '#10b981'
-          }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: false },
-          y: { stacked: false }
-        },
-        annotations: [
-          { type: 'line', y: 10000, color: '#10b981', borderDash: [4, 4], label: 'Goal: 10,000' }
-        ]
-      }
-    };
-  } else if (metric === 'body_battery') {
-    const isSingleDay = state.activeRange === '1d' && records.length === 1;
-    const intradayPts = isSingleDay ? extractIntradayBodyBattery(records[0]) : [];
-
-    if (isSingleDay && intradayPts.length > 1) {
-      chartConfig = {
-        type: 'line',
-        data: {
-          labels: intradayPts.map(p => p.timeLabel),
-          datasets: [
-            {
-              label: 'Body Battery (pts)',
-              data: intradayPts.map(p => p.value),
-              borderColor: '#38bdf8',
-              borderWidth: 2,
-              fill: true,
-              pointRadius: intradayPts.length > 48 ? 1.5 : 2.5
-            }
-          ]
-        },
-        options: {
-          scales: {
-            x: { stacked: false },
-            y: { stacked: false, min: 0, max: 100 }
-          }
-        }
-      };
-    } else {
-      const highs = [];
-      const lows = [];
-      const charged = [];
-      const drained = [];
-      const daySamples = [];
-      const tooltipTitles = [];
-      const tooltipLines = [];
-      const maxPtsPerDay = (state.activeRange === '1y' || records.length > 90) ? 4 : (records.length > 14 ? 8 : 24);
-      let hasAnyIntraday = false;
-
-      for (let idx = 0; idx < records.length; idx++) {
-        const r = records[idx];
-        const rawHi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, null));
-        const rawLo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, null));
-
-        if (rawHi === null && rawLo === null) {
-          highs.push(null);
-          lows.push(null);
-          charged.push(null);
-          drained.push(null);
-          daySamples.push(null);
-          tooltipTitles.push(formatShortWeekdayDate(r.date));
-          tooltipLines.push([{ text: 'No Body Battery data recorded', color: '#a79bc2' }]);
-          continue;
-        }
-
-        const effHi = rawHi !== null ? rawHi : rawLo;
-        const effLo = rawLo !== null ? rawLo : rawHi;
-        const hi = Math.max(0, Math.min(100, Math.round(Math.max(effHi, effLo))));
-        const lo = Math.max(0, Math.min(100, Math.round(Math.min(effHi, effLo))));
-        const rawChg = toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, null));
-        const rawDrn = toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, null));
-        const chg = rawChg !== null ? Math.max(0, Math.round(rawChg)) : null;
-        const drn = rawDrn !== null ? Math.max(0, Math.round(rawDrn)) : null;
-
-        highs.push(hi);
-        lows.push(lo);
-        charged.push(chg);
-        drained.push(drn);
-        tooltipTitles.push(formatShortWeekdayDate(r.date));
-        const lines = [
-          { text: `Daily High: ${hi} pts`, color: '#38bdf8' },
-          { text: `Daily Low: ${lo} pts`, color: '#c4b5fd' }
-        ];
-        if (chg !== null || drn !== null) {
-          lines.push({
-            text: `Charged: ${chg !== null ? `+${chg}` : '—'} pts | Drained: ${drn !== null ? `-${drn}` : '—'} pts`,
-            color: '#a79bc2'
-          });
-        }
-        tooltipLines.push(lines);
-
-        if (!isSingleDay) {
-          const pts = extractIntradayBodyBattery(r);
-          if (pts.length >= 2) {
-            hasAnyIntraday = true;
-            const mapped = pts.map(p => {
-              let frac = 0.5;
-              const m = typeof p.timeLabel === 'string' ? p.timeLabel.match(/^(\d{1,2}):(\d{2})/) : null;
-              if (m) {
-                frac = (Number(m[1]) * 3600 + Number(m[2]) * 60) / 86400;
-              } else if (Number.isFinite(p.tsMs)) {
-                frac = (((p.tsMs % 86400000) + 86400000) % 86400000) / 86400000;
-              }
-              return { frac: Math.max(0, Math.min(1, frac)), value: p.value };
-            }).sort((a, b) => a.frac - b.frac);
-
-            if (mapped.length > maxPtsPerDay) {
-              let minIdx = 0;
-              let maxIdx = 0;
-              for (let k = 1; k < mapped.length; k++) {
-                if (mapped[k].value < mapped[minIdx].value) minIdx = k;
-                if (mapped[k].value > mapped[maxIdx].value) maxIdx = k;
-              }
-              const keep = new Set([0, minIdx, maxIdx, mapped.length - 1]);
-              const step = (mapped.length - 1) / Math.max(1, maxPtsPerDay - 1);
-              for (let s = 0; s < maxPtsPerDay; s++) {
-                keep.add(Math.round(s * step));
-              }
-              const downsampled = Array.from(keep)
-                .sort((a, b) => a - b)
-                .map(k => mapped[k]);
-              daySamples.push(downsampled);
-            } else {
-              daySamples.push(mapped);
-            }
-          } else {
-            daySamples.push(null);
-          }
-        }
-      }
-
-      const bbLegendItems = [
-        { label: 'Daily High', color: '#38bdf8', fillColor: '#38bdf8', shape: 'dot', symbol: 'dot' },
-        { label: 'Daily Low', color: '#c4b5fd', fillColor: '#0b0714', strokeColor: '#c4b5fd', shape: 'ring', symbol: 'ring' }
-      ];
-      if (!isSingleDay && hasAnyIntraday) {
-        bbLegendItems.push({ label: 'Hourly Trend', color: '#a855f7', strokeColor: '#a855f7', shape: 'line', symbol: 'line' });
-      }
-
-      chartConfig = {
-        type: 'rangeBar',
-        data: {
-          labels,
-          datasets: [
-            {
-              label: 'Body Battery',
-              data: highs,
-              highData: highs,
-              lowData: lows,
-              chargedData: charged,
-              drainedData: drained,
-              tooltipTitles,
-              tooltipLines,
-              showCapLabels: isSingleDay,
-              showValueLabels: isSingleDay,
-              highColor: '#38bdf8',
-              lowFillColor: '#0b0714',
-              lowColor: '#c4b5fd',
-              lowStrokeColor: '#c4b5fd',
-              pillarTopColor: 'rgba(168, 85, 247, 0.28)',
-              pillarBottomColor: '#2d2147',
-              ...(isSingleDay || !hasAnyIntraday ? {} : {
-                backgroundCurve: {
-                  enabled: true,
-                  label: 'Hourly Trend',
-                  strokeTopColor: '#38bdf8',
-                  strokeBottomColor: '#a855f7',
-                  fallbackColor: '#a855f7',
-                  fillTopColor: 'rgba(56, 189, 248, 0.16)',
-                  fillBottomColor: 'rgba(168, 85, 247, 0.02)',
-                  lineWidth: 2.2,
-                  tension: 0.2,
-                  daySamples
-                }
-              }),
-              legendItems: bbLegendItems
-            }
-          ]
-        },
-        options: {
-          scales: {
-            x: { stacked: false },
-            y: { stacked: false, min: 0, max: 100 }
-          }
-        }
-      };
-    }
-  } else if (metric === 'stress') {
-    const stressAnnotations = [
-      { type: 'band', yMin: 0, yMax: 25, color: 'rgba(56, 189, 248, 0.08)', label: 'Rest (0-25)', labelColor: '#38bdf8' },
-      { type: 'band', yMin: 25, yMax: 50, color: 'rgba(251, 191, 36, 0.08)', label: 'Low (26-50)', labelColor: '#fbbf24' },
-      { type: 'band', yMin: 50, yMax: 75, color: 'rgba(249, 115, 22, 0.08)', label: 'Med (51-75)', labelColor: '#f97316' },
-      { type: 'band', yMin: 75, yMax: 100, color: 'rgba(244, 63, 94, 0.08)', label: 'High (76-100)', labelColor: '#f43f5e' }
-    ];
-    const stressLegendItems = [
-      { label: 'Rest (0-25)', color: '#38bdf8', shape: 'circle' },
-      { label: 'Low (26-50)', color: '#fbbf24', shape: 'circle' },
-      { label: 'Med (51-75)', color: '#f97316', shape: 'circle' },
-      { label: 'High (76-100)', color: '#f43f5e', shape: 'circle' }
-    ];
-
-    const intradayPts = state.activeRange === '1d' && records.length === 1
-      ? extractIntradayStress(records[0])
-      : [];
-
-    if (intradayPts.length > 1) {
-      const pointColors = intradayPts.map(p => getStressZoneMeta(p.value).color);
-      chartConfig = {
-        type: 'line',
-        data: {
-          labels: intradayPts.map(p => p.timeLabel),
-          datasets: [
-            {
-              label: 'Intraday Stress',
-              data: intradayPts.map(p => p.value),
-              borderColor: '#a855f7',
-              backgroundColor: 'rgba(168, 85, 247, 0.12)',
-              pointColors,
-              borderWidth: 2,
-              fill: true,
-              tooltipTitles: intradayPts.map(p => `${records[0].date} • ${p.timeLabel}`),
-              tooltipLines: intradayPts.map(p => [`Stress: ${p.value} pts (${getStressZoneMeta(p.value).label})`]),
-              legendItems: stressLegendItems
-            }
-          ]
-        },
-        options: {
-          scales: {
-            x: { stacked: false },
-            y: { stacked: false, min: 0, max: 100 }
-          },
-          annotations: stressAnnotations
-        }
-      };
-    } else {
-      const stressVals = records.map(r => {
-        const v = toFiniteNumber(r.stress_level, null);
-        return v !== null ? Math.max(0, Math.min(100, v)) : null;
-      });
-      const barColors = stressVals.map(v => v !== null ? getStressZoneMeta(v).color : 'transparent');
-      const tooltipTitles = records.map(r => formatShortWeekdayDate(r.date));
-      const tooltipLines = records.map((r, i) => {
-        const sc = stressVals[i];
-        if (sc === null) return ['No stress data recorded'];
-        const meta = getStressZoneMeta(sc);
-        const durs = getStressZoneDurations(r);
-        return [
-          `Avg Stress: ${sc} pts (${meta.label})`,
-          `Rest: ${formatStressDuration(durs.restSec)} | Low: ${formatStressDuration(durs.lowSec)}`,
-          `Med: ${formatStressDuration(durs.medSec)} | High: ${formatStressDuration(durs.highSec)}`
-        ];
-      });
-
-      chartConfig = {
-        type: 'bar',
-        data: {
-          labels,
-          datasets: [
-            {
-              label: 'Daily Stress Score',
-              data: stressVals,
-              backgroundColor: barColors,
-              barColors,
-              tooltipTitles,
-              tooltipLines,
-              legendItems: stressLegendItems
-            }
-          ]
-        },
-        options: {
-          scales: {
-            x: { stacked: false },
-            y: { stacked: false, min: 0, max: 100 }
-          },
-          annotations: stressAnnotations
-        }
-      };
-    }
-  } else if (metric === 'intensity_minutes') {
-    const moderate = records.map(r => r.intensity_minutes_moderate || 0);
-    const vigorous = records.map(r => r.intensity_minutes_vigorous || 0);
-
-    chartConfig = {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Moderate (min)', data: moderate, backgroundColor: '#38bdf8' },
-          { label: 'Vigorous (min)', data: vigorous, backgroundColor: '#6366f1' }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: true },
-          y: { stacked: true }
-        },
-        annotations: [
-          { type: 'line', y: 150, color: '#38bdf8', borderDash: [4, 4], label: 'WHO Weekly 150m' }
-        ]
-      }
-    };
-  } else if (metric === 'calories') {
-    const active = records.map(r => toFiniteNumber(r.active_calories, null));
-    const bmr = records.map(r => toFiniteNumber(r.bmr_calories, null));
-
-    chartConfig = {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Active (kcal)', data: active, backgroundColor: '#f97316' },
-          { label: 'BMR (kcal)', data: bmr, backgroundColor: '#3f3f46' }
-        ]
-      },
-      options: {
-        scales: {
-          x: { stacked: true },
-          y: { stacked: true }
-        }
-      }
-    };
-  } else if (metric === 'training_readiness') {
-    const scores = records.map(r => toFiniteNumber(r.training_readiness_score, null));
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Readiness Score', data: scores, borderColor: '#22d3ee', backgroundColor: 'rgba(34, 211, 238, 0.15)', fill: true, tension: 0.3 }
-        ]
-      },
-      options: { scales: { y: { min: 0, max: 100 } } }
-    };
-  } else if (metric === 'vo2max') {
-    chartConfig = renderVo2MaxChartConfig(labels, records, state.activeRollup);
-  } else if (metric === 'spo2') {
-    const avgArr = records.map(r => toFiniteNumber(r.spo2_avg, null));
-    const lowArr = records.map(r => toFiniteNumber(r.spo2_low, null));
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'SpO2 Avg (%)', data: avgArr, borderColor: '#38bdf8', backgroundColor: 'rgba(56, 189, 248, 0.12)', fill: true, tension: 0.25 },
-          { label: 'SpO2 Low (%)', data: lowArr, borderColor: '#f43f5e', borderDash: [4, 4], tension: 0.25 }
-        ]
-      },
-      options: { scales: { y: { min: 85, max: 100 } } }
-    };
-  } else if (metric === 'respiration') {
-    const wake = records.map(r => toFiniteNumber(r.respiration_waking, null));
-    const sleep = records.map(r => toFiniteNumber(r.respiration_sleep, null));
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Waking (brpm)', data: wake, borderColor: '#2dd4bf', tension: 0.25 },
-          { label: 'Sleep (brpm)', data: sleep, borderColor: '#818cf8', tension: 0.25 }
-        ]
-      },
-      options: { scales: { y: { beginAtZero: false } } }
-    };
-  } else if (metric === 'floors') {
-    const asc = records.map(r => toFiniteNumber(r.floors_ascended, null));
-    const desc = records.map(r => toFiniteNumber(r.floors_descended, null));
-    chartConfig = {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Ascended', data: asc, backgroundColor: '#f59e0b' },
-          { label: 'Descended', data: desc, backgroundColor: '#52525b' }
-        ]
-      }
-    };
-  } else if (metric === 'hydration') {
-    const liters = records.map(r => {
-      const ml = toFiniteNumber(r.hydration_ml, null);
-      return ml !== null ? Number((ml / 1000).toFixed(2)) : null;
-    });
-    chartConfig = {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Intake (L)', data: liters, backgroundColor: '#3b82f6' }
-        ]
-      }
-    };
-  } else if (metric === 'weight') {
-    const wt = records.map(r => toFiniteNumber(r.weight_kg, null));
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Weight (kg)', data: wt, borderColor: '#e879f9', backgroundColor: 'rgba(232, 121, 249, 0.12)', fill: true, tension: 0.25 }
-        ]
-      },
-      options: { scales: { y: { beginAtZero: false } } }
-    };
-  } else if (metric === 'thresholds') {
-    const ftp = records.map(r => toFiniteNumber(r.cycling_ftp ?? r.ftp, null));
-    const lthr = records.map(r => toFiniteNumber(r.lthr, null));
-    const vo2 = records.map(r => toFiniteNumber(r.vo2max, null));
-    const datasets = [];
-    if (ftp.some(v => v !== null)) datasets.push({ label: 'Cycling FTP (Watts)', data: ftp, borderColor: '#a78bfa', borderWidth: 2 });
-    if (lthr.some(v => v !== null)) datasets.push({ label: 'LTHR (bpm)', data: lthr, borderColor: '#f43f5e', borderWidth: 2 });
-    if (vo2.some(v => v !== null)) datasets.push({ label: 'VO2max (ml/kg)', data: vo2, borderColor: '#34d399', borderWidth: 2 });
-
-    chartConfig = {
-      type: 'line',
-      data: {
-        labels,
-        datasets
-      },
-      options: {
-        scales: {
-          x: { stacked: false },
-          y: { stacked: false, beginAtZero: false }
-        }
-      }
-    };
-  }
-
-  if (chartConfig) {
-    try {
-      state.chartInstance = new Chart(canvas, chartConfig);
-    } catch (e) {
-      console.warn('Failed to render trend chart:', e);
-    }
-  }
-}
-
-/**
- * Renders chronological telemetry breakdown table.
- */
-function renderBreakdownTable(metric, records, cfg) {
-  const countEl = document.getElementById('trend-table-count');
-  const theadRow = document.getElementById('trend-table-header-row');
-  const tbody = document.getElementById('trend-table-body');
-
-  if (countEl) {
-    countEl.textContent = `${records ? records.length : 0} records`;
-  }
-
-  if (!tbody || !theadRow) return;
-
-  if (!records || records.length === 0) {
-    theadRow.innerHTML = `<th class="py-2.5 px-3">Date</th><th class="py-2.5 px-3">Value</th><th class="py-2.5 px-3">Status</th>`;
-    tbody.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-zinc-500 font-sans text-xs">No records found for the selected period.</td></tr>`;
-    return;
-  }
-
-  // Reverse chronological for table display (newest first)
-  const displayRecords = [...records].reverse();
-
-  if (metric === 'sleep') {
-    theadRow.innerHTML = `
+  `}function nt(o,n,x=3,f=14){const s=O(m.activeRollup),h=s.length>=o.length?s:o,b=new Map;h.forEach((d,u)=>{d?.date&&b.set(d.date,u)});const l=o.map(n).filter(d=>typeof d=="number"&&!isNaN(d)),t=l.length>0,e=t?l.reduce((d,u)=>d+u,0)/l.length:null,a=t?l.reduce((d,u)=>d+Math.pow(u-e,2),0)/l.length:0,c=t?Math.max(x,Math.sqrt(a)):0,i=[],g=[],r=[];return o.forEach((d,u)=>{const y=d?.date&&b.has(d.date)?b.get(d.date):-1;let M=[];if(y>=0){const w=Math.max(0,y-f+1);M=h.slice(w,y+1).map(n).filter($=>typeof $=="number"&&!isNaN($))}else{const w=Math.max(0,u-f+1);M=o.slice(w,u+1).map(n).filter($=>typeof $=="number"&&!isNaN($))}if(M.length<3)e===null?(r.push(null),i.push(null),g.push(null)):(r.push(e),i.push(e-c),g.push(e+c));else{const w=M.reduce((_,S)=>_+S,0)/M.length,$=M.reduce((_,S)=>_+Math.pow(S-w,2),0)/M.length,v=Math.max(x,Math.sqrt($));r.push(w),i.push(w-v),g.push(w+v)}}),{yMinSeries:i,yMaxSeries:g,meanSeries:r,periodMean:e??0,periodSd:c}}function J(o,n){if(!Array.isArray(o)||o.length===0)return{run:[],cyc:[],resolvedRecords:[]};const x=new Map,f=n?.physiological?.threshold_trends;if(Array.isArray(f))for(const r of f)r?.date&&typeof r.vo2max=="number"&&!isNaN(r.vo2max)&&x.set(r.date,r.vo2max);const s=new Map,h=n?.training_load?.daily;if(Array.isArray(h))for(const r of h)r?.date&&typeof r.ctl=="number"&&!isNaN(r.ctl)&&s.set(r.date,r.ctl);const b=(r,d)=>{const u=r.length,y=new Array(u).fill(null),M=[];for(let k=0;k<u;k++)typeof r[k]=="number"&&!isNaN(r[k])&&(M.push(k),y[k]=r[k]);if(M.length===0){const k=typeof d=="number"&&!isNaN(d)?d:50,D=s.get(o[0]?.date);for(let L=0;L<u;L++){const E=s.get(o[L]?.date),z=typeof E=="number"&&typeof D=="number"?(E-D)*.08:0;y[L]=Math.round(Math.min(90,Math.max(20,k+z))*10)/10}return y}const w=M[0],$=y[w],v=s.get(o[w]?.date);for(let k=0;k<w;k++){const D=s.get(o[k]?.date),L=typeof D=="number"&&typeof v=="number"?(D-v)*.08:0;y[k]=Math.round(Math.min(90,Math.max(20,$+L))*10)/10}for(let k=0;k<M.length-1;k++){const D=M[k],L=M[k+1],E=y[D],z=y[L],F=L-D;for(let T=D+1;T<L;T++){const G=(T-D)/F;y[T]=Math.round((E+(z-E)*G)*10)/10}}const _=M[M.length-1],S=y[_],I=s.get(o[_]?.date);for(let k=_+1;k<u;k++){const D=s.get(o[k]?.date),L=typeof D=="number"&&typeof I=="number"?(D-I)*.08:0;y[k]=Math.round(Math.min(90,Math.max(20,S+L))*10)/10}return y.map(k=>Math.round(k*10)/10)},l=o.map(r=>typeof r.vo2max_running=="number"&&!isNaN(r.vo2max_running)?r.vo2max_running:r?.date&&x.has(r.date)?x.get(r.date):null),t=n?.athlete?.vo2max,e=b(l,t),a=o.map(r=>typeof r.vo2max_cycling=="number"&&!isNaN(r.vo2max_cycling)?r.vo2max_cycling:null),i=a.some(r=>r!==null)?b(a,typeof t=="number"?t-2:48):e.map(r=>Math.round(Math.max(20,r-2)*10)/10),g=o.map((r,d)=>({...r,vo2max_running:e[d],vo2max_cycling:i[d]}));return{run:e,cyc:i,resolvedRecords:g}}function gt(o,n,x){const{run:f,cyc:s}=J(n,x),h=[...f,...s].filter(t=>typeof t=="number"&&!isNaN(t)),b=h.length?Math.min(...h):45,l=h.length?Math.max(...h):60;return{type:"line",data:{labels:o,datasets:[{label:"Running VO2 Max",data:f,borderColor:"#a78bfa",tension:.25},{label:"Cycling VO2 Max",data:s,borderColor:"#38bdf8",tension:.25}]},options:{scales:{y:{min:Math.max(20,Math.floor(b-2)),max:Math.ceil(l+2)}}}}}function bt(o,n,x,f){const s=document.getElementById("metric-trend-chart"),h=document.getElementById("trend-chart-empty");if(!s)return;if(m.chartInstance){try{m.chartInstance.destroy()}catch{}m.chartInstance=null}if(!n||n.length===0){h&&h.classList.remove("hidden");const t=s.getContext("2d"),e=typeof s.width=="number"&&!isNaN(s.width)?s.width:s.clientWidth||600,a=typeof s.height=="number"&&!isNaN(s.height)?s.height:s.clientHeight||300;t&&t.clearRect(0,0,e,a);return}h&&h.classList.add("hidden");const b=n.map(t=>t.date||"Day");let l=null;if(o==="sleep"){const t=n.map(g=>g.sleep_deep_seconds!=null?Math.round(g.sleep_deep_seconds/3600*10)/10:null),e=n.map(g=>g.sleep_light_seconds!=null?Math.round(g.sleep_light_seconds/3600*10)/10:null),a=n.map(g=>g.sleep_rem_seconds!=null?Math.round(g.sleep_rem_seconds/3600*10)/10:null),c=n.map(g=>g.sleep_awake_seconds!=null?Math.round(g.sleep_awake_seconds/3600*10)/10:null),i=n.map(g=>p(g.sleep_score,null)!==null?Math.round(g.sleep_score/10*10)/10:null);l={type:"bar",data:{labels:b,datasets:[{label:"Deep (h)",data:t,backgroundColor:"#6366f1"},{label:"Light (h)",data:e,backgroundColor:"#38bdf8"},{label:"REM (h)",data:a,backgroundColor:"#a855f7"},{label:"Awake (h)",data:c,backgroundColor:"#f43f5e"},{label:"Score (/10)",data:i,type:"line",borderColor:"#fbbf24",borderWidth:2}]},options:{scales:{x:{stacked:!0},y:{stacked:!0,min:0,max:12}},annotations:[{type:"line",y:8,color:"rgba(52, 211, 153, 0.6)",borderDash:[4,4],label:"8h Target"}]}}}else if(o==="hrv"){const t=n.map(v=>{const _=p(v.hrv_last_night_avg??v.hrv_ms,null);return _!==null&&_>0?_:null}),e=n.map(v=>{const _=p(v.hrv_weekly_avg??v.hrv_7d_avg,null);return _!==null&&_>0?_:null}),a=n.some(v=>v?.hrv_baseline&&typeof v.hrv_baseline.low=="number"&&typeof v.hrv_baseline.high=="number"),c=nt(n,v=>{const _=p(v.hrv_last_night_avg??v.hrv_ms,null);return _!==null&&_>0?_:null},3,14),i=a?n.map(v=>typeof v?.hrv_baseline?.low=="number"?v.hrv_baseline.low:null):c.yMinSeries,g=a?n.map(v=>typeof v?.hrv_baseline?.high=="number"?v.hrv_baseline.high:null):c.yMaxSeries,r=a?n.map((v,_)=>i[_]!=null&&g[_]!=null?(i[_]+g[_])/2:null):c.meanSeries,d=t.map((v,_)=>{if(v===null)return"#10b981";const S=i[_],I=g[_];return S!=null&&I!=null?v>=S&&v<=I?"#10b981":"#f59e0b":"#10b981"}),u=[...t,...e,...i,...g].filter(v=>typeof v=="number"&&!isNaN(v)),y=u.length?Math.max(0,Math.floor(Math.min(...u)-8)):0,M=u.length?Math.ceil(Math.max(...u)+8):120,w=[...n].reverse().find(v=>v?.hrv_baseline&&typeof v.hrv_baseline.low=="number"),$=w?`Garmin Baseline (${w.hrv_baseline.low}\u2013${w.hrv_baseline.high} ms)`:`Baseline Zone (Avg ${Math.round(c.periodMean)} \xB1 ${Math.round(c.periodSd)} ms)`;l={type:"line",data:{labels:b,datasets:[{label:"Nightly HRV (ms)",data:t,borderColor:"#10b981",borderWidth:2,fill:!1,pointColors:d,pointRadius:3.5},{label:"7D Rolling Avg",data:e,borderColor:"#c084fc",borderWidth:1.5,pointRadius:1.5}]},options:{scales:{x:{stacked:!1},y:{stacked:!1,beginAtZero:!1,min:y,max:M,integerTicks:!0}},annotations:u.length>0?[{type:"band",yMinSeries:i,yMaxSeries:g,meanSeries:r,color:"rgba(168, 85, 247, 0.16)",borderColor:"rgba(192, 132, 252, 0.25)",meanColor:"rgba(216, 180, 254, 0.65)",label:$}]:[]}}}else if(o==="resting_hr"){const t=n.map(d=>{const u=p(d.resting_hr??d.resting_heart_rate,null);return u!==null&&u>0?u:null}),e=n.map(d=>{const u=p(d.resting_hr_7d_avg,null);return u!==null&&u>0?u:null}),a=nt(n,d=>{const u=p(d.resting_hr??d.resting_heart_rate,null);return u!==null&&u>0?u:null},1.5,14),c=t.map((d,u)=>d!==null&&a.yMinSeries[u]!=null&&a.yMaxSeries[u]!=null&&d>=a.yMinSeries[u]&&d<=a.yMaxSeries[u]?"#10b981":"#f43f5e"),i=[...t,...e,...a.yMinSeries,...a.yMaxSeries].filter(d=>typeof d=="number"&&!isNaN(d)),g=i.length?Math.max(25,Math.floor(Math.min(...i)-3)):35,r=i.length?Math.ceil(Math.max(...i)+3):80;l={type:"line",data:{labels:b,datasets:[{label:"Daily RHR (bpm)",data:t,borderColor:"#f43f5e",borderWidth:2,fill:!1,pointColors:c,pointRadius:3.5},{label:"7D Avg (bpm)",data:e,borderColor:"#c084fc",borderWidth:1.5,pointRadius:1.5}]},options:{scales:{x:{stacked:!1},y:{stacked:!1,beginAtZero:!1,min:g,max:r,integerTicks:!0}},annotations:i.length>0?[{type:"band",yMinSeries:a.yMinSeries,yMaxSeries:a.yMaxSeries,meanSeries:a.meanSeries,color:"rgba(168, 85, 247, 0.16)",borderColor:"rgba(192, 132, 252, 0.25)",meanColor:"rgba(216, 180, 254, 0.65)",label:`Target Zone (Avg ${a.periodMean.toFixed(1)} \xB1 ${a.periodSd.toFixed(1)} bpm)`}]:[]}}}else if(o==="steps"){const t=n.map(e=>p(e.steps,null));l={type:"bar",data:{labels:b,datasets:[{label:"Daily Steps",data:t,backgroundColor:"#10b981"}]},options:{scales:{x:{stacked:!1},y:{stacked:!1}},annotations:[{type:"line",y:1e4,color:"#10b981",borderDash:[4,4],label:"Goal: 10,000"}]}}}else if(o==="body_battery"){const t=m.activeRange==="1d"&&n.length===1,e=t?tt(n[0]):[];if(t&&e.length>1)l={type:"line",data:{labels:e.map(a=>a.timeLabel),datasets:[{label:"Body Battery (pts)",data:e.map(a=>a.value),borderColor:"#38bdf8",borderWidth:2,fill:!0,pointRadius:e.length>48?1.5:2.5}]},options:{scales:{x:{stacked:!1},y:{stacked:!1,min:0,max:100}}}};else{const a=[],c=[],i=[],g=[],r=[],d=[],u=[],y=m.activeRange==="1y"||n.length>90?4:n.length>14?8:24;let M=!1;for(let $=0;$<n.length;$++){const v=n[$],_=p(v.body_battery_high,p(v.body_battery,null)),S=p(v.body_battery_low,p(v.body_battery,null));if(_===null&&S===null){a.push(null),c.push(null),i.push(null),g.push(null),r.push(null),d.push(Z(v.date)),u.push([{text:"No Body Battery data recorded",color:"#a79bc2"}]);continue}const I=_!==null?_:S,k=S!==null?S:_,D=Math.max(0,Math.min(100,Math.round(Math.max(I,k)))),L=Math.max(0,Math.min(100,Math.round(Math.min(I,k)))),E=p(v.body_battery_charged,p(v.charged,null)),z=p(v.body_battery_drained,p(v.drained,null)),F=E!==null?Math.max(0,Math.round(E)):null,T=z!==null?Math.max(0,Math.round(z)):null;a.push(D),c.push(L),i.push(F),g.push(T),d.push(Z(v.date));const G=[{text:`Daily High: ${D} pts`,color:"#38bdf8"},{text:`Daily Low: ${L} pts`,color:"#c4b5fd"}];if((F!==null||T!==null)&&G.push({text:`Charged: ${F!==null?`+${F}`:"\u2014"} pts | Drained: ${T!==null?`-${T}`:"\u2014"} pts`,color:"#a79bc2"}),u.push(G),!t){const X=tt(v);if(X.length>=2){M=!0;const A=X.map(C=>{let B=.5;const V=typeof C.timeLabel=="string"?C.timeLabel.match(/^(\d{1,2}):(\d{2})/):null;return V?B=(Number(V[1])*3600+Number(V[2])*60)/86400:Number.isFinite(C.tsMs)&&(B=(C.tsMs%864e5+864e5)%864e5/864e5),{frac:Math.max(0,Math.min(1,B)),value:C.value}}).sort((C,B)=>C.frac-B.frac);if(A.length>y){let C=0,B=0;for(let N=1;N<A.length;N++)A[N].value<A[C].value&&(C=N),A[N].value>A[B].value&&(B=N);const V=new Set([0,C,B,A.length-1]),lt=(A.length-1)/Math.max(1,y-1);for(let N=0;N<y;N++)V.add(Math.round(N*lt));const st=Array.from(V).sort((N,ot)=>N-ot).map(N=>A[N]);r.push(st)}else r.push(A)}else r.push(null)}}const w=[{label:"Daily High",color:"#38bdf8",fillColor:"#38bdf8",shape:"dot",symbol:"dot"},{label:"Daily Low",color:"#c4b5fd",fillColor:"#0b0714",strokeColor:"#c4b5fd",shape:"ring",symbol:"ring"}];!t&&M&&w.push({label:"Hourly Trend",color:"#a855f7",strokeColor:"#a855f7",shape:"line",symbol:"line"}),l={type:"rangeBar",data:{labels:b,datasets:[{label:"Body Battery",data:a,highData:a,lowData:c,chargedData:i,drainedData:g,tooltipTitles:d,tooltipLines:u,showCapLabels:t,showValueLabels:t,highColor:"#38bdf8",lowFillColor:"#0b0714",lowColor:"#c4b5fd",lowStrokeColor:"#c4b5fd",pillarTopColor:"rgba(168, 85, 247, 0.28)",pillarBottomColor:"#2d2147",...t||!M?{}:{backgroundCurve:{enabled:!0,label:"Hourly Trend",strokeTopColor:"#38bdf8",strokeBottomColor:"#a855f7",fallbackColor:"#a855f7",fillTopColor:"rgba(56, 189, 248, 0.16)",fillBottomColor:"rgba(168, 85, 247, 0.02)",lineWidth:2.2,tension:.2,daySamples:r}},legendItems:w}]},options:{scales:{x:{stacked:!1},y:{stacked:!1,min:0,max:100}}}}}}else if(o==="stress"){const t=[{type:"band",yMin:0,yMax:25,color:"rgba(56, 189, 248, 0.08)",label:"Rest (0-25)",labelColor:"#38bdf8"},{type:"band",yMin:25,yMax:50,color:"rgba(251, 191, 36, 0.08)",label:"Low (26-50)",labelColor:"#fbbf24"},{type:"band",yMin:50,yMax:75,color:"rgba(249, 115, 22, 0.08)",label:"Med (51-75)",labelColor:"#f97316"},{type:"band",yMin:75,yMax:100,color:"rgba(244, 63, 94, 0.08)",label:"High (76-100)",labelColor:"#f43f5e"}],e=[{label:"Rest (0-25)",color:"#38bdf8",shape:"circle"},{label:"Low (26-50)",color:"#fbbf24",shape:"circle"},{label:"Med (51-75)",color:"#f97316",shape:"circle"},{label:"High (76-100)",color:"#f43f5e",shape:"circle"}],a=m.activeRange==="1d"&&n.length===1?it(n[0]):[];if(a.length>1){const c=a.map(i=>W(i.value).color);l={type:"line",data:{labels:a.map(i=>i.timeLabel),datasets:[{label:"Intraday Stress",data:a.map(i=>i.value),borderColor:"#a855f7",backgroundColor:"rgba(168, 85, 247, 0.12)",pointColors:c,borderWidth:2,fill:!0,tooltipTitles:a.map(i=>`${n[0].date} \u2022 ${i.timeLabel}`),tooltipLines:a.map(i=>[`Stress: ${i.value} pts (${W(i.value).label})`]),legendItems:e}]},options:{scales:{x:{stacked:!1},y:{stacked:!1,min:0,max:100}},annotations:t}}}else{const c=n.map(d=>{const u=p(d.stress_level,null);return u!==null?Math.max(0,Math.min(100,u)):null}),i=c.map(d=>d!==null?W(d).color:"transparent"),g=n.map(d=>Z(d.date)),r=n.map((d,u)=>{const y=c[u];if(y===null)return["No stress data recorded"];const M=W(y),w=K(d);return[`Avg Stress: ${y} pts (${M.label})`,`Rest: ${H(w.restSec)} | Low: ${H(w.lowSec)}`,`Med: ${H(w.medSec)} | High: ${H(w.highSec)}`]});l={type:"bar",data:{labels:b,datasets:[{label:"Daily Stress Score",data:c,backgroundColor:i,barColors:i,tooltipTitles:g,tooltipLines:r,legendItems:e}]},options:{scales:{x:{stacked:!1},y:{stacked:!1,min:0,max:100}},annotations:t}}}}else if(o==="intensity_minutes"){const t=n.map(a=>a.intensity_minutes_moderate||0),e=n.map(a=>a.intensity_minutes_vigorous||0);l={type:"bar",data:{labels:b,datasets:[{label:"Moderate (min)",data:t,backgroundColor:"#38bdf8"},{label:"Vigorous (min)",data:e,backgroundColor:"#6366f1"}]},options:{scales:{x:{stacked:!0},y:{stacked:!0}},annotations:[{type:"line",y:150,color:"#38bdf8",borderDash:[4,4],label:"WHO Weekly 150m"}]}}}else if(o==="calories"){const t=n.map(a=>p(a.active_calories,null)),e=n.map(a=>p(a.bmr_calories,null));l={type:"bar",data:{labels:b,datasets:[{label:"Active (kcal)",data:t,backgroundColor:"#f97316"},{label:"BMR (kcal)",data:e,backgroundColor:"#3f3f46"}]},options:{scales:{x:{stacked:!0},y:{stacked:!0}}}}}else if(o==="training_readiness"){const t=n.map(e=>p(e.training_readiness_score,null));l={type:"line",data:{labels:b,datasets:[{label:"Readiness Score",data:t,borderColor:"#22d3ee",backgroundColor:"rgba(34, 211, 238, 0.15)",fill:!0,tension:.3}]},options:{scales:{y:{min:0,max:100}}}}}else if(o==="vo2max")l=gt(b,n,m.activeRollup);else if(o==="spo2"){const t=n.map(a=>p(a.spo2_avg,null)),e=n.map(a=>p(a.spo2_low,null));l={type:"line",data:{labels:b,datasets:[{label:"SpO2 Avg (%)",data:t,borderColor:"#38bdf8",backgroundColor:"rgba(56, 189, 248, 0.12)",fill:!0,tension:.25},{label:"SpO2 Low (%)",data:e,borderColor:"#f43f5e",borderDash:[4,4],tension:.25}]},options:{scales:{y:{min:85,max:100}}}}}else if(o==="respiration"){const t=n.map(a=>p(a.respiration_waking,null)),e=n.map(a=>p(a.respiration_sleep,null));l={type:"line",data:{labels:b,datasets:[{label:"Waking (brpm)",data:t,borderColor:"#2dd4bf",tension:.25},{label:"Sleep (brpm)",data:e,borderColor:"#818cf8",tension:.25}]},options:{scales:{y:{beginAtZero:!1}}}}}else if(o==="floors"){const t=n.map(a=>p(a.floors_ascended,null)),e=n.map(a=>p(a.floors_descended,null));l={type:"bar",data:{labels:b,datasets:[{label:"Ascended",data:t,backgroundColor:"#f59e0b"},{label:"Descended",data:e,backgroundColor:"#52525b"}]}}}else if(o==="hydration"){const t=n.map(e=>{const a=p(e.hydration_ml,null);return a!==null?Number((a/1e3).toFixed(2)):null});l={type:"bar",data:{labels:b,datasets:[{label:"Intake (L)",data:t,backgroundColor:"#3b82f6"}]}}}else if(o==="weight"){const t=n.map(e=>p(e.weight_kg,null));l={type:"line",data:{labels:b,datasets:[{label:"Weight (kg)",data:t,borderColor:"#e879f9",backgroundColor:"rgba(232, 121, 249, 0.12)",fill:!0,tension:.25}]},options:{scales:{y:{beginAtZero:!1}}}}}else if(o==="thresholds"){const t=n.map(i=>p(i.cycling_ftp??i.ftp,null)),e=n.map(i=>p(i.lthr,null)),a=n.map(i=>p(i.vo2max,null)),c=[];t.some(i=>i!==null)&&c.push({label:"Cycling FTP (Watts)",data:t,borderColor:"#a78bfa",borderWidth:2}),e.some(i=>i!==null)&&c.push({label:"LTHR (bpm)",data:e,borderColor:"#f43f5e",borderWidth:2}),a.some(i=>i!==null)&&c.push({label:"VO2max (ml/kg)",data:a,borderColor:"#34d399",borderWidth:2}),l={type:"line",data:{labels:b,datasets:c},options:{scales:{x:{stacked:!1},y:{stacked:!1,beginAtZero:!1}}}}}if(l)try{m.chartInstance=new rt(s,l)}catch(t){console.warn("Failed to render trend chart:",t)}}function mt(o,n,x){const f=document.getElementById("trend-table-count"),s=document.getElementById("trend-table-header-row"),h=document.getElementById("trend-table-body");if(f&&(f.textContent=`${n?n.length:0} records`),!h||!s)return;if(!n||n.length===0){s.innerHTML='<th class="py-2.5 px-3">Date</th><th class="py-2.5 px-3">Value</th><th class="py-2.5 px-3">Status</th>',h.innerHTML='<tr><td colspan="3" class="py-4 text-center text-zinc-500 font-sans text-xs">No records found for the selected period.</td></tr>';return}const b=[...n].reverse();if(o==="sleep")s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Total Duration</th>
       <th class="py-2 px-3 text-right">Sleep Score</th>
       <th class="py-2 px-3 text-right">Deep / REM</th>
       <th class="py-2 px-3 text-right">Quality</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const sec = toFiniteNumber(r.sleep_seconds, null);
-      if (sec === null) {
-        return `
+    `,h.innerHTML=b.map(l=>{const t=p(l.sleep_seconds,null);if(t===null)return`
           <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
-            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-zinc-400 font-sans">${l.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
           </tr>
-        `;
-      }
-      const h = sec / 3600;
-      const score = toFiniteNumber(r.sleep_score, null);
-      const deepH = r.sleep_deep_seconds != null ? (r.sleep_deep_seconds / 3600).toFixed(1) : '—';
-      const remH = r.sleep_rem_seconds != null ? (r.sleep_rem_seconds / 3600).toFixed(1) : '—';
-      const qual = r.sleep_quality || (score !== null ? (score >= 80 ? 'Good' : 'Fair') : '—');
-      return `
+        `;const e=t/3600,a=p(l.sleep_score,null),c=l.sleep_deep_seconds!=null?(l.sleep_deep_seconds/3600).toFixed(1):"\u2014",i=l.sleep_rem_seconds!=null?(l.sleep_rem_seconds/3600).toFixed(1):"\u2014",g=l.sleep_quality||(a!==null?a>=80?"Good":"Fair":"\u2014");return`
         <tr class="hover:bg-[#1b132e]/50 transition">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-white font-mono">${Math.floor(h)}h ${Math.round((h % 1) * 60)}m</td>
-          <td class="py-2 px-3 text-right text-amber-400 font-mono">${score !== null ? score : '—'}</td>
-          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${deepH}${deepH !== '—' ? 'h' : ''} / ${remH}${remH !== '—' ? 'h' : ''}</td>
+          <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+          <td class="py-2 px-3 text-right text-white font-mono">${Math.floor(e)}h ${Math.round(e%1*60)}m</td>
+          <td class="py-2 px-3 text-right text-amber-400 font-mono">${a!==null?a:"\u2014"}</td>
+          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${c}${c!=="\u2014"?"h":""} / ${i}${i!=="\u2014"?"h":""}</td>
           <td class="py-2 px-3 text-right">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${(score !== null && score >= 80) ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : 'text-zinc-400 border-zinc-700 bg-zinc-800/40'}">
-              ${String(qual).toUpperCase()}
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${a!==null&&a>=80?"text-emerald-400 border-emerald-500/30 bg-emerald-500/10":"text-zinc-400 border-zinc-700 bg-zinc-800/40"}">
+              ${String(g).toUpperCase()}
             </span>
           </td>
         </tr>
-      `;
-    }).join('');
-  } else if (metric === 'hrv') {
-    theadRow.innerHTML = `
+      `}).join("");else if(o==="hrv")s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Last Night HRV</th>
       <th class="py-2 px-3 text-right">7D Baseline</th>
       <th class="py-2 px-3 text-right">Status</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const ln = toFiniteNumber(r.hrv_last_night_avg ?? r.hrv_ms, null);
-      const wk = toFiniteNumber(r.hrv_weekly_avg ?? r.hrv_7d_avg, null);
-      const st = r.hrv_status;
-      if (ln === null && wk === null) {
-        return `
+    `,h.innerHTML=b.map(l=>{const t=p(l.hrv_last_night_avg??l.hrv_ms,null),e=p(l.hrv_weekly_avg??l.hrv_7d_avg,null),a=l.hrv_status;return t===null&&e===null?`
           <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
-            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-zinc-400 font-sans">${l.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
           </tr>
-        `;
-      }
-      return `
+        `:`
         <tr class="hover:bg-[#1b132e]/50 transition">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${ln !== null ? `${ln} ms` : '—'}</td>
-          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${wk !== null ? `${wk} ms` : '—'}</td>
+          <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${t!==null?`${t} ms`:"\u2014"}</td>
+          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${e!==null?`${e} ms`:"\u2014"}</td>
           <td class="py-2 px-3 text-right">
-            ${st ? `<span class="px-2 py-0.5 rounded text-[10px] font-mono border text-emerald-400 border-emerald-500/30 bg-emerald-500/10">${String(st).toUpperCase()}</span>` : '<span class="text-zinc-500 font-mono">—</span>'}
+            ${a?`<span class="px-2 py-0.5 rounded text-[10px] font-mono border text-emerald-400 border-emerald-500/30 bg-emerald-500/10">${String(a).toUpperCase()}</span>`:'<span class="text-zinc-500 font-mono">\u2014</span>'}
           </td>
         </tr>
-      `;
-    }).join('');
-  } else if (metric === 'steps') {
-    const recordedRecs = records.filter(r => !r.unrecorded && (r.steps || 0) > 0);
-    const avg = recordedRecs.length > 0
-      ? Math.round(recordedRecs.reduce((s, r) => s + (r.steps || 0), 0) / recordedRecs.length)
-      : 0;
-    theadRow.innerHTML = `
+      `}).join("");else if(o==="steps"){const l=n.filter(e=>!e.unrecorded&&(e.steps||0)>0),t=l.length>0?Math.round(l.reduce((e,a)=>e+(a.steps||0),0)/l.length):0;s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Steps</th>
       <th class="py-2 px-3 text-right">Goal (10k)</th>
       <th class="py-2 px-3 text-right">Delta vs Avg</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const isUnrecorded = Boolean(r.unrecorded || ((r.steps === 0 || r.steps === null) && records.some(x => x.unrecorded)));
-      if ((isUnrecorded && (r.steps === 0 || r.steps === null)) || toFiniteNumber(r.steps, null) === null) {
-        return `
+    `,h.innerHTML=b.map(e=>{if(!!(e.unrecorded||(e.steps===0||e.steps===null)&&n.some(d=>d.unrecorded))&&(e.steps===0||e.steps===null)||p(e.steps,null)===null)return`
           <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
-            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
+            <td class="py-2 px-3 text-zinc-400 font-sans">${e.date}</td>
             <td class="py-2 px-3 text-right text-zinc-500 font-mono italic">Unrecorded</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right font-mono text-zinc-500">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right font-mono text-zinc-500">\u2014</td>
           </tr>
-        `;
-      }
-      const s = r.steps || 0;
-      const pct = Math.round((s / 10000) * 100);
-      const delta = s - avg;
-      const deltaStr = `${delta >= 0 ? '+' : ''}${delta.toLocaleString()}`;
-      return `
+        `;const c=e.steps||0,i=Math.round(c/1e4*100),g=c-t,r=`${g>=0?"+":""}${g.toLocaleString()}`;return`
         <tr class="hover:bg-[#1b132e]/50 transition">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-white font-mono font-bold">${s.toLocaleString()}</td>
-          <td class="py-2 px-3 text-right ${pct >= 100 ? 'text-emerald-400' : 'text-zinc-400'} font-mono">${pct}%</td>
-          <td class="py-2 px-3 text-right font-mono ${delta >= 0 ? 'text-emerald-400' : 'text-zinc-500'}">${deltaStr}</td>
+          <td class="py-2 px-3 text-zinc-300 font-sans">${e.date}</td>
+          <td class="py-2 px-3 text-right text-white font-mono font-bold">${c.toLocaleString()}</td>
+          <td class="py-2 px-3 text-right ${i>=100?"text-emerald-400":"text-zinc-400"} font-mono">${i}%</td>
+          <td class="py-2 px-3 text-right font-mono ${g>=0?"text-emerald-400":"text-zinc-500"}">${r}</td>
         </tr>
-      `;
-    }).join('');
-  } else if (metric === 'resting_hr') {
-    const validRhr = records.map(r => toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null)).filter(v => v !== null && v > 0);
-    const avg = validRhr.length > 0 ? Math.round((validRhr.reduce((s, v) => s + v, 0) / validRhr.length) * 10) / 10 : null;
-    theadRow.innerHTML = `
+      `}).join("")}else if(o==="resting_hr"){const l=n.map(e=>p(e.resting_hr??e.resting_heart_rate,null)).filter(e=>e!==null&&e>0),t=l.length>0?Math.round(l.reduce((e,a)=>e+a,0)/l.length*10)/10:null;s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Resting HR</th>
       <th class="py-2 px-3 text-right">7D Average</th>
       <th class="py-2 px-3 text-right">Delta vs Avg</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const val = toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null);
-      if (val === null || val <= 0) {
-        return `
+    `,h.innerHTML=b.map(e=>{const a=p(e.resting_hr??e.resting_heart_rate,null);if(a===null||a<=0)return`
           <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
-            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-zinc-400 font-sans">${e.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
           </tr>
-        `;
-      }
-      const r7 = toFiniteNumber(r.resting_hr_7d_avg, null);
-      const delta = avg !== null ? Math.round((val - avg) * 10) / 10 : null;
-      return `
+        `;const c=p(e.resting_hr_7d_avg,null),i=t!==null?Math.round((a-t)*10)/10:null;return`
         <tr class="hover:bg-[#1b132e]/50 transition">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-rose-400 font-mono font-bold">${val} bpm</td>
-          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r7 !== null ? `${r7} bpm` : '—'}</td>
-          <td class="py-2 px-3 text-right font-mono ${delta !== null && delta <= 0 ? 'text-emerald-400' : 'text-rose-400'}">${delta !== null ? `${delta >= 0 ? '+' : ''}${delta} bpm` : '—'}</td>
+          <td class="py-2 px-3 text-zinc-300 font-sans">${e.date}</td>
+          <td class="py-2 px-3 text-right text-rose-400 font-mono font-bold">${a} bpm</td>
+          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${c!==null?`${c} bpm`:"\u2014"}</td>
+          <td class="py-2 px-3 text-right font-mono ${i!==null&&i<=0?"text-emerald-400":"text-rose-400"}">${i!==null?`${i>=0?"+":""}${i} bpm`:"\u2014"}</td>
         </tr>
-      `;
-    }).join('');
-  } else if (metric === 'body_battery') {
-    theadRow.innerHTML = `
+      `}).join("")}else if(o==="body_battery")s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Peak</th>
       <th class="py-2 px-3 text-right">Low</th>
       <th class="py-2 px-3 text-right">Charged</th>
       <th class="py-2 px-3 text-right">Drained</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const hi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, null));
-      const lo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, null));
-      const chg = toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, null));
-      const drn = toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, null));
-      const isAllMissing = hi === null && lo === null && chg === null && drn === null;
-      return `
-        <tr class="hover:bg-[#1b132e]/50 transition ${isAllMissing ? 'opacity-60' : ''}">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right ${hi !== null ? 'text-emerald-400 font-bold' : 'text-zinc-500'} font-mono">${hi !== null ? hi : '—'}</td>
-          <td class="py-2 px-3 text-right ${lo !== null ? 'text-rose-400' : 'text-zinc-500'} font-mono">${lo !== null ? lo : '—'}</td>
-          <td class="py-2 px-3 text-right ${chg !== null ? 'text-emerald-400' : 'text-zinc-500'} font-mono">${chg !== null ? `+${chg}` : '—'}</td>
-          <td class="py-2 px-3 text-right ${drn !== null ? 'text-orange-400' : 'text-zinc-500'} font-mono">${drn !== null ? `-${drn}` : '—'}</td>
+    `,h.innerHTML=b.map(l=>{const t=p(l.body_battery_high,p(l.body_battery,null)),e=p(l.body_battery_low,p(l.body_battery,null)),a=p(l.body_battery_charged,p(l.charged,null)),c=p(l.body_battery_drained,p(l.drained,null));return`
+        <tr class="hover:bg-[#1b132e]/50 transition ${t===null&&e===null&&a===null&&c===null?"opacity-60":""}">
+          <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+          <td class="py-2 px-3 text-right ${t!==null?"text-emerald-400 font-bold":"text-zinc-500"} font-mono">${t!==null?t:"\u2014"}</td>
+          <td class="py-2 px-3 text-right ${e!==null?"text-rose-400":"text-zinc-500"} font-mono">${e!==null?e:"\u2014"}</td>
+          <td class="py-2 px-3 text-right ${a!==null?"text-emerald-400":"text-zinc-500"} font-mono">${a!==null?`+${a}`:"\u2014"}</td>
+          <td class="py-2 px-3 text-right ${c!==null?"text-orange-400":"text-zinc-500"} font-mono">${c!==null?`-${c}`:"\u2014"}</td>
         </tr>
-      `;
-    }).join('');
-  } else if (metric === 'stress') {
-    theadRow.innerHTML = `
+      `}).join("");else if(o==="stress")s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Avg Stress</th>
       <th class="py-2 px-3 text-right">Rest Time</th>
       <th class="py-2 px-3 text-right">Low / Med / High</th>
       <th class="py-2 px-3 text-right">Status</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const rawSc = toFiniteNumber(r.stress_level, null);
-      if (rawSc === null) {
-        return `
+    `,h.innerHTML=b.map(l=>{const t=p(l.stress_level,null);if(t===null)return`
           <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
-            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
-            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-zinc-400 font-sans">${l.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">\u2014</td>
           </tr>
-        `;
-      }
-      const sc = Math.max(0, Math.min(100, Math.round(rawSc)));
-      const meta = getStressZoneMeta(sc);
-      const q = r.stress_qualifier || meta.label;
-      const durs = getStressZoneDurations(r);
-      return `
+        `;const e=Math.max(0,Math.min(100,Math.round(t))),a=W(e),c=l.stress_qualifier||a.label,i=K(l);return`
         <tr class="hover:bg-[#1b132e]/50 transition">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right font-mono font-bold" style="color: ${meta.color};">${sc} pts</td>
-          <td class="py-2 px-3 text-right text-sky-400 font-mono">${formatStressDuration(durs.restSec)}</td>
-          <td class="py-2 px-3 text-right text-zinc-300 font-mono">${formatStressDuration(durs.lowSec)} / ${formatStressDuration(durs.medSec)} / ${formatStressDuration(durs.highSec)}</td>
+          <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+          <td class="py-2 px-3 text-right font-mono font-bold" style="color: ${a.color};">${e} pts</td>
+          <td class="py-2 px-3 text-right text-sky-400 font-mono">${H(i.restSec)}</td>
+          <td class="py-2 px-3 text-right text-zinc-300 font-mono">${H(i.lowSec)} / ${H(i.medSec)} / ${H(i.highSec)}</td>
           <td class="py-2 px-3 text-right">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${meta.badgeClass}">
-              ${String(q).toUpperCase()}
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${a.badgeClass}">
+              ${String(c).toUpperCase()}
             </span>
           </td>
         </tr>
-      `;
-    }).join('');
-  } else if (metric === 'intensity_minutes') {
-    theadRow.innerHTML = `
+      `}).join("");else if(o==="intensity_minutes")s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Moderate</th>
       <th class="py-2 px-3 text-right">Vigorous</th>
       <th class="py-2 px-3 text-right">Total Weighted</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const m = r.intensity_minutes_moderate || 0;
-      const v = r.intensity_minutes_vigorous || 0;
-      const tot = m + v * 2;
-      return `
+    `,h.innerHTML=b.map(l=>{const t=l.intensity_minutes_moderate||0,e=l.intensity_minutes_vigorous||0,a=t+e*2;return`
         <tr class="hover:bg-[#1b132e]/50 transition">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-sky-400 font-mono">${m} min</td>
-          <td class="py-2 px-3 text-right text-indigo-400 font-mono">${v} min</td>
-          <td class="py-2 px-3 text-right text-white font-mono font-bold">${tot} min</td>
+          <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+          <td class="py-2 px-3 text-right text-sky-400 font-mono">${t} min</td>
+          <td class="py-2 px-3 text-right text-indigo-400 font-mono">${e} min</td>
+          <td class="py-2 px-3 text-right text-white font-mono font-bold">${a} min</td>
         </tr>
-      `;
-    }).join('');
-  } else if (metric === 'calories') {
-    theadRow.innerHTML = `
+      `}).join("");else if(o==="calories")s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Active</th>
       <th class="py-2 px-3 text-right">BMR</th>
       <th class="py-2 px-3 text-right">Total Burn</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const act = toFiniteNumber(r.active_calories, null);
-      const bmr = toFiniteNumber(r.bmr_calories, null);
-      const tot = toFiniteNumber(r.daily_calories, (act !== null && bmr !== null) ? (act + bmr) : null);
-      return `
+    `,h.innerHTML=b.map(l=>{const t=p(l.active_calories,null),e=p(l.bmr_calories,null),a=p(l.daily_calories,t!==null&&e!==null?t+e:null);return`
         <tr class="hover:bg-[#1b132e]/50 transition">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-orange-400 font-mono">${act !== null ? `${act.toLocaleString()} kcal` : '—'}</td>
-          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${bmr !== null ? `${bmr.toLocaleString()} kcal` : '—'}</td>
-          <td class="py-2 px-3 text-right text-white font-mono font-bold">${tot !== null ? `${tot.toLocaleString()} kcal` : '—'}</td>
+          <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+          <td class="py-2 px-3 text-right text-orange-400 font-mono">${t!==null?`${t.toLocaleString()} kcal`:"\u2014"}</td>
+          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${e!==null?`${e.toLocaleString()} kcal`:"\u2014"}</td>
+          <td class="py-2 px-3 text-right text-white font-mono font-bold">${a!==null?`${a.toLocaleString()} kcal`:"\u2014"}</td>
         </tr>
-      `;
-    }).join('');
-  } else if (metric === 'training_readiness') {
-    theadRow.innerHTML = `
+      `}).join("");else if(o==="training_readiness")s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Score</th>
       <th class="py-2 px-3 text-right">Level</th>
       <th class="py-2 px-3 text-right">Sleep Score</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => `
+    `,h.innerHTML=b.map(l=>`
       <tr class="hover:bg-[#1b132e]/50 transition">
-        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-        <td class="py-2 px-3 text-right text-cyan-400 font-mono font-bold">${r.training_readiness_score ?? '--'}</td>
-        <td class="py-2 px-3 text-right text-zinc-300 font-mono">${r.training_readiness_level ?? '--'}</td>
-        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r.sleep_score ?? '--'}</td>
+        <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+        <td class="py-2 px-3 text-right text-cyan-400 font-mono font-bold">${l.training_readiness_score??"--"}</td>
+        <td class="py-2 px-3 text-right text-zinc-300 font-mono">${l.training_readiness_level??"--"}</td>
+        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${l.sleep_score??"--"}</td>
       </tr>
-    `).join('');
-  } else if (metric === 'vo2max') {
-    const { resolvedRecords } = resolveVo2MaxSeries(records, state.activeRollup);
-    const displayVo2Records = [...resolvedRecords].reverse();
-    theadRow.innerHTML = `
+    `).join("");else if(o==="vo2max"){const{resolvedRecords:l}=J(n,m.activeRollup),t=[...l].reverse();s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Running</th>
       <th class="py-2 px-3 text-right">Cycling</th>
-    `;
-    tbody.innerHTML = displayVo2Records.map(r => `
+    `,h.innerHTML=t.map(e=>`
       <tr class="hover:bg-[#1b132e]/50 transition">
-        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-        <td class="py-2 px-3 text-right text-violet-400 font-mono font-bold">${r.vo2max_running != null ? Number(r.vo2max_running).toFixed(1) : '--'}</td>
-        <td class="py-2 px-3 text-right text-sky-400 font-mono">${r.vo2max_cycling != null ? Number(r.vo2max_cycling).toFixed(1) : '--'}</td>
+        <td class="py-2 px-3 text-zinc-300 font-sans">${e.date}</td>
+        <td class="py-2 px-3 text-right text-violet-400 font-mono font-bold">${e.vo2max_running!=null?Number(e.vo2max_running).toFixed(1):"--"}</td>
+        <td class="py-2 px-3 text-right text-sky-400 font-mono">${e.vo2max_cycling!=null?Number(e.vo2max_cycling).toFixed(1):"--"}</td>
       </tr>
-    `).join('');
-  } else if (metric === 'spo2') {
-    theadRow.innerHTML = `
+    `).join("")}else o==="spo2"?(s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Avg SpO2</th>
       <th class="py-2 px-3 text-right">Low SpO2</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => `
+    `,h.innerHTML=b.map(l=>`
       <tr class="hover:bg-[#1b132e]/50 transition">
-        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-        <td class="py-2 px-3 text-right text-sky-400 font-mono font-bold">${r.spo2_avg != null ? Number(r.spo2_avg).toFixed(1) + '%' : '--'}</td>
-        <td class="py-2 px-3 text-right text-rose-400 font-mono">${r.spo2_low != null ? Number(r.spo2_low).toFixed(1) + '%' : '--'}</td>
+        <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+        <td class="py-2 px-3 text-right text-sky-400 font-mono font-bold">${l.spo2_avg!=null?Number(l.spo2_avg).toFixed(1)+"%":"--"}</td>
+        <td class="py-2 px-3 text-right text-rose-400 font-mono">${l.spo2_low!=null?Number(l.spo2_low).toFixed(1)+"%":"--"}</td>
       </tr>
-    `).join('');
-  } else if (metric === 'respiration') {
-    theadRow.innerHTML = `
+    `).join("")):o==="respiration"?(s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Waking</th>
       <th class="py-2 px-3 text-right">Sleep</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => `
+    `,h.innerHTML=b.map(l=>`
       <tr class="hover:bg-[#1b132e]/50 transition">
-        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-        <td class="py-2 px-3 text-right text-teal-400 font-mono font-bold">${r.respiration_waking != null ? Number(r.respiration_waking).toFixed(1) + ' brpm' : '--'}</td>
-        <td class="py-2 px-3 text-right text-indigo-400 font-mono">${r.respiration_sleep != null ? Number(r.respiration_sleep).toFixed(1) + ' brpm' : '--'}</td>
+        <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+        <td class="py-2 px-3 text-right text-teal-400 font-mono font-bold">${l.respiration_waking!=null?Number(l.respiration_waking).toFixed(1)+" brpm":"--"}</td>
+        <td class="py-2 px-3 text-right text-indigo-400 font-mono">${l.respiration_sleep!=null?Number(l.respiration_sleep).toFixed(1)+" brpm":"--"}</td>
       </tr>
-    `).join('');
-  } else if (metric === 'floors') {
-    theadRow.innerHTML = `
+    `).join("")):o==="floors"?(s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Ascended</th>
       <th class="py-2 px-3 text-right">Descended</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => `
+    `,h.innerHTML=b.map(l=>`
       <tr class="hover:bg-[#1b132e]/50 transition">
-        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-        <td class="py-2 px-3 text-right text-amber-400 font-mono font-bold">${r.floors_ascended ?? '--'}</td>
-        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r.floors_descended ?? '--'}</td>
+        <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+        <td class="py-2 px-3 text-right text-amber-400 font-mono font-bold">${l.floors_ascended??"--"}</td>
+        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${l.floors_descended??"--"}</td>
       </tr>
-    `).join('');
-  } else if (metric === 'hydration') {
-    theadRow.innerHTML = `
+    `).join("")):o==="hydration"?(s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Intake</th>
       <th class="py-2 px-3 text-right">Goal</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => `
+    `,h.innerHTML=b.map(l=>`
       <tr class="hover:bg-[#1b132e]/50 transition">
-        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-        <td class="py-2 px-3 text-right text-blue-400 font-mono font-bold">${r.hydration_ml != null ? (r.hydration_ml / 1000).toFixed(2) + ' L' : '--'}</td>
-        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r.hydration_goal_ml != null ? (r.hydration_goal_ml / 1000).toFixed(1) + ' L' : '2.5 L'}</td>
+        <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+        <td class="py-2 px-3 text-right text-blue-400 font-mono font-bold">${l.hydration_ml!=null?(l.hydration_ml/1e3).toFixed(2)+" L":"--"}</td>
+        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${l.hydration_goal_ml!=null?(l.hydration_goal_ml/1e3).toFixed(1)+" L":"2.5 L"}</td>
       </tr>
-    `).join('');
-  } else if (metric === 'weight') {
-    theadRow.innerHTML = `
+    `).join("")):o==="weight"?(s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Weight</th>
       <th class="py-2 px-3 text-right">Body Fat</th>
       <th class="py-2 px-3 text-right">BMI</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => `
+    `,h.innerHTML=b.map(l=>`
       <tr class="hover:bg-[#1b132e]/50 transition">
-        <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-        <td class="py-2 px-3 text-right text-fuchsia-400 font-mono font-bold">${r.weight_kg != null ? Number(r.weight_kg).toFixed(1) + ' kg' : '--'}</td>
-        <td class="py-2 px-3 text-right text-zinc-300 font-mono">${r.body_fat_pct != null ? Number(r.body_fat_pct).toFixed(1) + '%' : '--'}</td>
-        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r.bmi != null ? Number(r.bmi).toFixed(1) : '--'}</td>
+        <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+        <td class="py-2 px-3 text-right text-fuchsia-400 font-mono font-bold">${l.weight_kg!=null?Number(l.weight_kg).toFixed(1)+" kg":"--"}</td>
+        <td class="py-2 px-3 text-right text-zinc-300 font-mono">${l.body_fat_pct!=null?Number(l.body_fat_pct).toFixed(1)+"%":"--"}</td>
+        <td class="py-2 px-3 text-right text-zinc-400 font-mono">${l.bmi!=null?Number(l.bmi).toFixed(1):"--"}</td>
       </tr>
-    `).join('');
-  } else if (metric === 'thresholds') {
-    theadRow.innerHTML = `
+    `).join("")):o==="thresholds"&&(s.innerHTML=`
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Cycling FTP</th>
       <th class="py-2 px-3 text-right">VO2max</th>
       <th class="py-2 px-3 text-right">LTHR</th>
-    `;
-    tbody.innerHTML = displayRecords.map(r => {
-      const ftp = toFiniteNumber(r.cycling_ftp ?? r.ftp, null);
-      const vo2 = toFiniteNumber(r.vo2max, null);
-      const lthr = toFiniteNumber(r.lthr, null);
-      return `
+    `,h.innerHTML=b.map(l=>{const t=p(l.cycling_ftp??l.ftp,null),e=p(l.vo2max,null),a=p(l.lthr,null);return`
         <tr class="hover:bg-[#1b132e]/50 transition">
-          <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-purple-400 font-mono font-bold">${ftp !== null ? `${ftp} W` : '—'}</td>
-          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${vo2 !== null ? `${vo2} ml/kg` : '—'}</td>
-          <td class="py-2 px-3 text-right text-rose-400 font-mono font-bold">${lthr !== null ? `${lthr} bpm` : '—'}</td>
+          <td class="py-2 px-3 text-zinc-300 font-sans">${l.date}</td>
+          <td class="py-2 px-3 text-right text-purple-400 font-mono font-bold">${t!==null?`${t} W`:"\u2014"}</td>
+          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${e!==null?`${e} ml/kg`:"\u2014"}</td>
+          <td class="py-2 px-3 text-right text-rose-400 font-mono font-bold">${a!==null?`${a} bpm`:"\u2014"}</td>
         </tr>
-      `;
-    }).join('');
-  }
-}
-
-/**
- * Initializes all trends modal UI event listeners.
- */
-export function initTrendsModal() {
-  const modal = document.getElementById('metric-trend-modal');
-  if (!modal) return;
-
-  // Backdrop click dismiss
-  const backdrop = document.getElementById('trend-modal-backdrop');
-  if (backdrop) {
-    backdrop.addEventListener('click', () => {
-      closeMetricTrendModal();
-    });
-  }
-
-  // Close button
-  const closeBtn = document.getElementById('btn-close-trend-modal');
-  if (closeBtn) {
-    closeBtn.addEventListener('click', () => {
-      closeMetricTrendModal();
-    });
-  }
-
-  // Fullscreen expand button
-  const expandBtn = document.getElementById('btn-expand-trend-modal');
-  if (expandBtn) {
-    expandBtn.addEventListener('click', () => {
-      toggleExpandModal();
-    });
-  }
-
-  // Time range selector buttons (1D, 7D, 1M, 1Y, Custom)
-  const rangeButtons = document.querySelectorAll('[data-trend-range]');
-  rangeButtons.forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      const r = btn.getAttribute('data-trend-range');
-      if (r) setTimeRange(r);
-    });
-  });
-
-  // Chronological navigation buttons
-  const prevBtn = document.getElementById('trend-nav-prev');
-  if (prevBtn) {
-    prevBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      navigateDatePeriod(-1);
-    });
-  }
-
-  const nextBtn = document.getElementById('trend-nav-next');
-  if (nextBtn) {
-    nextBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      navigateDatePeriod(1);
-    });
-  }
-
-  // Custom date Apply button
-  const applyBtn = document.getElementById('trend-btn-apply-custom');
-  if (applyBtn) {
-    applyBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      applyCustomDateRange();
-    });
-  }
-
-  // Escape key listener
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      const m = document.getElementById('metric-trend-modal');
-      if (m && !m.classList.contains('hidden')) {
-        closeMetricTrendModal();
-      }
-    }
-  });
-}
+      `}).join(""))}function yt(){if(!document.getElementById("metric-trend-modal"))return;const n=document.getElementById("trend-modal-backdrop");n&&n.addEventListener("click",()=>{Q()});const x=document.getElementById("btn-close-trend-modal");x&&x.addEventListener("click",()=>{Q()});const f=document.getElementById("btn-expand-trend-modal");f&&f.addEventListener("click",()=>{ct()}),document.querySelectorAll("[data-trend-range]").forEach(t=>{t.addEventListener("click",e=>{e.preventDefault();const a=t.getAttribute("data-trend-range");a&&ut(a)})});const h=document.getElementById("trend-nav-prev");h&&h.addEventListener("click",t=>{t.preventDefault(),at(-1)});const b=document.getElementById("trend-nav-next");b&&b.addEventListener("click",t=>{t.preventDefault(),at(1)});const l=document.getElementById("trend-btn-apply-custom");l&&l.addEventListener("click",t=>{t.preventDefault(),ht()}),document.addEventListener("keydown",t=>{if(t.key==="Escape"){const e=document.getElementById("metric-trend-modal");e&&!e.classList.contains("hidden")&&Q()}})}function vt(){if(m.chartInstance){try{m.chartInstance.destroy()}catch{}m.chartInstance=null}m.activeRollup=null,m.customThresholds=null}export{q as METRIC_CONFIGS,ht as applyCustomDateRange,vt as clearTrendsCache,Q as closeMetricTrendModal,dt as getFilteredTelemetryData,yt as initTrendsModal,at as navigateDatePeriod,ft as openMetricTrendModal,Y as renderModalState,gt as renderVo2MaxChartConfig,J as resolveVo2MaxSeries,ut as setTimeRange,ct as toggleExpandModal};

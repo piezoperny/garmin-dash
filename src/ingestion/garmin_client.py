@@ -634,12 +634,33 @@ def normalize_daily_wellness(cdate: str, raw_bundle: Dict[str, Any]) -> Dict[str
     # --- HRV ---
     hrv_status_raw = hrv_sum.get("status")
     hrv_status = str(hrv_status_raw).replace("_", " ").title() if hrv_status_raw else None
-    hrv_weekly = hrv_sum.get("weeklyAvg") if _safe_num(hrv_sum.get("weeklyAvg"), min_val=0) is not None else None
-    hrv_night = hrv_sum.get("lastNightAvg") if _safe_num(hrv_sum.get("lastNightAvg"), min_val=0) is not None else None
+    hrv_weekly = _first_not_none(
+        _safe_int_num(hrv_sum.get("weeklyAvg"), min_val=1),
+        _safe_int_num(hrv_sum.get("weeklyAverage"), min_val=1),
+    )
+    hrv_night = _first_not_none(
+        _safe_int_num(hrv_sum.get("lastNightAvg"), min_val=1),
+        _safe_int_num(hrv_sum.get("lastNight"), min_val=1),
+        _safe_int_num(hrv_sum.get("hrvValue"), min_val=1),
+    )
+    if hrv_night is None and isinstance(hrv_raw.get("hrvReadings"), list):
+        reading_vals = [
+            _safe_num(pt.get("hrvValue"), min_val=1)
+            for pt in hrv_raw["hrvReadings"]
+            if isinstance(pt, dict)
+        ]
+        valid_readings = [v for v in reading_vals if v is not None]
+        if valid_readings:
+            hrv_night = int(round(sum(valid_readings) / len(valid_readings)))
     baseline_obj = _as_dict(hrv_sum.get("baseline"))
     hrv_baseline = None
-    if baseline_obj.get("balancedLow") is not None and baseline_obj.get("balancedUpper") is not None:
-        hrv_baseline = {"low": baseline_obj.get("balancedLow"), "high": baseline_obj.get("balancedUpper")}
+    b_low = _safe_num(baseline_obj.get("balancedLow"), min_val=1)
+    b_high = _safe_num(baseline_obj.get("balancedUpper"), min_val=1)
+    if b_low is not None and b_high is not None:
+        hrv_baseline = {
+            "low": int(round(b_low)) if float(b_low).is_integer() else round(b_low, 1),
+            "high": int(round(b_high)) if float(b_high).is_integer() else round(b_high, 1),
+        }
 
     # --- Intensity Minutes ---
     mod_min = _safe_int_num(user_summary.get("moderateIntensityMinutes"), min_val=0)
@@ -893,6 +914,7 @@ def normalize_daily_wellness(cdate: str, raw_bundle: Dict[str, Any]) -> Dict[str
         "hrv_status": hrv_status,
         "hrv_weekly_avg": hrv_weekly,
         "hrv_last_night_avg": hrv_night,
+        "hrv_ms": hrv_night,
         "hrv_7d_avg": hrv_weekly,
         "hrv_baseline": hrv_baseline,
         "active_intensity_minutes": active_intensity_min,

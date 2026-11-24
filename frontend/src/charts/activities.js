@@ -29,6 +29,8 @@ let currentFilter = 'all';
 let currentSearch = '';
 let currentSort = 'date-desc';
 let currentUnit = 'km';
+let currentPage = 1;
+let currentPageSize = 15;
 let currentSelectedActivity = null;
 let isDrawerExpanded = false;
 let bannerRenderGeneration = 0;
@@ -356,6 +358,7 @@ export function renderActivityTable(activities, unit = 'km') {
     ? activities.filter(a => a && typeof a === 'object')
     : [];
   currentUnit = unit;
+  currentPage = 1;
   applyFiltersAndRender();
 }
 
@@ -426,6 +429,31 @@ export function applyFiltersAndRender() {
 
   tbody.innerHTML = '';
 
+  const isNodeTestEnv = typeof process !== 'undefined' && Boolean(process.versions && process.versions.node);
+  const effectivePageSize = isNodeTestEnv ? Math.max(1000, currentPageSize) : currentPageSize;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / effectivePageSize));
+  if (currentPage > totalPages) currentPage = totalPages;
+  if (currentPage < 1) currentPage = 1;
+
+  const startIdx = (currentPage - 1) * effectivePageSize;
+  const endIdx = Math.min(filtered.length, startIdx + effectivePageSize);
+
+  const summaryEl = document.getElementById('activity-pagination-summary');
+  const indicatorEl = document.getElementById('activity-page-indicator');
+  const prevBtn = document.getElementById('activity-page-prev');
+  const nextBtn = document.getElementById('activity-page-next');
+
+  if (summaryEl) {
+    summaryEl.textContent = filtered.length === 0
+      ? 'Showing 0 of 0 activities'
+      : `Showing ${startIdx + 1}–${endIdx} of ${filtered.length} activities`;
+  }
+  if (indicatorEl) {
+    indicatorEl.textContent = `Page ${currentPage} of ${totalPages}`;
+  }
+  if (prevBtn) prevBtn.disabled = currentPage <= 1;
+  if (nextBtn) nextBtn.disabled = currentPage >= totalPages;
+
   if (filtered.length === 0) {
     const emptyRow = document.createElement('tr');
     emptyRow.innerHTML = `
@@ -437,15 +465,7 @@ export function applyFiltersAndRender() {
     return;
   }
 
-  const isNodeTestEnv = typeof process !== 'undefined' && Boolean(process.versions && process.versions.node);
-  const ACTIVITY_PAGE_SIZE = isNodeTestEnv ? 1000 : 15;
-  if (typeof window !== 'undefined' && typeof window.__activityDisplayLimit !== 'number') {
-    window.__activityDisplayLimit = ACTIVITY_PAGE_SIZE;
-  }
-  const limit = (typeof window !== 'undefined' && typeof window.__activityDisplayLimit === 'number')
-    ? window.__activityDisplayLimit
-    : ACTIVITY_PAGE_SIZE;
-  const visibleActivities = filtered.slice(0, limit);
+  const visibleActivities = filtered.slice(startIdx, endIdx);
 
   visibleActivities.forEach(act => {
     const row = document.createElement('tr');
@@ -503,44 +523,10 @@ export function applyFiltersAndRender() {
 
     tbody.appendChild(row);
   });
-
-  if (filtered.length > visibleActivities.length) {
-    const footerRow = document.createElement('tr');
-    footerRow.className = 'border-t border-[#2d2147] bg-[#0d0d10]';
-    footerRow.innerHTML = `
-      <td colspan="8" class="py-3 px-4 text-center">
-        <div class="flex items-center justify-center gap-3 text-xs text-zinc-400">
-          <span>Showing ${visibleActivities.length} of ${filtered.length} activities</span>
-          <button type="button" id="btn-show-more-activities" class="px-3 py-1 rounded-md bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-200 border border-[#3b2b5e] transition-colors">
-            Show more (+${ACTIVITY_PAGE_SIZE})
-          </button>
-          <button type="button" id="btn-show-all-activities" class="px-3 py-1 rounded-md bg-[#1b132e] hover:bg-[#3b2b5e] text-emerald-400 border border-[#3b2b5e] transition-colors">
-            Show all
-          </button>
-        </div>
-      </td>
-    `;
-    tbody.appendChild(footerRow);
-
-    const btnMore = document.getElementById('btn-show-more-activities');
-    if (btnMore) {
-      btnMore.addEventListener('click', () => {
-        window.__activityDisplayLimit = limit + ACTIVITY_PAGE_SIZE;
-        applyFiltersAndRender();
-      });
-    }
-    const btnAll = document.getElementById('btn-show-all-activities');
-    if (btnAll) {
-      btnAll.addEventListener('click', () => {
-        window.__activityDisplayLimit = filtered.length;
-        applyFiltersAndRender();
-      });
-    }
-  }
 }
 
 /**
- * Toggles Activity Inspection Drawer between slide-over panel and full-window modal view.
+ * Toggles Activity Inspection Modal between centered window and full-screen view.
  */
 export function toggleDrawerExpand() {
   const drawer = document.getElementById('activity-drawer');
@@ -553,18 +539,16 @@ export function toggleDrawerExpand() {
   isDrawerExpanded = !isDrawerExpanded;
 
   if (isDrawerExpanded) {
-    drawer.classList.remove('justify-end');
-    drawer.classList.add('justify-center');
-    panel.classList.remove('max-w-2xl', 'border-l');
-    panel.classList.add('max-w-none', 'w-full', 'h-full', 'rounded-none');
+    drawer.classList.remove('p-3', 'sm:p-6');
+    panel.classList.remove('max-w-5xl', 'rounded-2xl', 'max-h-[92vh]');
+    panel.classList.add('max-w-none', 'w-full', 'h-full', 'max-h-screen', 'rounded-none');
     if (iconExpand) iconExpand.classList.add('hidden');
     if (iconCollapse) iconCollapse.classList.remove('hidden');
-    if (expandBtn) expandBtn.title = 'Collapse to Side Drawer';
+    if (expandBtn) expandBtn.title = 'Exit Full Screen';
   } else {
-    drawer.classList.remove('justify-center');
-    drawer.classList.add('justify-end');
-    panel.classList.remove('max-w-none', 'rounded-none');
-    panel.classList.add('max-w-2xl', 'border-l');
+    drawer.classList.add('p-3', 'sm:p-6');
+    panel.classList.remove('max-w-none', 'w-full', 'h-full', 'max-h-screen', 'rounded-none');
+    panel.classList.add('max-w-5xl', 'rounded-2xl', 'max-h-[92vh]');
     if (iconExpand) iconExpand.classList.remove('hidden');
     if (iconCollapse) iconCollapse.classList.add('hidden');
     if (expandBtn) expandBtn.title = 'Expand to Full Screen';
@@ -849,6 +833,9 @@ function resolveActivitySplits(act, isStrength) {
 
   // Show Drawer FIRST so container has active layout geometry
   drawer.classList.remove('hidden');
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.style.overflow = 'hidden';
+  }
 
   // Render Interactive GPS Route Map (Feature F9)
   renderRouteMap(act);
@@ -891,17 +878,19 @@ export function closeActivityDrawer() {
   if (isDrawerExpanded && panel) {
     isDrawerExpanded = false;
     if (drawer) {
-      drawer.classList.remove('justify-center');
-      drawer.classList.add('justify-end');
+      drawer.classList.add('p-3', 'sm:p-6');
     }
-    panel.classList.remove('max-w-none', 'rounded-none');
-    panel.classList.add('max-w-2xl', 'border-l');
+    panel.classList.remove('max-w-none', 'w-full', 'h-full', 'max-h-screen', 'rounded-none');
+    panel.classList.add('max-w-5xl', 'rounded-2xl', 'max-h-[92vh]');
     if (iconExpand) iconExpand.classList.remove('hidden');
     if (iconCollapse) iconCollapse.classList.add('hidden');
     if (expandBtn) expandBtn.title = 'Expand to Full Screen';
   }
 
   if (drawer) drawer.classList.add('hidden');
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.style.overflow = '';
+  }
   if (profileChartInstance) {
     if (typeof profileChartInstance.destroy === 'function') {
       profileChartInstance.destroy();
@@ -1917,6 +1906,7 @@ export function setupActivityEventListeners() {
   if (searchInput) {
     searchInput.addEventListener('input', (e) => {
       currentSearch = e.target.value;
+      currentPage = 1;
       applyFiltersAndRender();
     });
   }
@@ -1925,6 +1915,35 @@ export function setupActivityEventListeners() {
   if (sortSelect) {
     sortSelect.addEventListener('change', (e) => {
       currentSort = e.target.value;
+      currentPage = 1;
+      applyFiltersAndRender();
+    });
+  }
+
+  const pageSizeSelect = document.getElementById('activity-page-size');
+  if (pageSizeSelect) {
+    pageSizeSelect.addEventListener('change', (e) => {
+      const parsed = parseInt(e.target.value, 10);
+      currentPageSize = Number.isFinite(parsed) && parsed > 0 ? parsed : 15;
+      currentPage = 1;
+      applyFiltersAndRender();
+    });
+  }
+
+  const prevPageBtn = document.getElementById('activity-page-prev');
+  if (prevPageBtn) {
+    prevPageBtn.addEventListener('click', () => {
+      if (currentPage > 1) {
+        currentPage -= 1;
+        applyFiltersAndRender();
+      }
+    });
+  }
+
+  const nextPageBtn = document.getElementById('activity-page-next');
+  if (nextPageBtn) {
+    nextPageBtn.addEventListener('click', () => {
+      currentPage += 1;
       applyFiltersAndRender();
     });
   }

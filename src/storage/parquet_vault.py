@@ -429,12 +429,20 @@ class ParquetVault:
                 cdate,
                 _extract_year(cdate),
                 _safe_float(rec.get("resting_hr")),
-                _safe_float(rec.get("hrv_ms") if rec.get("hrv_ms") is not None else rec.get("hrv")),
+                _safe_float(
+                    rec.get("hrv_last_night_avg")
+                    if rec.get("hrv_last_night_avg") is not None
+                    else (
+                        rec.get("hrv_ms")
+                        if rec.get("hrv_ms") is not None
+                        else (rec.get("hrv_weekly_avg") if rec.get("hrv_weekly_avg") is not None else rec.get("hrv"))
+                    )
+                ),
                 _safe_float(rec.get("sleep_seconds")),
                 _safe_float(rec.get("sleep_score")),
                 _safe_float(rec.get("stress_level")),
-                _safe_float(rec.get("body_battery_max")),
-                _safe_float(rec.get("body_battery_min")),
+                _safe_float(rec.get("body_battery_high") if rec.get("body_battery_high") is not None else rec.get("body_battery_max")),
+                _safe_float(rec.get("body_battery_low") if rec.get("body_battery_low") is not None else rec.get("body_battery_min")),
                 _safe_int(rec.get("steps")),
                 _safe_float(rec.get("vo2_max")),
                 _safe_float(rec.get("training_readiness")),

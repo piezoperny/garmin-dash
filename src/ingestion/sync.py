@@ -106,6 +106,41 @@ def apply_wellness_intraday_retention(
     return retained
 
 
+def build_current_wellness_snapshot(
+    retained_wellness: List[Dict[str, Any]],
+    max_lookback_records: int = 3,
+) -> Dict[str, Any]:
+    """
+    Build the `wellness.current` snapshot from the latest record, backfilling
+    any null daily-lagged metrics (HRV, Sleep, RHR, Body Battery) from the most
+    recent non-null record within `max_lookback_records` days, without mutating
+    `wellness.daily`.
+    """
+    if not retained_wellness:
+        return {}
+    latest = dict(retained_wellness[-1]) if isinstance(retained_wellness[-1], dict) else {}
+    if not latest:
+        return {}
+    lookback = [
+        r for r in reversed(retained_wellness[:-1])
+        if isinstance(r, dict)
+    ][:max_lookback_records]
+    backfill_keys = (
+        "hrv_last_night_avg", "hrv_ms", "hrv_weekly_avg", "hrv_7d_avg",
+        "hrv_status", "hrv_baseline", "sleep_seconds", "sleep_score",
+        "sleep_quality", "resting_hr", "resting_heart_rate",
+        "body_battery", "body_battery_high", "body_battery_low",
+        "body_battery_charged", "body_battery_drained", "charged", "drained",
+    )
+    for k in backfill_keys:
+        if latest.get(k) is None:
+            for prev in lookback:
+                if prev.get(k) is not None:
+                    latest[k] = prev[k]
+                    break
+    return latest
+
+
 def _safe_listdir(storage_client: Any, remote_dir: str) -> List[str]:
     """Safely list a remote directory across SFTP/GDrive/Mock clients without crashing on missing dirs."""
     try:
@@ -118,7 +153,7 @@ def _safe_listdir(storage_client: Any, remote_dir: str) -> List[str]:
 
 SPORT_TAXONOMY_MAP: Dict[str, str] = {
     # Cycling
-    "cycling": "cycling", "cycle": "cycling", "biking": "cycling",
+    "cycling": "cycling", "cycle": "cycling", "biking": "cycling", "road": "cycling",
     "road_biking": "cycling", "mountain_biking": "cycling", "gravel_cycling": "cycling",
     "virtual_ride": "cycling", "indoor_cycling": "cycling", "handcycling": "cycling", "bmx": "cycling",
     
@@ -154,6 +189,9 @@ SPORT_TAXONOMY_MAP: Dict[str, str] = {
     # Cardio / Fitness
     "cardio": "cardio", "cardio_training": "cardio", "aerobic": "cardio",
     "hiit": "cardio", "elliptical": "cardio", "stair_climbing": "cardio", "floor_climbing": "cardio",
+
+    # Climbing
+    "indoor_climbing": "indoor_climbing", "rock_climbing": "indoor_climbing",
     
     # Winter sports
     "skiing": "skiing", "resort_skiing": "skiing", "cross_country_skiing": "skiing",
@@ -176,7 +214,7 @@ def resolve_sport_taxonomy(summary_or_type: Any, default: str = "other") -> str:
         raw = str(summary_or_type or "")
 
     raw_clean = re.sub(r"[^a-zA-Z0-9_]+", "_", str(raw).strip().lower()).strip("_")
-    if not raw_clean:
+    if not raw_clean or raw_clean == "unknown" or raw_clean.startswith("unknownenumvalue"):
         return default
 
     if raw_clean in SPORT_TAXONOMY_MAP:
@@ -1501,7 +1539,7 @@ def run_sync_pipeline(
             })
             parquet_vault.save_manifest(v_manifest)
 
-            latest_wellness = retained_wellness[-1] if retained_wellness else {}
+            latest_wellness = build_current_wellness_snapshot(retained_wellness)
             wellness_payload = {"current": latest_wellness, "daily": retained_wellness}
             rollup_dict = compile_rollup(canonical_acts, sync_manifest=manifest, wellness=wellness_payload)
             src_by_id = {str(a.get("id")): a for a in canonical_acts if isinstance(a, dict)}
@@ -1941,7 +1979,7 @@ def run_sync_pipeline(
             except Exception as e:
                 logger.warning(f"Could not save wellness history: {e}")
 
-            latest_wellness = retained_wellness[-1] if retained_wellness else {}
+            latest_wellness = build_current_wellness_snapshot(retained_wellness)
             wellness_payload = {
                 "current": latest_wellness,
                 "daily": retained_wellness,

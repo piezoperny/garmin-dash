@@ -494,9 +494,9 @@
 
         <!-- Activity Table Card -->
         <div class="bg-[#130d21] border border-[#2d2147] rounded-xl overflow-hidden">
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto max-h-[520px] overflow-y-auto">
             <table id="activity-table" class="w-full text-left text-xs">
-              <thead class="bg-[#1b132e]/80 text-zinc-400 uppercase text-[11px] font-medium tracking-wider border-b border-[#2d2147]">
+              <thead class="bg-[#1b132e] text-zinc-400 uppercase text-[11px] font-medium tracking-wider border-b border-[#2d2147] sticky top-0 z-10">
                 <tr>
                   <th class="py-3 px-4">Date</th>
                   <th class="py-3 px-4">Sport</th>
@@ -512,6 +512,25 @@
                 <!-- Dynamically populated rows -->
               </tbody>
             </table>
+          </div>
+          <!-- Pagination Footer Bar -->
+          <div id="activity-pagination-bar" class="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-[#2d2147] bg-[#0e091a] text-xs text-zinc-400">
+            <div class="flex items-center space-x-3">
+              <span id="activity-pagination-summary" class="font-mono text-[11px] text-zinc-400">Showing 0 of 0 activities</span>
+              <label class="flex items-center space-x-1.5 text-[11px] text-zinc-400">
+                <span>Rows:</span>
+                <select id="activity-page-size" class="bg-[#130d21] border border-[#2d2147] rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none">
+                  <option value="15" selected>15</option>
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                </select>
+              </label>
+            </div>
+            <div class="flex items-center space-x-2">
+              <button id="activity-page-prev" type="button" class="px-2.5 py-1 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-300 border border-[#2d2147] transition disabled:opacity-40 disabled:cursor-not-allowed">◀ Prev</button>
+              <span id="activity-page-indicator" class="font-mono text-[11px] text-zinc-300 px-2">Page 1 of 1</span>
+              <button id="activity-page-next" type="button" class="px-2.5 py-1 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-300 border border-[#2d2147] transition disabled:opacity-40 disabled:cursor-not-allowed">Next ▶</button>
+            </div>
           </div>
         </div>
       </section>
@@ -579,17 +598,17 @@
   </div>
 
   <!-- ========================================================================= -->
-  <!-- ACTIVITY DRILL-DOWN MODAL / DRAWER                                        -->
+  <!-- ACTIVITY DRILL-DOWN STANDALONE MODAL                                      -->
   <!-- ========================================================================= -->
-  <div id="activity-drawer" class="fixed inset-0 z-50 flex items-center justify-end hidden">
+  <div id="activity-drawer" class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 hidden">
     <!-- Backdrop -->
     <div id="drawer-backdrop" class="fixed inset-0 drawer-backdrop transition-opacity"></div>
 
-    <!-- Drawer Panel -->
-    <div id="drawer-panel" class="relative w-full max-w-2xl bg-[#130d21] border-l border-[#2d2147] h-full p-6 shadow-2xl flex flex-col overflow-y-auto z-10">
+    <!-- Modal Panel -->
+    <div id="drawer-panel" class="relative w-full max-w-5xl bg-[#130d21] border border-[#2d2147] rounded-2xl max-h-[92vh] shadow-2xl flex flex-col overflow-hidden z-10 transition-all">
       
-      <!-- Drawer Header -->
-      <div class="flex items-start justify-between pb-4 border-b border-[#2d2147]">
+      <!-- Modal Header -->
+      <div class="flex items-start justify-between px-6 py-4 border-b border-[#2d2147] shrink-0">
         <div>
           <h3 id="drawer-activity-title" class="text-base font-semibold text-white">Workout Details</h3>
           <p id="drawer-activity-date" class="text-xs text-zinc-400 mt-0.5">Date & Sport</p>
@@ -614,8 +633,8 @@
           <button
             id="btn-close-drawer"
             class="p-2 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white transition"
-            title="Close Drawer"
-            aria-label="Close Drawer"
+            title="Close Window"
+            aria-label="Close Window"
           >
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -624,8 +643,10 @@
         </div>
       </div>
 
+      <!-- Scrollable Modal Body -->
+      <div class="p-6 overflow-y-auto flex-1 space-y-5">
       <!-- Telemetry KPI Summary -->
-      <div class="grid grid-cols-3 gap-3 my-4">
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
         <div class="bg-[#1b132e]/50 border border-[#2d2147] p-3 rounded-lg">
           <div class="text-[10px] text-zinc-400 uppercase font-medium">Distance</div>
           <div id="drawer-kpi-dist" class="text-base font-bold font-mono text-white mt-0.5 tabular-nums">-</div>
@@ -653,19 +674,19 @@
       </div>
 
       <!-- GPS Route Map Card -->
-      <div id="drawer-map-card" class="bg-[#1b132e]/40 border border-[#2d2147] rounded-xl p-4 mb-5">
+      <div id="drawer-map-card" class="bg-[#1b132e]/40 border border-[#2d2147] rounded-xl p-4">
         <div class="flex items-center justify-between mb-2">
           <h4 class="text-xs font-semibold text-zinc-300">GPS Route Map</h4>
           <span id="drawer-map-meta" class="text-[10px] text-zinc-400 font-mono"></span>
         </div>
-        <div id="activity-route-map" class="h-60 w-full rounded-lg overflow-hidden bg-[#0b0714] relative z-0"></div>
+        <div id="activity-route-map" class="h-64 sm:h-72 w-full rounded-lg overflow-hidden bg-[#0b0714] relative z-0"></div>
         <div id="drawer-map-fallback" class="hidden h-24 flex items-center justify-center text-xs text-zinc-500 bg-[#0b0714]/50 rounded-lg border border-[#2d2147]/50">
           <span>No GPS track recorded for this workout (indoor / strength session).</span>
         </div>
       </div>
 
       <!-- Route Profile (Elevation & Heart Rate) -->
-      <div id="drawer-telemetry-container" class="bg-[#1b132e]/40 border border-[#2d2147] rounded-xl p-4 mb-5">
+      <div id="drawer-telemetry-container" class="bg-[#1b132e]/40 border border-[#2d2147] rounded-xl p-4">
         <div class="flex items-center justify-between mb-2">
           <h4 class="text-xs font-semibold text-zinc-300">Route Profile (Elevation & Heart Rate)</h4>
           <!-- Live Scrub Telemetry Readout -->
@@ -745,6 +766,7 @@
           </table>
         </div>
       </div>
+      </div>
 
     </div>
   </div>
@@ -752,9 +774,9 @@
   <!-- ========================================================================= -->
   <!-- DASHBOARD CUSTOMIZATION & THRESHOLDS MODAL                                -->
   <!-- ========================================================================= -->
-  <div id="customize-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0b0714]/80 backdrop-blur-sm hidden">
-    <div class="bg-[#130d21] border border-[#2d2147] rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5">
-      <div class="flex items-start justify-between border-b border-[#2d2147] pb-3">
+  <div id="customize-modal" class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-[#0b0714]/80 backdrop-blur-sm hidden">
+    <div class="bg-[#130d21] border border-[#2d2147] rounded-2xl max-w-xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+      <div class="flex items-start justify-between px-6 py-4 border-b border-[#2d2147] shrink-0">
         <div>
           <h3 class="text-base font-semibold text-white">Customize Dashboard & Thresholds</h3>
           <p class="text-xs text-zinc-400 mt-0.5">Show/hide sport cards (e.g. off-season cycling) and set personal HR / Power thresholds</p>
@@ -765,6 +787,8 @@
           </svg>
         </button>
       </div>
+
+      <div class="p-6 overflow-y-auto flex-1 space-y-5">
 
       <!-- Visible Widgets Checkboxes -->
       <div class="space-y-2.5">
@@ -906,7 +930,8 @@
         </div>
       </div>
 
-      <div class="flex items-center justify-between pt-3 border-t border-[#2d2147]">
+      </div>
+      <div class="flex items-center justify-between px-6 py-4 border-t border-[#2d2147] shrink-0">
         <button id="btn-reset-customize" type="button" class="px-3 py-1.5 rounded-lg bg-[#1b132e] hover:bg-[#3b2b5e] text-zinc-400 hover:text-white text-xs font-medium transition">
           Reset Defaults
         </button>
@@ -1048,7 +1073,7 @@
   <!-- GARMIN SYNC MODAL (GitHub Actions Dispatch + Live Reload)                 -->
   <!-- ========================================================================= -->
   <div id="garmin-sync-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 drawer-backdrop" aria-hidden="true">
-    <div class="bg-[#130d21] border border-[#2d2147] rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
+    <div class="bg-[#130d21] border border-[#2d2147] rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl space-y-5">
       <div class="flex items-center justify-between border-b border-[#2d2147] pb-3">
         <div class="flex items-center space-x-2.5">
           <span class="w-8 h-8 rounded-lg bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-300 font-bold">↻</span>
@@ -1138,10 +1163,12 @@
           ✕
         </button>
       </div>
-      <div id="calendar-modal-body" class="p-4 sm:p-6 overflow-y-auto space-y-4">
-        <!-- Dynamically populated by calendar.js -->
+      <div class="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4">
+        <div id="calendar-modal-body" class="space-y-4">
+          <!-- Dynamically populated by calendar.js -->
+        </div>
+        <div id="calendar-modal-heatmap-card"></div>
       </div>
-      <div id="calendar-modal-heatmap-card" class="px-4 sm:px-6 pb-4 sm:pb-6"></div>
     </div>
   </div>
 

@@ -111,7 +111,17 @@ def extract_garmindb_activities(garmindb_dir: Path) -> List[Dict[str, Any]]:
             if not act_id:
                 continue
 
-            raw_sport = r.get("sub_sport") if r.get("sub_sport") not in (None, "", "generic") else r.get("sport")
+            sub_sport_raw = str(r.get("sub_sport") or "").strip()
+            sub_sport_lower = sub_sport_raw.lower()
+            is_invalid_sub = (
+                not sub_sport_lower
+                or sub_sport_lower == "generic"
+                or sub_sport_lower.startswith("unknownenumvalue")
+                or sub_sport_lower.startswith("unknown")
+            )
+            raw_sport = r.get("sport") if is_invalid_sub else sub_sport_raw
+            if sub_sport_lower == "road" and str(r.get("sport") or "").strip().lower() in ("cycling", "biking"):
+                raw_sport = r.get("sport")
             sport = resolve_sport_taxonomy(raw_sport or r.get("sport") or r.get("type") or "other")
 
             dur_sec = _time_str_to_seconds(r.get("elapsed_time")) or _time_str_to_seconds(r.get("moving_time")) or 0
@@ -343,6 +353,24 @@ def extract_garmindb_wellness(garmindb_dir: Path) -> List[Dict[str, Any]]:
                         rec["sleep_score"] = int(d["score"])
                     if d.get("qualifier") is not None:
                         rec["sleep_quality"] = str(d["qualifier"]).replace("_", " ").title()
+
+            if _table_exists(conn, "hrv"):
+                for row in conn.execute("SELECT * FROM hrv ORDER BY day ASC"):
+                    d = dict(row)
+                    day_str = str(d.get("day") or d.get("calendar_date") or "")[:10]
+                    if not day_str:
+                        continue
+                    rec = by_date.setdefault(day_str, {"date": day_str})
+                    ln = _first_not_none(d.get("last_night_avg"), d.get("last_night"), d.get("hrv_avg"), d.get("weekly_avg"))
+                    wk = _first_not_none(d.get("weekly_avg"), d.get("hrv_7d_avg"))
+                    if ln is not None and float(ln) > 0:
+                        rec["hrv_last_night_avg"] = int(round(float(ln)))
+                        rec["hrv_ms"] = int(round(float(ln)))
+                    if wk is not None and float(wk) > 0:
+                        rec["hrv_weekly_avg"] = int(round(float(wk)))
+                        rec["hrv_7d_avg"] = int(round(float(wk)))
+                    if d.get("status"):
+                        rec["hrv_status"] = str(d["status"]).replace("_", " ").title()
         finally:
             conn.close()
 

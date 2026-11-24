@@ -867,97 +867,133 @@ function renderKPICards(metric, records, cfg) {
   let kpi4 = { label: 'Current / Total', val: '—', sub: '' };
 
   if (metric === 'sleep') {
-    const hours = records.map(r => (r.sleep_seconds || 0) / 3600);
-    const scores = records.map(r => r.sleep_score || 80);
-    const avgH = hours.reduce((s, h) => s + h, 0) / hours.length;
-    const minH = Math.min(...hours);
-    const maxH = Math.max(...hours);
-    const avgScore = Math.round(scores.reduce((s, v) => s + v, 0) / scores.length);
-
-    kpi1 = { label: 'Avg Duration', val: `${Math.floor(avgH)}h ${Math.round((avgH % 1) * 60)}m`, sub: `${avgH.toFixed(1)} hrs/night` };
-    kpi2 = { label: 'Min Sleep', val: `${Math.floor(minH)}h ${Math.round((minH % 1) * 60)}m`, sub: 'Shortest night' };
-    kpi3 = { label: 'Max Sleep', val: `${Math.floor(maxH)}h ${Math.round((maxH % 1) * 60)}m`, sub: 'Peak recovery' };
-    kpi4 = { label: 'Avg Sleep Score', val: `${avgScore} / 100`, sub: avgScore >= 80 ? 'Optimal' : 'Fair' };
+    const validSleep = records.map(r => toFiniteNumber(r.sleep_seconds, null)).filter(v => v !== null);
+    const validScores = records.map(r => toFiniteNumber(r.sleep_score, null)).filter(v => v !== null);
+    if (validSleep.length > 0) {
+      const hours = validSleep.map(s => s / 3600);
+      const avgH = hours.reduce((s, h) => s + h, 0) / hours.length;
+      const minH = Math.min(...hours);
+      const maxH = Math.max(...hours);
+      kpi1 = { label: 'Avg Duration', val: `${Math.floor(avgH)}h ${Math.round((avgH % 1) * 60)}m`, sub: `${avgH.toFixed(1)} hrs/night` };
+      kpi2 = { label: 'Min Sleep', val: `${Math.floor(minH)}h ${Math.round((minH % 1) * 60)}m`, sub: 'Shortest night' };
+      kpi3 = { label: 'Max Sleep', val: `${Math.floor(maxH)}h ${Math.round((maxH % 1) * 60)}m`, sub: 'Peak recovery' };
+    } else {
+      kpi1 = { label: 'Avg Duration', val: '—', sub: 'No data' };
+      kpi2 = { label: 'Min Sleep', val: '—', sub: 'No data' };
+      kpi3 = { label: 'Max Sleep', val: '—', sub: 'No data' };
+    }
+    if (validScores.length > 0) {
+      const avgScore = Math.round(validScores.reduce((s, v) => s + v, 0) / validScores.length);
+      kpi4 = { label: 'Avg Sleep Score', val: `${avgScore} / 100`, sub: avgScore >= 80 ? 'Optimal' : 'Fair' };
+    } else {
+      kpi4 = { label: 'Avg Sleep Score', val: '—', sub: 'No data' };
+    }
   } else if (metric === 'hrv') {
-    const vals = records.map(r => r.hrv_last_night_avg || 54);
-    const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-    const variance = vals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / vals.length;
-    const sd = Math.max(3, Math.sqrt(variance));
-    const avg = Math.round(mean);
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
-    const latest = vals[vals.length - 1];
+    const vals = records.map(r => toFiniteNumber(r.hrv_last_night_avg ?? r.hrv_ms, null)).filter(v => v !== null && v > 0);
+    if (vals.length > 0) {
+      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+      const variance = vals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / vals.length;
+      const sd = Math.max(3, Math.sqrt(variance));
+      const avg = Math.round(mean);
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      const latest = vals[vals.length - 1];
+      const latestRecWithBaseline = [...records].reverse().find(r => r?.hrv_baseline && typeof r.hrv_baseline.low === 'number' && typeof r.hrv_baseline.high === 'number');
+      const targetSub = latestRecWithBaseline
+        ? `Baseline ${latestRecWithBaseline.hrv_baseline.low}–${latestRecWithBaseline.hrv_baseline.high} ms`
+        : `Target ${Math.round(mean - sd)}–${Math.round(mean + sd)} ms`;
 
-    kpi1 = { label: 'Avg HRV (±SD)', val: `${avg} ± ${Math.round(sd)} ms`, sub: 'Period mean & 1 SD' };
-    kpi2 = { label: 'Min HRV', val: `${min} ms`, sub: 'Lowest night' };
-    kpi3 = { label: 'Max HRV', val: `${max} ms`, sub: 'Peak vagal tone' };
-    kpi4 = { label: 'Latest Night', val: `${latest} ms`, sub: `Target ${Math.round(mean - sd)}–${Math.round(mean + sd)} ms` };
+      kpi1 = { label: 'Avg HRV (±SD)', val: `${avg} ± ${Math.round(sd)} ms`, sub: `${vals.length}-day mean & 1 SD` };
+      kpi2 = { label: 'Min HRV', val: `${min} ms`, sub: 'Lowest night' };
+      kpi3 = { label: 'Max HRV', val: `${max} ms`, sub: 'Peak vagal tone' };
+      kpi4 = { label: 'Latest Night', val: `${latest} ms`, sub: targetSub };
+    } else {
+      kpi1 = { label: 'Avg HRV (±SD)', val: '—', sub: 'No HRV data' };
+      kpi2 = { label: 'Min HRV', val: '—', sub: 'No HRV data' };
+      kpi3 = { label: 'Max HRV', val: '—', sub: 'No HRV data' };
+      kpi4 = { label: 'Latest Night', val: '—', sub: 'No HRV data' };
+    }
   } else if (metric === 'resting_hr') {
-    const vals = records.map(r => r.resting_hr || 48);
-    const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-    const variance = vals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / vals.length;
-    const sd = Math.max(1.5, Math.sqrt(variance));
-    const avg = Math.round(mean * 10) / 10;
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
-    const latest = vals[vals.length - 1];
+    const vals = records.map(r => toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null)).filter(v => v !== null && v > 0);
+    if (vals.length > 0) {
+      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+      const variance = vals.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / vals.length;
+      const sd = Math.max(1.5, Math.sqrt(variance));
+      const avg = Math.round(mean * 10) / 10;
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      const latest = vals[vals.length - 1];
 
-    kpi1 = { label: 'Avg RHR (±SD)', val: `${avg} ± ${sd.toFixed(1)} bpm`, sub: 'Mean & 1 SD zone' };
-    kpi2 = { label: 'Lowest RHR', val: `${min} bpm`, sub: 'Deep rest floor' };
-    kpi3 = { label: 'Highest RHR', val: `${max} bpm`, sub: 'Fatigue / stress peak' };
-    kpi4 = { label: 'Latest Day', val: `${latest} bpm`, sub: `Target ${Math.round(mean - sd)}–${Math.round(mean + sd)} bpm` };
+      kpi1 = { label: 'Avg RHR (±SD)', val: `${avg} ± ${sd.toFixed(1)} bpm`, sub: 'Mean & 1 SD zone' };
+      kpi2 = { label: 'Lowest RHR', val: `${min} bpm`, sub: 'Deep rest floor' };
+      kpi3 = { label: 'Highest RHR', val: `${max} bpm`, sub: 'Fatigue / stress peak' };
+      kpi4 = { label: 'Latest Day', val: `${latest} bpm`, sub: `Target ${Math.round(mean - sd)}–${Math.round(mean + sd)} bpm` };
+    } else {
+      kpi1 = { label: 'Avg RHR (±SD)', val: '—', sub: 'No RHR data' };
+      kpi2 = { label: 'Lowest RHR', val: '—', sub: 'No RHR data' };
+      kpi3 = { label: 'Highest RHR', val: '—', sub: 'No RHR data' };
+      kpi4 = { label: 'Latest Day', val: '—', sub: 'No RHR data' };
+    }
   } else if (metric === 'steps') {
-    const recordedRecs = records.filter(r => !r.unrecorded && (r.steps || 0) > 0);
-    const effectiveRecs = recordedRecs.length > 0 ? recordedRecs : records;
-    const vals = effectiveRecs.map(r => r.steps || 0);
-    const sum = records.reduce((s, r) => s + (r.steps || 0), 0);
+    const recordedRecs = records.filter(r => !r.unrecorded && toFiniteNumber(r.steps, null) !== null && r.steps > 0);
+    const effectiveRecs = recordedRecs.length > 0 ? recordedRecs : records.filter(r => toFiniteNumber(r.steps, null) !== null);
+    const vals = effectiveRecs.map(r => r.steps);
+    const sum = vals.reduce((s, v) => s + v, 0);
     const avg = vals.length > 0 ? Math.round(sum / vals.length) : 0;
     const min = vals.length > 0 ? Math.min(...vals) : 0;
     const max = vals.length > 0 ? Math.max(...vals) : 0;
     const daysMet = vals.filter(v => v >= 10000).length;
     const pctMet = vals.length > 0 ? Math.round((daysMet / vals.length) * 100) : 0;
 
-    kpi1 = { label: 'Daily Average', val: `${avg.toLocaleString()} steps`, sub: `${pctMet}% of goal met (${effectiveRecs.length} recorded days)` };
-    kpi2 = { label: 'Min Day', val: `${min.toLocaleString()} steps`, sub: 'Active recovery day' };
-    kpi3 = { label: 'Max Day', val: `${max.toLocaleString()} steps`, sub: 'Long hike / excursion' };
-    kpi4 = { label: 'Period Total', val: `${sum.toLocaleString()} steps`, sub: `${effectiveRecs.length} days accumulated` };
+    kpi1 = { label: 'Daily Average', val: vals.length > 0 ? `${avg.toLocaleString()} steps` : '—', sub: `${pctMet}% of goal met (${effectiveRecs.length} recorded days)` };
+    kpi2 = { label: 'Min Day', val: vals.length > 0 ? `${min.toLocaleString()} steps` : '—', sub: 'Active recovery day' };
+    kpi3 = { label: 'Max Day', val: vals.length > 0 ? `${max.toLocaleString()} steps` : '—', sub: 'Long hike / excursion' };
+    kpi4 = { label: 'Period Total', val: vals.length > 0 ? `${sum.toLocaleString()} steps` : '—', sub: `${effectiveRecs.length} days accumulated` };
   } else if (metric === 'body_battery') {
-    const highs = records.map(r => toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, 90)));
-    const lows = records.map(r => toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, 25)));
-    const charged = records.map(r => toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, 65)));
-    const drained = records.map(r => toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, 68)));
+    const highs = records.map(r => toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, null))).filter(v => v !== null);
+    const lows = records.map(r => toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, null))).filter(v => v !== null);
+    const charged = records.map(r => toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, null))).filter(v => v !== null);
+    const drained = records.map(r => toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, null))).filter(v => v !== null);
 
-    const avgHigh = Math.round(highs.reduce((s, v) => s + v, 0) / highs.length);
-    const avgLow = Math.round(lows.reduce((s, v) => s + v, 0) / lows.length);
-    const avgChg = Math.round(charged.reduce((s, v) => s + v, 0) / charged.length);
-    const avgDrn = Math.round(drained.reduce((s, v) => s + v, 0) / drained.length);
+    const avgHigh = highs.length > 0 ? Math.round(highs.reduce((s, v) => s + v, 0) / highs.length) : null;
+    const avgLow = lows.length > 0 ? Math.round(lows.reduce((s, v) => s + v, 0) / lows.length) : null;
+    const avgChg = charged.length > 0 ? Math.round(charged.reduce((s, v) => s + v, 0) / charged.length) : null;
+    const avgDrn = drained.length > 0 ? Math.round(drained.reduce((s, v) => s + v, 0) / drained.length) : null;
 
-    kpi1 = { label: 'Avg Peak Battery', val: `${avgHigh} pts`, sub: 'Morning charge level' };
-    kpi2 = { label: 'Avg Low Battery', val: `${avgLow} pts`, sub: 'Bedtime reserve level' };
-    kpi3 = { label: 'Avg Charged', val: `+${avgChg} pts`, sub: 'Nightly replenishment' };
-    kpi4 = { label: 'Avg Drained', val: `-${avgDrn} pts`, sub: 'Daily expenditure' };
+    kpi1 = { label: 'Avg Peak Battery', val: avgHigh !== null ? `${avgHigh} pts` : '—', sub: avgHigh !== null ? `Morning charge (${highs.length}d)` : 'No data' };
+    kpi2 = { label: 'Avg Low Battery', val: avgLow !== null ? `${avgLow} pts` : '—', sub: avgLow !== null ? 'Bedtime reserve level' : 'No data' };
+    kpi3 = { label: 'Avg Charged', val: avgChg !== null ? `+${avgChg} pts` : '—', sub: avgChg !== null ? 'Nightly replenishment' : 'No data' };
+    kpi4 = { label: 'Avg Drained', val: avgDrn !== null ? `-${avgDrn} pts` : '—', sub: avgDrn !== null ? 'Daily expenditure' : 'No data' };
   } else if (metric === 'stress') {
-    const vals = records.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_level, 24))));
-    const avg = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
-    const avgMeta = getStressZoneMeta(avg);
+    const validRecs = records.filter(r => toFiniteNumber(r.stress_level, null) !== null);
+    if (validRecs.length > 0) {
+      const vals = validRecs.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_level, 0))));
+      const avg = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
+      const avgMeta = getStressZoneMeta(avg);
 
-    const zoneDurs = records.map(r => getStressZoneDurations(r));
-    const sumRestLow = zoneDurs.reduce((s, d) => s + d.restSec + d.lowSec, 0);
-    const sumTotal = zoneDurs.reduce((s, d) => s + d.totalSec, 0);
-    const restLowShare = sumTotal > 0
-      ? Math.round((sumRestLow / sumTotal) * 100)
-      : Math.round(zoneDurs.reduce((s, d) => s + d.restLowSharePct, 0) / zoneDurs.length);
+      const zoneDurs = validRecs.map(r => getStressZoneDurations(r));
+      const sumRestLow = zoneDurs.reduce((s, d) => s + d.restSec + d.lowSec, 0);
+      const sumTotal = zoneDurs.reduce((s, d) => s + d.totalSec, 0);
+      const restLowShare = sumTotal > 0
+        ? Math.round((sumRestLow / sumTotal) * 100)
+        : Math.round(zoneDurs.reduce((s, d) => s + d.restLowSharePct, 0) / zoneDurs.length);
 
-    const peaks = records.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_max, toFiniteNumber(r.stress_level, 24)))));
-    const maxPeak = Math.max(...peaks);
-    const totalHighSec = zoneDurs.reduce((s, d) => s + d.highSec, 0);
+      const peaks = validRecs.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_max, toFiniteNumber(r.stress_level, 0)))));
+      const maxPeak = Math.max(...peaks);
+      const totalHighSec = zoneDurs.reduce((s, d) => s + d.highSec, 0);
 
-    const autonomicStatus = avg <= 25 ? 'Recovered' : (avg <= 55 && restLowShare >= 50 ? 'Balanced' : 'Stressed');
+      const autonomicStatus = avg <= 25 ? 'Recovered' : (avg <= 55 && restLowShare >= 50 ? 'Balanced' : 'Stressed');
 
-    kpi1 = { label: 'Overall Avg Stress', val: `${avg} pts`, sub: `${avgMeta.label} zone` };
-    kpi2 = { label: 'Rest / Low Share', val: `${restLowShare}%`, sub: 'Recovery & low stress time' };
-    kpi3 = { label: 'High Stress Peak', val: `${maxPeak} pts`, sub: totalHighSec > 0 ? `High zone: ${formatStressDuration(totalHighSec)}` : 'Peak recorded load' };
-    kpi4 = { label: 'Autonomic Status', val: autonomicStatus, sub: `${records.length} day${records.length === 1 ? '' : 's'} analyzed` };
+      kpi1 = { label: 'Overall Avg Stress', val: `${avg} pts`, sub: `${avgMeta.label} zone` };
+      kpi2 = { label: 'Rest / Low Share', val: `${restLowShare}%`, sub: 'Recovery & low stress time' };
+      kpi3 = { label: 'High Stress Peak', val: `${maxPeak} pts`, sub: totalHighSec > 0 ? `High zone: ${formatStressDuration(totalHighSec)}` : 'Peak recorded load' };
+      kpi4 = { label: 'Autonomic Status', val: autonomicStatus, sub: `${validRecs.length} day${validRecs.length === 1 ? '' : 's'} analyzed` };
+    } else {
+      kpi1 = { label: 'Overall Avg Stress', val: '—', sub: 'No data' };
+      kpi2 = { label: 'Rest / Low Share', val: '—', sub: 'No data' };
+      kpi3 = { label: 'High Stress Peak', val: '—', sub: 'No data' };
+      kpi4 = { label: 'Autonomic Status', val: '—', sub: 'No data' };
+    }
   } else if (metric === 'intensity_minutes') {
     const mod = records.map(r => r.intensity_minutes_moderate || 0);
     const vig = records.map(r => r.intensity_minutes_vigorous || 0);
@@ -971,31 +1007,50 @@ function renderKPICards(metric, records, cfg) {
     kpi3 = { label: 'Vigorous', val: `${totalVig} min`, sub: 'Zone 4+ high intensity' };
     kpi4 = { label: 'Weekly Pace', val: `${weeklyRate} min/wk`, sub: `${Math.round((weeklyRate / 150) * 100)}% of WHO 150m goal` };
   } else if (metric === 'calories') {
-    const active = records.map(r => (typeof r.active_calories === 'number' && !isNaN(r.active_calories)) ? r.active_calories : 0);
-    const bmr = records.map(r => (typeof r.bmr_calories === 'number' && !isNaN(r.bmr_calories)) ? r.bmr_calories : 1730);
-    const totals = records.map(r => (typeof r.daily_calories === 'number' && !isNaN(r.daily_calories)) ? r.daily_calories : (((typeof r.active_calories === 'number' && !isNaN(r.active_calories)) ? r.active_calories : 0) + ((typeof r.bmr_calories === 'number' && !isNaN(r.bmr_calories)) ? r.bmr_calories : 1730)));
-
-    const sumTotal = totals.reduce((s, v) => s + v, 0);
-    const avgTotal = Math.round(sumTotal / totals.length);
-    const avgActive = Math.round(active.reduce((s, v) => s + v, 0) / active.length);
-    const maxBurn = Math.max(...totals);
-
-    kpi1 = { label: 'Avg Daily Burn', val: `${avgTotal.toLocaleString()} kcal`, sub: 'Active + BMR calories' };
-    kpi2 = { label: 'Avg Active Burn', val: `${avgActive.toLocaleString()} kcal`, sub: 'Workout expenditure' };
-    kpi3 = { label: 'Max Single Day', val: `${maxBurn.toLocaleString()} kcal`, sub: 'Peak calorie burn' };
-    kpi4 = { label: 'Period Total', val: `${sumTotal.toLocaleString()} kcal`, sub: `${records.length} days burned` };
+    const validTotals = [];
+    const validActive = [];
+    for (const r of records) {
+      const act = toFiniteNumber(r.active_calories, null);
+      const bmr = toFiniteNumber(r.bmr_calories, null);
+      const tot = toFiniteNumber(r.daily_calories, (act !== null && bmr !== null) ? (act + bmr) : null);
+      if (act !== null) validActive.push(act);
+      if (tot !== null) validTotals.push(tot);
+    }
+    if (validTotals.length > 0) {
+      const sumTotal = validTotals.reduce((s, v) => s + v, 0);
+      const avgTotal = Math.round(sumTotal / validTotals.length);
+      const avgActive = validActive.length > 0 ? Math.round(validActive.reduce((s, v) => s + v, 0) / validActive.length) : 0;
+      const maxBurn = Math.max(...validTotals);
+      kpi1 = { label: 'Avg Daily Burn', val: `${avgTotal.toLocaleString()} kcal`, sub: 'Active + BMR calories' };
+      kpi2 = { label: 'Avg Active Burn', val: `${avgActive.toLocaleString()} kcal`, sub: 'Workout expenditure' };
+      kpi3 = { label: 'Max Single Day', val: `${maxBurn.toLocaleString()} kcal`, sub: 'Peak calorie burn' };
+      kpi4 = { label: 'Period Total', val: `${sumTotal.toLocaleString()} kcal`, sub: `${validTotals.length} days burned` };
+    } else {
+      kpi1 = { label: 'Avg Daily Burn', val: '—', sub: 'No data' };
+      kpi2 = { label: 'Avg Active Burn', val: '—', sub: 'No data' };
+      kpi3 = { label: 'Max Single Day', val: '—', sub: 'No data' };
+      kpi4 = { label: 'Period Total', val: '—', sub: 'No data' };
+    }
   } else if (metric === 'training_readiness') {
-    const scores = records.map(r => (typeof r.training_readiness_score === 'number' && !isNaN(r.training_readiness_score)) ? r.training_readiness_score : 75);
-    const latestScore = scores[scores.length - 1];
-    const avgScore = Math.round(scores.reduce((s, v) => s + v, 0) / scores.length);
-    const maxScore = Math.max(...scores);
-    const primeDays = scores.filter(v => v >= 80).length;
-    const latestLevel = records[records.length - 1]?.training_readiness_level || (latestScore >= 80 ? 'Prime' : latestScore >= 60 ? 'High' : 'Moderate');
+    const scores = records.map(r => toFiniteNumber(r.training_readiness_score, null)).filter(v => v !== null);
+    if (scores.length > 0) {
+      const latestScore = scores[scores.length - 1];
+      const avgScore = Math.round(scores.reduce((s, v) => s + v, 0) / scores.length);
+      const maxScore = Math.max(...scores);
+      const primeDays = scores.filter(v => v >= 80).length;
+      const latestRec = [...records].reverse().find(r => toFiniteNumber(r.training_readiness_score, null) !== null);
+      const latestLevel = latestRec?.training_readiness_level || (latestScore >= 80 ? 'Prime' : latestScore >= 60 ? 'High' : 'Moderate');
 
-    kpi1 = { label: 'Latest Readiness', val: `${latestScore} / 100`, sub: `Status: ${latestLevel}` };
-    kpi2 = { label: 'Period Average', val: `${avgScore} pts`, sub: `Across ${records.length} days` };
-    kpi3 = { label: 'Peak Readiness', val: `${maxScore} pts`, sub: 'Highest recovery day' };
-    kpi4 = { label: 'Prime Days', val: `${primeDays}`, sub: 'Score ≥ 80 (Prime)' };
+      kpi1 = { label: 'Latest Readiness', val: `${latestScore} / 100`, sub: `Status: ${latestLevel}` };
+      kpi2 = { label: 'Period Average', val: `${avgScore} pts`, sub: `Across ${scores.length} days` };
+      kpi3 = { label: 'Peak Readiness', val: `${maxScore} pts`, sub: 'Highest recovery day' };
+      kpi4 = { label: 'Prime Days', val: `${primeDays}`, sub: 'Score ≥ 80 (Prime)' };
+    } else {
+      kpi1 = { label: 'Latest Readiness', val: '—', sub: 'No data' };
+      kpi2 = { label: 'Period Average', val: '—', sub: 'No data' };
+      kpi3 = { label: 'Peak Readiness', val: '—', sub: 'No data' };
+      kpi4 = { label: 'Prime Days', val: '—', sub: 'No data' };
+    }
   } else if (metric === 'vo2max') {
     const { run, cyc } = resolveVo2MaxSeries(records, state.activeRollup);
     const latestRun = run[run.length - 1];
@@ -1008,79 +1063,117 @@ function renderKPICards(metric, records, cfg) {
     kpi3 = { label: 'Peak Running', val: `${peakRun.toFixed(1)}`, sub: 'Period high' };
     kpi4 = { label: 'Period Trend', val: `${Number(deltaRun) >= 0 ? '+' : ''}${deltaRun}`, sub: 'Change over window' };
   } else if (metric === 'spo2') {
-    const avgArr = records.map(r => (typeof r.spo2_avg === 'number' && !isNaN(r.spo2_avg)) ? r.spo2_avg : 97.4);
-    const lowArr = records.map(r => (typeof r.spo2_low === 'number' && !isNaN(r.spo2_low)) ? r.spo2_low : 93.8);
-    const latestAvg = avgArr[avgArr.length - 1];
-    const periodAvg = (avgArr.reduce((s, v) => s + v, 0) / avgArr.length).toFixed(1);
-    const minLow = Math.min(...lowArr).toFixed(1);
-    const healthyDays = avgArr.filter(v => v >= 95).length;
+    const avgArr = records.map(r => toFiniteNumber(r.spo2_avg, null)).filter(v => v !== null);
+    const lowArr = records.map(r => toFiniteNumber(r.spo2_low, null)).filter(v => v !== null);
+    if (avgArr.length > 0) {
+      const latestAvg = avgArr[avgArr.length - 1];
+      const periodAvg = (avgArr.reduce((s, v) => s + v, 0) / avgArr.length).toFixed(1);
+      const minLow = lowArr.length > 0 ? Math.min(...lowArr).toFixed(1) : '—';
+      const healthyDays = avgArr.filter(v => v >= 95).length;
 
-    kpi1 = { label: 'Latest SpO2 Avg', val: `${latestAvg.toFixed(1)}%`, sub: 'Daily blood oxygen' };
-    kpi2 = { label: 'Period Average', val: `${periodAvg}%`, sub: `${records.length}-day mean` };
-    kpi3 = { label: 'Lowest Reading', val: `${minLow}%`, sub: 'Overnight minimum' };
-    kpi4 = { label: 'Normal Days', val: `${healthyDays} / ${records.length}`, sub: 'SpO2 ≥ 95%' };
+      kpi1 = { label: 'Latest SpO2 Avg', val: `${latestAvg.toFixed(1)}%`, sub: 'Daily blood oxygen' };
+      kpi2 = { label: 'Period Average', val: `${periodAvg}%`, sub: `${avgArr.length}-day mean` };
+      kpi3 = { label: 'Lowest Reading', val: minLow !== '—' ? `${minLow}%` : '—', sub: 'Overnight minimum' };
+      kpi4 = { label: 'Normal Days', val: `${healthyDays} / ${avgArr.length}`, sub: 'SpO2 ≥ 95%' };
+    } else {
+      kpi1 = { label: 'Latest SpO2 Avg', val: '—', sub: 'No data' };
+      kpi2 = { label: 'Period Average', val: '—', sub: 'No data' };
+      kpi3 = { label: 'Lowest Reading', val: '—', sub: 'No data' };
+      kpi4 = { label: 'Normal Days', val: '—', sub: 'No data' };
+    }
   } else if (metric === 'respiration') {
-    const wake = records.map(r => (typeof r.respiration_waking === 'number' && !isNaN(r.respiration_waking)) ? r.respiration_waking : 14.8);
-    const sleep = records.map(r => (typeof r.respiration_sleep === 'number' && !isNaN(r.respiration_sleep)) ? r.respiration_sleep : 13.2);
-    const avgWake = (wake.reduce((s, v) => s + v, 0) / wake.length).toFixed(1);
-    const avgSleep = (sleep.reduce((s, v) => s + v, 0) / sleep.length).toFixed(1);
-    const latestWake = wake[wake.length - 1].toFixed(1);
-    const latestSleep = sleep[sleep.length - 1].toFixed(1);
+    const wake = records.map(r => toFiniteNumber(r.respiration_waking, null)).filter(v => v !== null);
+    const sleep = records.map(r => toFiniteNumber(r.respiration_sleep, null)).filter(v => v !== null);
+    const avgWake = wake.length > 0 ? (wake.reduce((s, v) => s + v, 0) / wake.length).toFixed(1) : null;
+    const avgSleep = sleep.length > 0 ? (sleep.reduce((s, v) => s + v, 0) / sleep.length).toFixed(1) : null;
+    const latestWake = wake.length > 0 ? wake[wake.length - 1].toFixed(1) : null;
+    const latestSleep = sleep.length > 0 ? sleep[sleep.length - 1].toFixed(1) : null;
 
-    kpi1 = { label: 'Latest Waking', val: `${latestWake} brpm`, sub: 'Daytime breaths/min' };
-    kpi2 = { label: 'Latest Sleep', val: `${latestSleep} brpm`, sub: 'Overnight breaths/min' };
-    kpi3 = { label: 'Avg Waking', val: `${avgWake} brpm`, sub: `${records.length}-day mean` };
-    kpi4 = { label: 'Avg Sleep', val: `${avgSleep} brpm`, sub: `${records.length}-day mean` };
+    kpi1 = { label: 'Latest Waking', val: latestWake ? `${latestWake} brpm` : '—', sub: 'Daytime breaths/min' };
+    kpi2 = { label: 'Latest Sleep', val: latestSleep ? `${latestSleep} brpm` : '—', sub: 'Overnight breaths/min' };
+    kpi3 = { label: 'Avg Waking', val: avgWake ? `${avgWake} brpm` : '—', sub: wake.length > 0 ? `${wake.length}-day mean` : 'No data' };
+    kpi4 = { label: 'Avg Sleep', val: avgSleep ? `${avgSleep} brpm` : '—', sub: sleep.length > 0 ? `${sleep.length}-day mean` : 'No data' };
   } else if (metric === 'floors') {
-    const asc = records.map(r => (typeof r.floors_ascended === 'number' && !isNaN(r.floors_ascended)) ? r.floors_ascended : 0);
-    const desc = records.map(r => (typeof r.floors_descended === 'number' && !isNaN(r.floors_descended)) ? r.floors_descended : 0);
-    const totalAsc = asc.reduce((s, v) => s + v, 0);
-    const totalDesc = desc.reduce((s, v) => s + v, 0);
-    const avgAsc = Math.round(totalAsc / asc.length);
-    const maxAsc = Math.max(...asc);
+    const asc = records.map(r => toFiniteNumber(r.floors_ascended, null)).filter(v => v !== null);
+    const desc = records.map(r => toFiniteNumber(r.floors_descended, null)).filter(v => v !== null);
+    if (asc.length > 0 || desc.length > 0) {
+      const totalAsc = asc.reduce((s, v) => s + v, 0);
+      const totalDesc = desc.reduce((s, v) => s + v, 0);
+      const avgAsc = asc.length > 0 ? Math.round(totalAsc / asc.length) : 0;
+      const maxAsc = asc.length > 0 ? Math.max(...asc) : 0;
 
-    kpi1 = { label: 'Total Ascended', val: `${totalAsc} floors`, sub: `${records.length}-day total` };
-    kpi2 = { label: 'Daily Avg', val: `${avgAsc} floors`, sub: 'Average climbed/day' };
-    kpi3 = { label: 'Peak Day', val: `${maxAsc} floors`, sub: 'Single-day high' };
-    kpi4 = { label: 'Total Descended', val: `${totalDesc} floors`, sub: 'Downhill / stairs' };
+      kpi1 = { label: 'Total Ascended', val: `${totalAsc} floors`, sub: `${asc.length}-day total` };
+      kpi2 = { label: 'Daily Avg', val: `${avgAsc} floors`, sub: 'Average climbed/day' };
+      kpi3 = { label: 'Peak Day', val: `${maxAsc} floors`, sub: 'Single-day high' };
+      kpi4 = { label: 'Total Descended', val: `${totalDesc} floors`, sub: 'Downhill / stairs' };
+    } else {
+      kpi1 = { label: 'Total Ascended', val: '—', sub: 'No data' };
+      kpi2 = { label: 'Daily Avg', val: '—', sub: 'No data' };
+      kpi3 = { label: 'Peak Day', val: '—', sub: 'No data' };
+      kpi4 = { label: 'Total Descended', val: '—', sub: 'No data' };
+    }
   } else if (metric === 'hydration') {
-    const ml = records.map(r => (typeof r.hydration_ml === 'number' && !isNaN(r.hydration_ml)) ? r.hydration_ml : 2400);
-    const goal = records[records.length - 1]?.hydration_goal_ml || 2500;
-    const avgMl = Math.round(ml.reduce((s, v) => s + v, 0) / ml.length);
-    const totalL = (ml.reduce((s, v) => s + v, 0) / 1000).toFixed(1);
-    const goalMet = ml.filter(v => v >= goal).length;
-    const latestL = (ml[ml.length - 1] / 1000).toFixed(2);
+    const ml = records.map(r => toFiniteNumber(r.hydration_ml, null)).filter(v => v !== null);
+    if (ml.length > 0) {
+      const goal = records[records.length - 1]?.hydration_goal_ml || 2500;
+      const avgMl = Math.round(ml.reduce((s, v) => s + v, 0) / ml.length);
+      const totalL = (ml.reduce((s, v) => s + v, 0) / 1000).toFixed(1);
+      const goalMet = ml.filter(v => v >= goal).length;
+      const latestL = (ml[ml.length - 1] / 1000).toFixed(2);
 
-    kpi1 = { label: 'Latest Intake', val: `${latestL} L`, sub: `Goal: ${(goal / 1000).toFixed(1)} L` };
-    kpi2 = { label: 'Daily Average', val: `${(avgMl / 1000).toFixed(2)} L`, sub: `${avgMl} mL/day` };
-    kpi3 = { label: 'Goal Met', val: `${goalMet} / ${records.length}`, sub: 'Days ≥ target' };
-    kpi4 = { label: 'Period Total', val: `${totalL} L`, sub: `${records.length} days tracked` };
+      kpi1 = { label: 'Latest Intake', val: `${latestL} L`, sub: `Goal: ${(goal / 1000).toFixed(1)} L` };
+      kpi2 = { label: 'Daily Average', val: `${(avgMl / 1000).toFixed(2)} L`, sub: `${avgMl} mL/day` };
+      kpi3 = { label: 'Goal Met', val: `${goalMet} / ${ml.length}`, sub: 'Days ≥ target' };
+      kpi4 = { label: 'Period Total', val: `${totalL} L`, sub: `${ml.length} days tracked` };
+    } else {
+      kpi1 = { label: 'Latest Intake', val: '—', sub: 'No data' };
+      kpi2 = { label: 'Daily Average', val: '—', sub: 'No data' };
+      kpi3 = { label: 'Goal Met', val: '—', sub: 'No data' };
+      kpi4 = { label: 'Period Total', val: '—', sub: 'No data' };
+    }
   } else if (metric === 'weight') {
-    const wt = records.map(r => (typeof r.weight_kg === 'number' && !isNaN(r.weight_kg)) ? r.weight_kg : 70.4);
-    const bf = records.map(r => (typeof r.body_fat_pct === 'number' && !isNaN(r.body_fat_pct)) ? r.body_fat_pct : 13.5);
-    const latestWt = wt[wt.length - 1];
-    const latestBf = bf[bf.length - 1];
-    const latestBmi = records[records.length - 1]?.bmi ?? 22.2;
-    const deltaWt = (latestWt - wt[0]).toFixed(1);
+    const validWt = records.filter(r => toFiniteNumber(r.weight_kg, null) !== null);
+    if (validWt.length > 0) {
+      const wt = validWt.map(r => r.weight_kg);
+      const latestRec = validWt[validWt.length - 1];
+      const latestWt = wt[wt.length - 1];
+      const deltaWt = (latestWt - wt[0]).toFixed(1);
+      const latestBf = toFiniteNumber(latestRec.body_fat_pct, null);
+      const latestBmi = toFiniteNumber(latestRec.bmi, null);
+      const latestMuscle = toFiniteNumber(latestRec.muscle_mass_kg, null);
 
-    kpi1 = { label: 'Latest Weight', val: `${latestWt.toFixed(1)} kg`, sub: `${Number(deltaWt) >= 0 ? '+' : ''}${deltaWt} kg in period` };
-    kpi2 = { label: 'Body Fat', val: `${latestBf.toFixed(1)}%`, sub: 'Estimated composition' };
-    kpi3 = { label: 'BMI', val: `${Number(latestBmi).toFixed(1)}`, sub: 'Body Mass Index' };
-    kpi4 = { label: 'Muscle Mass', val: `${(records[records.length - 1]?.muscle_mass_kg ?? (latestWt * 0.45)).toFixed(1)} kg`, sub: 'Lean skeletal mass' };
+      kpi1 = { label: 'Latest Weight', val: `${latestWt.toFixed(1)} kg`, sub: `${Number(deltaWt) >= 0 ? '+' : ''}${deltaWt} kg in period` };
+      kpi2 = { label: 'Body Fat', val: latestBf !== null ? `${latestBf.toFixed(1)}%` : '—', sub: latestBf !== null ? 'Recorded composition' : 'No data' };
+      kpi3 = { label: 'BMI', val: latestBmi !== null ? `${latestBmi.toFixed(1)}` : '—', sub: latestBmi !== null ? 'Body Mass Index' : 'No data' };
+      kpi4 = { label: 'Muscle Mass', val: latestMuscle !== null ? `${latestMuscle.toFixed(1)} kg` : '—', sub: latestMuscle !== null ? 'Lean skeletal mass' : 'No data' };
+    } else {
+      kpi1 = { label: 'Latest Weight', val: '—', sub: 'No data' };
+      kpi2 = { label: 'Body Fat', val: '—', sub: 'No data' };
+      kpi3 = { label: 'BMI', val: '—', sub: 'No data' };
+      kpi4 = { label: 'Muscle Mass', val: '—', sub: 'No data' };
+    }
   } else if (metric === 'thresholds') {
-    const ftp = records.map(r => (typeof r.cycling_ftp === 'number' && !isNaN(r.cycling_ftp)) ? r.cycling_ftp : ((typeof r.ftp === 'number' && !isNaN(r.ftp)) ? r.ftp : 280));
-    const vo2 = records.map(r => (typeof r.vo2max === 'number' && !isNaN(r.vo2max)) ? r.vo2max : 54);
-    const lthr = records.map(r => (typeof r.lthr === 'number' && !isNaN(r.lthr)) ? r.lthr : 168);
+    const ftpVals = records.map(r => toFiniteNumber(r.cycling_ftp ?? r.ftp, null)).filter(v => v !== null);
+    const vo2Vals = records.map(r => toFiniteNumber(r.vo2max, null)).filter(v => v !== null);
+    const lthrVals = records.map(r => toFiniteNumber(r.lthr, null)).filter(v => v !== null);
 
-    const latestFtp = ftp[ftp.length - 1];
-    const latestVo2 = vo2[vo2.length - 1];
-    const latestLthr = lthr[lthr.length - 1];
-    const ftpDelta = ftp.length > 1 ? latestFtp - ftp[0] : 0;
+    const latestFtp = ftpVals.length > 0 ? ftpVals[ftpVals.length - 1] : null;
+    const latestVo2 = vo2Vals.length > 0 ? vo2Vals[vo2Vals.length - 1] : null;
+    const latestLthr = lthrVals.length > 0 ? lthrVals[lthrVals.length - 1] : null;
+    const ftpDelta = ftpVals.length > 1 ? latestFtp - ftpVals[0] : 0;
 
-    kpi1 = { label: 'Cycling FTP', val: `${latestFtp} W`, sub: `${ftpDelta >= 0 ? '+' : ''}${ftpDelta} W progression` };
-    kpi2 = { label: 'VO2max', val: `${latestVo2} ml/kg`, sub: 'Aerobic engine ceiling' };
-    kpi3 = { label: 'Lactate Threshold', val: `${latestLthr} bpm`, sub: 'Anaerobic tipping point' };
-    kpi4 = { label: 'Power-to-Weight', val: `${(latestFtp / 72.0).toFixed(2)} W/kg`, sub: 'Based on 72 kg weight' };
+    const allDaily = getSortedDailyRecords(state.activeRollup);
+    const latestWeightRec = [...allDaily].reverse().find(d => toFiniteNumber(d?.weight_kg, null) !== null);
+    const realWeight = toFiniteNumber(latestWeightRec?.weight_kg ?? state.activeRollup?.wellness?.current?.weight_kg, null);
+
+    kpi1 = { label: 'Cycling FTP', val: latestFtp !== null ? `${latestFtp} W` : '—', sub: latestFtp !== null ? `${ftpDelta >= 0 ? '+' : ''}${ftpDelta} W progression` : 'No cycling power data' };
+    kpi2 = { label: 'VO2max', val: latestVo2 !== null ? `${latestVo2} ml/kg` : '—', sub: latestVo2 !== null ? 'Aerobic engine ceiling' : 'No VO2max data' };
+    kpi3 = { label: 'Lactate Threshold', val: latestLthr !== null ? `${latestLthr} bpm` : '—', sub: latestLthr !== null ? 'Anaerobic tipping point' : 'No LTHR data' };
+    kpi4 = {
+      label: 'Power-to-Weight',
+      val: (latestFtp !== null && realWeight !== null && realWeight > 0) ? `${(latestFtp / realWeight).toFixed(2)} W/kg` : '—',
+      sub: (latestFtp !== null && realWeight !== null && realWeight > 0) ? `Based on ${realWeight.toFixed(1)} kg weight` : 'Sync weight & cycling FTP'
+    };
   }
 
   grid.innerHTML = `
@@ -1119,11 +1212,12 @@ function computeRollingBaselineBand(records, valueGetter, minSd = 3, windowSize 
   });
 
   const periodVals = records.map(valueGetter).filter(v => typeof v === 'number' && !isNaN(v));
-  const periodMean = periodVals.length > 0 ? periodVals.reduce((s, v) => s + v, 0) / periodVals.length : 0;
-  const periodVar = periodVals.length > 0
+  const hasPeriodVals = periodVals.length > 0;
+  const periodMean = hasPeriodVals ? periodVals.reduce((s, v) => s + v, 0) / periodVals.length : null;
+  const periodVar = hasPeriodVals
     ? periodVals.reduce((s, v) => s + Math.pow(v - periodMean, 2), 0) / periodVals.length
     : 0;
-  const periodSd = Math.max(minSd, Math.sqrt(periodVar));
+  const periodSd = hasPeriodVals ? Math.max(minSd, Math.sqrt(periodVar)) : 0;
 
   const yMinSeries = [];
   const yMaxSeries = [];
@@ -1141,9 +1235,15 @@ function computeRollingBaselineBand(records, valueGetter, minSd = 3, windowSize 
     }
 
     if (windowVals.length < 3) {
-      meanSeries.push(periodMean);
-      yMinSeries.push(periodMean - periodSd);
-      yMaxSeries.push(periodMean + periodSd);
+      if (periodMean === null) {
+        meanSeries.push(null);
+        yMinSeries.push(null);
+        yMaxSeries.push(null);
+      } else {
+        meanSeries.push(periodMean);
+        yMinSeries.push(periodMean - periodSd);
+        yMaxSeries.push(periodMean + periodSd);
+      }
     } else {
       const m = windowVals.reduce((s, v) => s + v, 0) / windowVals.length;
       const v = windowVals.reduce((s, val) => s + Math.pow(val - m, 2), 0) / windowVals.length;
@@ -1154,7 +1254,7 @@ function computeRollingBaselineBand(records, valueGetter, minSd = 3, windowSize 
     }
   });
 
-  return { yMinSeries, yMaxSeries, meanSeries, periodMean, periodSd };
+  return { yMinSeries, yMaxSeries, meanSeries, periodMean: periodMean ?? 0, periodSd };
 }
 
 export function resolveVo2MaxSeries(records, rollup) {
@@ -1315,11 +1415,11 @@ function renderMetricChart(metric, records, startDate, endDate) {
   let chartConfig = null;
 
   if (metric === 'sleep') {
-    const deep = records.map(r => Math.round(((r.sleep_deep_seconds || 0) / 3600) * 10) / 10);
-    const light = records.map(r => Math.round(((r.sleep_light_seconds || 0) / 3600) * 10) / 10);
-    const rem = records.map(r => Math.round(((r.sleep_rem_seconds || 0) / 3600) * 10) / 10);
-    const awake = records.map(r => Math.round(((r.sleep_awake_seconds || 0) / 3600) * 10) / 10);
-    const scores = records.map(r => Math.round(((r.sleep_score || 80) / 10) * 10) / 10); // Scaled to 0-10h overlay
+    const deep = records.map(r => r.sleep_deep_seconds != null ? Math.round((r.sleep_deep_seconds / 3600) * 10) / 10 : null);
+    const light = records.map(r => r.sleep_light_seconds != null ? Math.round((r.sleep_light_seconds / 3600) * 10) / 10 : null);
+    const rem = records.map(r => r.sleep_rem_seconds != null ? Math.round((r.sleep_rem_seconds / 3600) * 10) / 10 : null);
+    const awake = records.map(r => r.sleep_awake_seconds != null ? Math.round((r.sleep_awake_seconds / 3600) * 10) / 10 : null);
+    const scores = records.map(r => toFiniteNumber(r.sleep_score, null) !== null ? Math.round((r.sleep_score / 10) * 10) / 10 : null);
 
     chartConfig = {
       type: 'bar',
@@ -1344,12 +1444,46 @@ function renderMetricChart(metric, records, startDate, endDate) {
       }
     };
   } else if (metric === 'hrv') {
-    const nightly = records.map(r => r.hrv_last_night_avg || 54);
-    const weekly = records.map(r => r.hrv_weekly_avg || 53);
-    const band = computeRollingBaselineBand(records, r => r.hrv_last_night_avg || 54, 3, 14);
-    const pointColors = nightly.map((v, i) =>
-      v >= band.yMinSeries[i] && v <= band.yMaxSeries[i] ? '#10b981' : '#f59e0b'
-    );
+    const nightly = records.map(r => {
+      const v = toFiniteNumber(r.hrv_last_night_avg ?? r.hrv_ms, null);
+      return v !== null && v > 0 ? v : null;
+    });
+    const weekly = records.map(r => {
+      const v = toFiniteNumber(r.hrv_weekly_avg ?? r.hrv_7d_avg, null);
+      return v !== null && v > 0 ? v : null;
+    });
+    const hasGarminBaseline = records.some(r => r?.hrv_baseline && typeof r.hrv_baseline.low === 'number' && typeof r.hrv_baseline.high === 'number');
+    const rollingBand = computeRollingBaselineBand(records, r => {
+      const v = toFiniteNumber(r.hrv_last_night_avg ?? r.hrv_ms, null);
+      return v !== null && v > 0 ? v : null;
+    }, 3, 14);
+    const yMinSeries = hasGarminBaseline
+      ? records.map(r => typeof r?.hrv_baseline?.low === 'number' ? r.hrv_baseline.low : null)
+      : rollingBand.yMinSeries;
+    const yMaxSeries = hasGarminBaseline
+      ? records.map(r => typeof r?.hrv_baseline?.high === 'number' ? r.hrv_baseline.high : null)
+      : rollingBand.yMaxSeries;
+    const meanSeries = hasGarminBaseline
+      ? records.map((r, i) => (yMinSeries[i] != null && yMaxSeries[i] != null) ? (yMinSeries[i] + yMaxSeries[i]) / 2 : null)
+      : rollingBand.meanSeries;
+
+    const pointColors = nightly.map((v, i) => {
+      if (v === null) return '#10b981';
+      const lo = yMinSeries[i];
+      const hi = yMaxSeries[i];
+      if (lo != null && hi != null) {
+        return v >= lo && v <= hi ? '#10b981' : '#f59e0b';
+      }
+      return '#10b981';
+    });
+
+    const allHrvVals = [...nightly, ...weekly, ...yMinSeries, ...yMaxSeries].filter(v => typeof v === 'number' && !isNaN(v));
+    const yMinHrv = allHrvVals.length ? Math.max(0, Math.floor(Math.min(...allHrvVals) - 8)) : 0;
+    const yMaxHrv = allHrvVals.length ? Math.ceil(Math.max(...allHrvVals) + 8) : 120;
+    const latestBl = [...records].reverse().find(r => r?.hrv_baseline && typeof r.hrv_baseline.low === 'number');
+    const bandLabel = latestBl
+      ? `Garmin Baseline (${latestBl.hrv_baseline.low}–${latestBl.hrv_baseline.high} ms)`
+      : `Baseline Zone (Avg ${Math.round(rollingBand.periodMean)} ± ${Math.round(rollingBand.periodSd)} ms)`;
 
     chartConfig = {
       type: 'line',
@@ -1363,29 +1497,43 @@ function renderMetricChart(metric, records, startDate, endDate) {
       options: {
         scales: {
           x: { stacked: false },
-          y: { stacked: false }
+          y: { stacked: false, beginAtZero: false, min: yMinHrv, max: yMaxHrv, integerTicks: true }
         },
-        annotations: [
+        annotations: allHrvVals.length > 0 ? [
           {
             type: 'band',
-            yMinSeries: band.yMinSeries,
-            yMaxSeries: band.yMaxSeries,
-            meanSeries: band.meanSeries,
+            yMinSeries,
+            yMaxSeries,
+            meanSeries,
             color: 'rgba(168, 85, 247, 0.16)',
             borderColor: 'rgba(192, 132, 252, 0.25)',
             meanColor: 'rgba(216, 180, 254, 0.65)',
-            label: `Baseline Zone (Avg ${Math.round(band.periodMean)} ± ${Math.round(band.periodSd)} ms)`
+            label: bandLabel
           }
-        ]
+        ] : []
       }
     };
   } else if (metric === 'resting_hr') {
-    const rhr = records.map(r => r.resting_hr || 48);
-    const rhrAvg = records.map(r => r.resting_hr_7d_avg || 48);
-    const band = computeRollingBaselineBand(records, r => r.resting_hr || 48, 1.5, 14);
+    const rhr = records.map(r => {
+      const v = toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null);
+      return v !== null && v > 0 ? v : null;
+    });
+    const rhrAvg = records.map(r => {
+      const v = toFiniteNumber(r.resting_hr_7d_avg, null);
+      return v !== null && v > 0 ? v : null;
+    });
+    const band = computeRollingBaselineBand(records, r => {
+      const v = toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null);
+      return v !== null && v > 0 ? v : null;
+    }, 1.5, 14);
     const pointColors = rhr.map((v, i) =>
-      v >= band.yMinSeries[i] && v <= band.yMaxSeries[i] ? '#10b981' : '#f43f5e'
+      v !== null && band.yMinSeries[i] != null && band.yMaxSeries[i] != null && v >= band.yMinSeries[i] && v <= band.yMaxSeries[i]
+        ? '#10b981'
+        : '#f43f5e'
     );
+    const allRhrVals = [...rhr, ...rhrAvg, ...band.yMinSeries, ...band.yMaxSeries].filter(v => typeof v === 'number' && !isNaN(v));
+    const yMinRhr = allRhrVals.length ? Math.max(25, Math.floor(Math.min(...allRhrVals) - 3)) : 35;
+    const yMaxRhr = allRhrVals.length ? Math.ceil(Math.max(...allRhrVals) + 3) : 80;
 
     chartConfig = {
       type: 'line',
@@ -1399,9 +1547,9 @@ function renderMetricChart(metric, records, startDate, endDate) {
       options: {
         scales: {
           x: { stacked: false },
-          y: { stacked: false }
+          y: { stacked: false, beginAtZero: false, min: yMinRhr, max: yMaxRhr, integerTicks: true }
         },
-        annotations: [
+        annotations: allRhrVals.length > 0 ? [
           {
             type: 'band',
             yMinSeries: band.yMinSeries,
@@ -1412,11 +1560,11 @@ function renderMetricChart(metric, records, startDate, endDate) {
             meanColor: 'rgba(216, 180, 254, 0.65)',
             label: `Target Zone (Avg ${band.periodMean.toFixed(1)} ± ${band.periodSd.toFixed(1)} bpm)`
           }
-        ]
+        ] : []
       }
     };
   } else if (metric === 'steps') {
-    const stepsData = records.map(r => r.steps || 0);
+    const stepsData = records.map(r => toFiniteNumber(r.steps, null));
 
     chartConfig = {
       type: 'bar',
@@ -1476,30 +1624,54 @@ function renderMetricChart(metric, records, startDate, endDate) {
       const tooltipTitles = [];
       const tooltipLines = [];
       const maxPtsPerDay = (state.activeRange === '1y' || records.length > 90) ? 4 : (records.length > 14 ? 8 : 24);
+      let hasAnyIntraday = false;
 
       for (let idx = 0; idx < records.length; idx++) {
         const r = records[idx];
-        const rawHi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, 90));
-        const rawLo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, 25));
-        const hi = Math.max(0, Math.min(100, Math.round(Math.max(rawHi, rawLo))));
-        const lo = Math.max(0, Math.min(100, Math.round(Math.min(rawHi, rawLo))));
-        const chg = Math.max(0, Math.round(toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, 65))));
-        const drn = Math.max(0, Math.round(toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, 68))));
+        const rawHi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, null));
+        const rawLo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, null));
+
+        if (rawHi === null && rawLo === null) {
+          highs.push(null);
+          lows.push(null);
+          charged.push(null);
+          drained.push(null);
+          daySamples.push(null);
+          tooltipTitles.push(formatShortWeekdayDate(r.date));
+          tooltipLines.push([{ text: 'No Body Battery data recorded', color: '#a79bc2' }]);
+          continue;
+        }
+
+        const effHi = rawHi !== null ? rawHi : rawLo;
+        const effLo = rawLo !== null ? rawLo : rawHi;
+        const hi = Math.max(0, Math.min(100, Math.round(Math.max(effHi, effLo))));
+        const lo = Math.max(0, Math.min(100, Math.round(Math.min(effHi, effLo))));
+        const rawChg = toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, null));
+        const rawDrn = toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, null));
+        const chg = rawChg !== null ? Math.max(0, Math.round(rawChg)) : null;
+        const drn = rawDrn !== null ? Math.max(0, Math.round(rawDrn)) : null;
 
         highs.push(hi);
         lows.push(lo);
         charged.push(chg);
         drained.push(drn);
         tooltipTitles.push(formatShortWeekdayDate(r.date));
-        tooltipLines.push([
+        const lines = [
           { text: `Daily High: ${hi} pts`, color: '#38bdf8' },
-          { text: `Daily Low: ${lo} pts`, color: '#c4b5fd' },
-          { text: `Charged: +${chg} pts | Drained: -${drn} pts`, color: '#a79bc2' }
-        ]);
+          { text: `Daily Low: ${lo} pts`, color: '#c4b5fd' }
+        ];
+        if (chg !== null || drn !== null) {
+          lines.push({
+            text: `Charged: ${chg !== null ? `+${chg}` : '—'} pts | Drained: ${drn !== null ? `-${drn}` : '—'} pts`,
+            color: '#a79bc2'
+          });
+        }
+        tooltipLines.push(lines);
 
         if (!isSingleDay) {
           const pts = extractIntradayBodyBattery(r);
           if (pts.length >= 2) {
+            hasAnyIntraday = true;
             const mapped = pts.map(p => {
               let frac = 0.5;
               const m = typeof p.timeLabel === 'string' ? p.timeLabel.match(/^(\d{1,2}):(\d{2})/) : null;
@@ -1531,16 +1703,7 @@ function renderMetricChart(metric, records, startDate, endDate) {
               daySamples.push(mapped);
             }
           } else {
-            const wake = Math.max(0, Math.min(100, Math.round(toFiniteNumber(r.body_battery_at_wake, hi))));
-            const prevLo = idx > 0 ? lows[idx - 1] : wake;
-            daySamples.push([
-              { frac: 0.00, value: prevLo },
-              { frac: 0.14, value: Math.round(prevLo + (wake - prevLo) * 0.45) },
-              { frac: 0.29, value: hi },
-              { frac: 0.54, value: Math.round(hi - (hi - lo) * 0.48) },
-              { frac: 0.79, value: Math.round(hi - (hi - lo) * 0.82) },
-              { frac: 0.94, value: lo }
-            ]);
+            daySamples.push(null);
           }
         }
       }
@@ -1549,7 +1712,7 @@ function renderMetricChart(metric, records, startDate, endDate) {
         { label: 'Daily High', color: '#38bdf8', fillColor: '#38bdf8', shape: 'dot', symbol: 'dot' },
         { label: 'Daily Low', color: '#c4b5fd', fillColor: '#0b0714', strokeColor: '#c4b5fd', shape: 'ring', symbol: 'ring' }
       ];
-      if (!isSingleDay) {
+      if (!isSingleDay && hasAnyIntraday) {
         bbLegendItems.push({ label: 'Hourly Trend', color: '#a855f7', strokeColor: '#a855f7', shape: 'line', symbol: 'line' });
       }
 
@@ -1575,7 +1738,7 @@ function renderMetricChart(metric, records, startDate, endDate) {
               lowStrokeColor: '#c4b5fd',
               pillarTopColor: 'rgba(168, 85, 247, 0.28)',
               pillarBottomColor: '#2d2147',
-              ...(isSingleDay ? {} : {
+              ...(isSingleDay || !hasAnyIntraday ? {} : {
                 backgroundCurve: {
                   enabled: true,
                   label: 'Hourly Trend',
@@ -1649,11 +1812,15 @@ function renderMetricChart(metric, records, startDate, endDate) {
         }
       };
     } else {
-      const stressVals = records.map(r => Math.max(0, Math.min(100, toFiniteNumber(r.stress_level, 24))));
-      const barColors = stressVals.map(v => getStressZoneMeta(v).color);
+      const stressVals = records.map(r => {
+        const v = toFiniteNumber(r.stress_level, null);
+        return v !== null ? Math.max(0, Math.min(100, v)) : null;
+      });
+      const barColors = stressVals.map(v => v !== null ? getStressZoneMeta(v).color : 'transparent');
       const tooltipTitles = records.map(r => formatShortWeekdayDate(r.date));
       const tooltipLines = records.map((r, i) => {
         const sc = stressVals[i];
+        if (sc === null) return ['No stress data recorded'];
         const meta = getStressZoneMeta(sc);
         const durs = getStressZoneDurations(r);
         return [
@@ -1712,8 +1879,8 @@ function renderMetricChart(metric, records, startDate, endDate) {
       }
     };
   } else if (metric === 'calories') {
-    const active = records.map(r => (typeof r.active_calories === 'number' && !isNaN(r.active_calories)) ? r.active_calories : 0);
-    const bmr = records.map(r => (typeof r.bmr_calories === 'number' && !isNaN(r.bmr_calories)) ? r.bmr_calories : 1730);
+    const active = records.map(r => toFiniteNumber(r.active_calories, null));
+    const bmr = records.map(r => toFiniteNumber(r.bmr_calories, null));
 
     chartConfig = {
       type: 'bar',
@@ -1732,7 +1899,7 @@ function renderMetricChart(metric, records, startDate, endDate) {
       }
     };
   } else if (metric === 'training_readiness') {
-    const scores = records.map(r => (typeof r.training_readiness_score === 'number' && !isNaN(r.training_readiness_score)) ? r.training_readiness_score : 75);
+    const scores = records.map(r => toFiniteNumber(r.training_readiness_score, null));
     chartConfig = {
       type: 'line',
       data: {
@@ -1746,8 +1913,8 @@ function renderMetricChart(metric, records, startDate, endDate) {
   } else if (metric === 'vo2max') {
     chartConfig = renderVo2MaxChartConfig(labels, records, state.activeRollup);
   } else if (metric === 'spo2') {
-    const avgArr = records.map(r => (typeof r.spo2_avg === 'number' && !isNaN(r.spo2_avg)) ? r.spo2_avg : 97.4);
-    const lowArr = records.map(r => (typeof r.spo2_low === 'number' && !isNaN(r.spo2_low)) ? r.spo2_low : 93.8);
+    const avgArr = records.map(r => toFiniteNumber(r.spo2_avg, null));
+    const lowArr = records.map(r => toFiniteNumber(r.spo2_low, null));
     chartConfig = {
       type: 'line',
       data: {
@@ -1760,8 +1927,8 @@ function renderMetricChart(metric, records, startDate, endDate) {
       options: { scales: { y: { min: 85, max: 100 } } }
     };
   } else if (metric === 'respiration') {
-    const wake = records.map(r => (typeof r.respiration_waking === 'number' && !isNaN(r.respiration_waking)) ? r.respiration_waking : 14.8);
-    const sleep = records.map(r => (typeof r.respiration_sleep === 'number' && !isNaN(r.respiration_sleep)) ? r.respiration_sleep : 13.2);
+    const wake = records.map(r => toFiniteNumber(r.respiration_waking, null));
+    const sleep = records.map(r => toFiniteNumber(r.respiration_sleep, null));
     chartConfig = {
       type: 'line',
       data: {
@@ -1770,11 +1937,12 @@ function renderMetricChart(metric, records, startDate, endDate) {
           { label: 'Waking (brpm)', data: wake, borderColor: '#2dd4bf', tension: 0.25 },
           { label: 'Sleep (brpm)', data: sleep, borderColor: '#818cf8', tension: 0.25 }
         ]
-      }
+      },
+      options: { scales: { y: { beginAtZero: false } } }
     };
   } else if (metric === 'floors') {
-    const asc = records.map(r => (typeof r.floors_ascended === 'number' && !isNaN(r.floors_ascended)) ? r.floors_ascended : 0);
-    const desc = records.map(r => (typeof r.floors_descended === 'number' && !isNaN(r.floors_descended)) ? r.floors_descended : 0);
+    const asc = records.map(r => toFiniteNumber(r.floors_ascended, null));
+    const desc = records.map(r => toFiniteNumber(r.floors_descended, null));
     chartConfig = {
       type: 'bar',
       data: {
@@ -1786,7 +1954,10 @@ function renderMetricChart(metric, records, startDate, endDate) {
       }
     };
   } else if (metric === 'hydration') {
-    const liters = records.map(r => Number((((typeof r.hydration_ml === 'number' && !isNaN(r.hydration_ml)) ? r.hydration_ml : 2400) / 1000).toFixed(2)));
+    const liters = records.map(r => {
+      const ml = toFiniteNumber(r.hydration_ml, null);
+      return ml !== null ? Number((ml / 1000).toFixed(2)) : null;
+    });
     chartConfig = {
       type: 'bar',
       data: {
@@ -1797,7 +1968,7 @@ function renderMetricChart(metric, records, startDate, endDate) {
       }
     };
   } else if (metric === 'weight') {
-    const wt = records.map(r => (typeof r.weight_kg === 'number' && !isNaN(r.weight_kg)) ? r.weight_kg : 70.4);
+    const wt = records.map(r => toFiniteNumber(r.weight_kg, null));
     chartConfig = {
       type: 'line',
       data: {
@@ -1805,27 +1976,28 @@ function renderMetricChart(metric, records, startDate, endDate) {
         datasets: [
           { label: 'Weight (kg)', data: wt, borderColor: '#e879f9', backgroundColor: 'rgba(232, 121, 249, 0.12)', fill: true, tension: 0.25 }
         ]
-      }
+      },
+      options: { scales: { y: { beginAtZero: false } } }
     };
   } else if (metric === 'thresholds') {
-    const ftp = records.map(r => (typeof r.cycling_ftp === 'number' && !isNaN(r.cycling_ftp)) ? r.cycling_ftp : ((typeof r.ftp === 'number' && !isNaN(r.ftp)) ? r.ftp : 280));
-    const lthr = records.map(r => (typeof r.lthr === 'number' && !isNaN(r.lthr)) ? r.lthr : 168);
-    const vo2 = records.map(r => (typeof r.vo2max === 'number' && !isNaN(r.vo2max)) ? r.vo2max : 54);
+    const ftp = records.map(r => toFiniteNumber(r.cycling_ftp ?? r.ftp, null));
+    const lthr = records.map(r => toFiniteNumber(r.lthr, null));
+    const vo2 = records.map(r => toFiniteNumber(r.vo2max, null));
+    const datasets = [];
+    if (ftp.some(v => v !== null)) datasets.push({ label: 'Cycling FTP (Watts)', data: ftp, borderColor: '#a78bfa', borderWidth: 2 });
+    if (lthr.some(v => v !== null)) datasets.push({ label: 'LTHR (bpm)', data: lthr, borderColor: '#f43f5e', borderWidth: 2 });
+    if (vo2.some(v => v !== null)) datasets.push({ label: 'VO2max (ml/kg)', data: vo2, borderColor: '#34d399', borderWidth: 2 });
 
     chartConfig = {
       type: 'line',
       data: {
         labels,
-        datasets: [
-          { label: 'Cycling FTP (Watts)', data: ftp, borderColor: '#a78bfa', borderWidth: 2 },
-          { label: 'LTHR (bpm)', data: lthr, borderColor: '#f43f5e', borderWidth: 2 },
-          { label: 'VO2max (ml/kg)', data: vo2, borderColor: '#34d399', borderWidth: 2 }
-        ]
+        datasets
       },
       options: {
         scales: {
           x: { stacked: false },
-          y: { stacked: false }
+          y: { stacked: false, beginAtZero: false }
         }
       }
     };
@@ -1872,20 +2044,32 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">Quality</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
-      const h = ((r.sleep_seconds || 0) / 3600);
-      const score = r.sleep_score || 80;
-      const deepH = (((r.sleep_deep_seconds || 0) / 3600)).toFixed(1);
-      const remH = (((r.sleep_rem_seconds || 0) / 3600)).toFixed(1);
-      const qual = r.sleep_quality || (score >= 80 ? 'Good' : 'Fair');
+      const sec = toFiniteNumber(r.sleep_seconds, null);
+      if (sec === null) {
+        return `
+          <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
+            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+          </tr>
+        `;
+      }
+      const h = sec / 3600;
+      const score = toFiniteNumber(r.sleep_score, null);
+      const deepH = r.sleep_deep_seconds != null ? (r.sleep_deep_seconds / 3600).toFixed(1) : '—';
+      const remH = r.sleep_rem_seconds != null ? (r.sleep_rem_seconds / 3600).toFixed(1) : '—';
+      const qual = r.sleep_quality || (score !== null ? (score >= 80 ? 'Good' : 'Fair') : '—');
       return `
         <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-white font-mono">${Math.floor(h)}h ${Math.round((h % 1) * 60)}m</td>
-          <td class="py-2 px-3 text-right text-amber-400 font-mono">${score}</td>
-          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${deepH}h / ${remH}h</td>
+          <td class="py-2 px-3 text-right text-amber-400 font-mono">${score !== null ? score : '—'}</td>
+          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${deepH}${deepH !== '—' ? 'h' : ''} / ${remH}${remH !== '—' ? 'h' : ''}</td>
           <td class="py-2 px-3 text-right">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${score >= 80 ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : 'text-zinc-400 border-zinc-700 bg-zinc-800/40'}">
-              ${qual.toUpperCase()}
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono border ${(score !== null && score >= 80) ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : 'text-zinc-400 border-zinc-700 bg-zinc-800/40'}">
+              ${String(qual).toUpperCase()}
             </span>
           </td>
         </tr>
@@ -1899,18 +2083,26 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">Status</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
-      const ln = r.hrv_last_night_avg || 54;
-      const wk = r.hrv_weekly_avg || 53;
-      const st = r.hrv_status || 'Balanced';
+      const ln = toFiniteNumber(r.hrv_last_night_avg ?? r.hrv_ms, null);
+      const wk = toFiniteNumber(r.hrv_weekly_avg ?? r.hrv_7d_avg, null);
+      const st = r.hrv_status;
+      if (ln === null && wk === null) {
+        return `
+          <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
+            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+          </tr>
+        `;
+      }
       return `
         <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${ln} ms</td>
-          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${wk} ms</td>
+          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${ln !== null ? `${ln} ms` : '—'}</td>
+          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${wk !== null ? `${wk} ms` : '—'}</td>
           <td class="py-2 px-3 text-right">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono border text-emerald-400 border-emerald-500/30 bg-emerald-500/10">
-              ${st.toUpperCase()}
-            </span>
+            ${st ? `<span class="px-2 py-0.5 rounded text-[10px] font-mono border text-emerald-400 border-emerald-500/30 bg-emerald-500/10">${String(st).toUpperCase()}</span>` : '<span class="text-zinc-500 font-mono">—</span>'}
           </td>
         </tr>
       `;
@@ -1928,7 +2120,7 @@ function renderBreakdownTable(metric, records, cfg) {
     `;
     tbody.innerHTML = displayRecords.map(r => {
       const isUnrecorded = Boolean(r.unrecorded || ((r.steps === 0 || r.steps === null) && records.some(x => x.unrecorded)));
-      if (isUnrecorded && (r.steps === 0 || r.steps === null)) {
+      if ((isUnrecorded && (r.steps === 0 || r.steps === null)) || toFiniteNumber(r.steps, null) === null) {
         return `
           <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
             <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
@@ -1952,7 +2144,8 @@ function renderBreakdownTable(metric, records, cfg) {
       `;
     }).join('');
   } else if (metric === 'resting_hr') {
-    const avg = Math.round((records.reduce((s, r) => s + (r.resting_hr || 48), 0) / records.length) * 10) / 10;
+    const validRhr = records.map(r => toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null)).filter(v => v !== null && v > 0);
+    const avg = validRhr.length > 0 ? Math.round((validRhr.reduce((s, v) => s + v, 0) / validRhr.length) * 10) / 10 : null;
     theadRow.innerHTML = `
       <th class="py-2 px-3">Date</th>
       <th class="py-2 px-3 text-right">Resting HR</th>
@@ -1960,15 +2153,25 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">Delta vs Avg</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
-      const val = r.resting_hr || 48;
-      const r7 = r.resting_hr_7d_avg || val;
-      const delta = Math.round((val - avg) * 10) / 10;
+      const val = toFiniteNumber(r.resting_hr ?? r.resting_heart_rate, null);
+      if (val === null || val <= 0) {
+        return `
+          <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
+            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+          </tr>
+        `;
+      }
+      const r7 = toFiniteNumber(r.resting_hr_7d_avg, null);
+      const delta = avg !== null ? Math.round((val - avg) * 10) / 10 : null;
       return `
         <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
           <td class="py-2 px-3 text-right text-rose-400 font-mono font-bold">${val} bpm</td>
-          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r7} bpm</td>
-          <td class="py-2 px-3 text-right font-mono ${delta <= 0 ? 'text-emerald-400' : 'text-rose-400'}">${delta >= 0 ? '+' : ''}${delta} bpm</td>
+          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${r7 !== null ? `${r7} bpm` : '—'}</td>
+          <td class="py-2 px-3 text-right font-mono ${delta !== null && delta <= 0 ? 'text-emerald-400' : 'text-rose-400'}">${delta !== null ? `${delta >= 0 ? '+' : ''}${delta} bpm` : '—'}</td>
         </tr>
       `;
     }).join('');
@@ -1981,17 +2184,18 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">Drained</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
-      const hi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, 90));
-      const lo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, 25));
-      const chg = toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, 65));
-      const drn = toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, 68));
+      const hi = toFiniteNumber(r.body_battery_high, toFiniteNumber(r.body_battery, null));
+      const lo = toFiniteNumber(r.body_battery_low, toFiniteNumber(r.body_battery, null));
+      const chg = toFiniteNumber(r.body_battery_charged, toFiniteNumber(r.charged, null));
+      const drn = toFiniteNumber(r.body_battery_drained, toFiniteNumber(r.drained, null));
+      const isAllMissing = hi === null && lo === null && chg === null && drn === null;
       return `
-        <tr class="hover:bg-[#1b132e]/50 transition">
+        <tr class="hover:bg-[#1b132e]/50 transition ${isAllMissing ? 'opacity-60' : ''}">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${hi}</td>
-          <td class="py-2 px-3 text-right text-rose-400 font-mono">${lo}</td>
-          <td class="py-2 px-3 text-right text-emerald-400 font-mono">+${chg}</td>
-          <td class="py-2 px-3 text-right text-orange-400 font-mono">-${drn}</td>
+          <td class="py-2 px-3 text-right ${hi !== null ? 'text-emerald-400 font-bold' : 'text-zinc-500'} font-mono">${hi !== null ? hi : '—'}</td>
+          <td class="py-2 px-3 text-right ${lo !== null ? 'text-rose-400' : 'text-zinc-500'} font-mono">${lo !== null ? lo : '—'}</td>
+          <td class="py-2 px-3 text-right ${chg !== null ? 'text-emerald-400' : 'text-zinc-500'} font-mono">${chg !== null ? `+${chg}` : '—'}</td>
+          <td class="py-2 px-3 text-right ${drn !== null ? 'text-orange-400' : 'text-zinc-500'} font-mono">${drn !== null ? `-${drn}` : '—'}</td>
         </tr>
       `;
     }).join('');
@@ -2004,7 +2208,19 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">Status</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
-      const sc = Math.max(0, Math.min(100, Math.round(toFiniteNumber(r.stress_level, 24))));
+      const rawSc = toFiniteNumber(r.stress_level, null);
+      if (rawSc === null) {
+        return `
+          <tr class="hover:bg-[#1b132e]/50 transition opacity-60">
+            <td class="py-2 px-3 text-zinc-400 font-sans">${r.date}</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+            <td class="py-2 px-3 text-right text-zinc-500 font-mono">—</td>
+          </tr>
+        `;
+      }
+      const sc = Math.max(0, Math.min(100, Math.round(rawSc)));
       const meta = getStressZoneMeta(sc);
       const q = r.stress_qualifier || meta.label;
       const durs = getStressZoneDurations(r);
@@ -2050,15 +2266,15 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">Total Burn</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
-      const act = (typeof r.active_calories === 'number' && !isNaN(r.active_calories)) ? r.active_calories : 0;
-      const bmr = (typeof r.bmr_calories === 'number' && !isNaN(r.bmr_calories)) ? r.bmr_calories : 1730;
-      const tot = (typeof r.daily_calories === 'number' && !isNaN(r.daily_calories)) ? r.daily_calories : (act + bmr);
+      const act = toFiniteNumber(r.active_calories, null);
+      const bmr = toFiniteNumber(r.bmr_calories, null);
+      const tot = toFiniteNumber(r.daily_calories, (act !== null && bmr !== null) ? (act + bmr) : null);
       return `
         <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-orange-400 font-mono">${act.toLocaleString()} kcal</td>
-          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${bmr.toLocaleString()} kcal</td>
-          <td class="py-2 px-3 text-right text-white font-mono font-bold">${tot.toLocaleString()} kcal</td>
+          <td class="py-2 px-3 text-right text-orange-400 font-mono">${act !== null ? `${act.toLocaleString()} kcal` : '—'}</td>
+          <td class="py-2 px-3 text-right text-zinc-400 font-mono">${bmr !== null ? `${bmr.toLocaleString()} kcal` : '—'}</td>
+          <td class="py-2 px-3 text-right text-white font-mono font-bold">${tot !== null ? `${tot.toLocaleString()} kcal` : '—'}</td>
         </tr>
       `;
     }).join('');
@@ -2167,15 +2383,15 @@ function renderBreakdownTable(metric, records, cfg) {
       <th class="py-2 px-3 text-right">LTHR</th>
     `;
     tbody.innerHTML = displayRecords.map(r => {
-      const ftp = (typeof r.cycling_ftp === 'number' && !isNaN(r.cycling_ftp)) ? r.cycling_ftp : ((typeof r.ftp === 'number' && !isNaN(r.ftp)) ? r.ftp : 280);
-      const vo2 = (typeof r.vo2max === 'number' && !isNaN(r.vo2max)) ? r.vo2max : 54;
-      const lthr = (typeof r.lthr === 'number' && !isNaN(r.lthr)) ? r.lthr : 168;
+      const ftp = toFiniteNumber(r.cycling_ftp ?? r.ftp, null);
+      const vo2 = toFiniteNumber(r.vo2max, null);
+      const lthr = toFiniteNumber(r.lthr, null);
       return `
         <tr class="hover:bg-[#1b132e]/50 transition">
           <td class="py-2 px-3 text-zinc-300 font-sans">${r.date}</td>
-          <td class="py-2 px-3 text-right text-purple-400 font-mono font-bold">${ftp} W</td>
-          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${vo2} ml/kg</td>
-          <td class="py-2 px-3 text-right text-rose-400 font-mono font-bold">${lthr} bpm</td>
+          <td class="py-2 px-3 text-right text-purple-400 font-mono font-bold">${ftp !== null ? `${ftp} W` : '—'}</td>
+          <td class="py-2 px-3 text-right text-emerald-400 font-mono font-bold">${vo2 !== null ? `${vo2} ml/kg` : '—'}</td>
+          <td class="py-2 px-3 text-right text-rose-400 font-mono font-bold">${lthr !== null ? `${lthr} bpm` : '—'}</td>
         </tr>
       `;
     }).join('');

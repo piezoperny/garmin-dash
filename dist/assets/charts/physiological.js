@@ -298,12 +298,11 @@ export function renderThresholdTrendsChart(rollup, customThresholds = null) {
     trendsChartInstance = null;
   }
 
-  const trends = (rollup?.physiological?.threshold_trends || [
-    { date: '2026-09-01', vo2max: 51, cycling_ftp: 268, ftp: 268, lthr: 165 },
-    { date: '2026-09-15', vo2max: 52, cycling_ftp: 272, ftp: 272, lthr: 166 },
-    { date: '2026-10-01', vo2max: 53, cycling_ftp: 276, ftp: 276, lthr: 167 },
-    { date: '2026-10-15', vo2max: 54, cycling_ftp: 280, ftp: 280, lthr: 168 }
-  ]).map((t, idx, arr) => {
+  const rawTrends = Array.isArray(rollup?.physiological?.threshold_trends)
+    ? rollup.physiological.threshold_trends
+    : [];
+
+  const trends = rawTrends.map((t, idx, arr) => {
     const copy = { ...t };
     if (idx === arr.length - 1 && customThresholds) {
       if (Number(customThresholds.cycling_ftp) > 0) {
@@ -318,42 +317,42 @@ export function renderThresholdTrendsChart(rollup, customThresholds = null) {
   });
 
   const labels = trends.map(t => t.date);
-  const vo2Data = trends.map(t => t.vo2max);
-  const ftpData = trends.map(t => t.cycling_ftp ?? t.ftp);
-  const lthrData = trends.map(t => t.lthr);
-
-  trendsChartInstance = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'Cycling FTP (Watts)',
-          data: ftpData,
-          borderColor: '#a78bfa',
-          borderWidth: 2
-        },
-        {
-          label: 'LTHR (bpm)',
-          data: lthrData,
-          borderColor: '#f43f5e',
-          borderWidth: 2
-        },
-        {
-          label: 'VO2max (ml/kg)',
-          data: vo2Data,
-          borderColor: '#34d399',
-          borderWidth: 2
-        }
-      ]
-    },
-    options: {
-      scales: {
-        x: { stacked: false },
-        y: { stacked: false }
-      }
-    }
+  const vo2Data = trends.map(t => (typeof t.vo2max === 'number' && !isNaN(t.vo2max)) ? t.vo2max : null);
+  const ftpData = trends.map(t => {
+    const v = t.cycling_ftp ?? t.ftp;
+    return (typeof v === 'number' && !isNaN(v)) ? v : null;
   });
+  const lthrData = trends.map(t => (typeof t.lthr === 'number' && !isNaN(t.lthr)) ? t.lthr : null);
+
+  const datasets = [];
+  if (ftpData.some(v => v !== null)) {
+    datasets.push({
+      label: 'Cycling FTP (Watts)',
+      data: ftpData,
+      borderColor: '#a78bfa',
+      borderWidth: 2
+    });
+  }
+  if (lthrData.some(v => v !== null)) {
+    datasets.push({
+      label: 'LTHR (bpm)',
+      data: lthrData,
+      borderColor: '#f43f5e',
+      borderWidth: 2
+    });
+  }
+  if (vo2Data.some(v => v !== null)) {
+    datasets.push({
+      label: 'VO2max (ml/kg)',
+      data: vo2Data,
+      borderColor: '#34d399',
+      borderWidth: 2
+    });
+  }
+
+  const container = canvas.parentElement || document.getElementById('card-threshold-trends');
+  const emptyNoticeId = 'threshold-trends-empty-notice';
+  let emptyEl = document.getElementById(emptyNoticeId);
 
   const card = document.getElementById('card-threshold-trends');
   if (card) {
@@ -362,6 +361,41 @@ export function renderThresholdTrendsChart(rollup, customThresholds = null) {
       openMetricTrendModal('thresholds', rollup, customThresholds);
     };
   }
+
+  if (trends.length === 0 || datasets.length === 0) {
+    if (canvas.style) canvas.style.display = 'none';
+    if (container) {
+      if (!emptyEl) {
+        emptyEl = document.createElement('div');
+        emptyEl.id = emptyNoticeId;
+        emptyEl.className = 'flex flex-col items-center justify-center h-full min-h-[260px] text-center p-4';
+        emptyEl.innerHTML = `
+          <p class="text-xs font-semibold text-zinc-300">No Threshold History Recorded</p>
+          <p class="text-[11px] text-zinc-500 mt-1 max-w-[220px]">Sync VO2max or cycling power workouts to track threshold progression over time.</p>
+        `;
+        container.appendChild(emptyEl);
+      }
+      if (emptyEl.style) emptyEl.style.display = 'flex';
+    }
+    return;
+  }
+
+  if (emptyEl && emptyEl.style) emptyEl.style.display = 'none';
+  if (canvas.style) canvas.style.display = '';
+
+  trendsChartInstance = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets
+    },
+    options: {
+      scales: {
+        x: { stacked: false },
+        y: { stacked: false, beginAtZero: false }
+      }
+    }
+  });
 }
 
 /**

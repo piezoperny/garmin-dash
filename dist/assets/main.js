@@ -228,11 +228,14 @@ function syncDynamicSportFilterButtons(activities) {
   const existingDynamic = filterBar.querySelectorAll ? filterBar.querySelectorAll('[data-dynamic-sport]') : [];
   existingDynamic.forEach(btn => btn.remove());
 
-  const coreSports = new Set(['all', 'cycling', 'cycle', 'hiking', 'strength', 'weights']);
+  const coreSports = new Set([
+    'all', 'cycling', 'cycle', 'running', 'run',
+    'walking', 'walk', 'hiking', 'hike', 'strength', 'weights'
+  ]);
   const extraSports = new Set();
   for (const act of activities || []) {
     const sp = String(act.sport || '').toLowerCase().trim();
-    if (sp && !coreSports.has(sp)) {
+    if (sp && !coreSports.has(sp) && !sp.startsWith('unknownenumvalue')) {
       extraSports.add(sp);
     }
   }

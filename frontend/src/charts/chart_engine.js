@@ -344,8 +344,9 @@ export class Chart {
     if (chartW <= 0 || chartH <= 0) return;
 
     // Calculate Y range
-    let minY = 0;
-    let maxY = 0;
+    const beginAtZero = this.options.scales?.y?.beginAtZero !== false;
+    let minY = beginAtZero ? 0 : Infinity;
+    let maxY = beginAtZero ? 0 : -Infinity;
 
     if (isStacked && !isLine && !isRangeBar) {
       for (let i = 0; i < labels.length; i++) {
@@ -354,9 +355,11 @@ export class Chart {
         for (const ds of datasets) {
           if (ds.hidden) continue;
           if (ds.type === 'line') {
-            const v = toFiniteNumber(ds.data?.[i]) ?? 0;
-            if (v > maxY) maxY = v;
-            if (v < minY) minY = v;
+            const v = toFiniteNumber(ds.data?.[i]);
+            if (v !== null) {
+              if (v > maxY) maxY = v;
+              if (v < minY) minY = v;
+            }
             continue;
           }
           const val = toFiniteNumber(ds.data?.[i]) ?? 0;
@@ -394,12 +397,12 @@ export class Chart {
     // Include annotations in range if present
     if (this.options.annotations && Array.isArray(this.options.annotations)) {
       for (const ann of this.options.annotations) {
-        if (typeof ann.y === 'number') {
+        if (typeof ann.y === 'number' && !isNaN(ann.y)) {
           if (ann.y > maxY) maxY = ann.y;
           if (ann.y < minY) minY = ann.y;
         }
-        if (typeof ann.yMax === 'number' && ann.yMax > maxY) maxY = ann.yMax;
-        if (typeof ann.yMin === 'number' && ann.yMin < minY) minY = ann.yMin;
+        if (typeof ann.yMax === 'number' && !isNaN(ann.yMax) && ann.yMax > maxY) maxY = ann.yMax;
+        if (typeof ann.yMin === 'number' && !isNaN(ann.yMin) && ann.yMin < minY) minY = ann.yMin;
         if (Array.isArray(ann.yMaxSeries)) {
           for (const v of ann.yMaxSeries) {
             if (typeof v === 'number' && !isNaN(v) && v > maxY) maxY = v;
@@ -413,13 +416,27 @@ export class Chart {
       }
     }
 
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      minY = 0;
+      maxY = 10;
+    }
+
     if (maxY === minY) {
-      maxY += 10;
-      minY = Math.min(0, minY);
+      if (!beginAtZero && minY > 0) {
+        maxY += Math.max(2, Math.round(minY * 0.08));
+        minY = Math.max(0, minY - Math.max(2, Math.round(minY * 0.08)));
+      } else {
+        maxY += 10;
+        minY = Math.min(0, minY);
+      }
     }
     const range = maxY - minY;
-    maxY = maxY + range * 0.1;
-    if (minY < 0) minY = minY - range * 0.05;
+    maxY = maxY + range * (beginAtZero ? 0.1 : 0.14);
+    if (!beginAtZero) {
+      minY = minY - range * 0.14;
+    } else if (minY < 0) {
+      minY = minY - range * 0.05;
+    }
 
     // Override with explicit user-defined scale bounds if provided
     if (typeof this.options.scales?.y?.min === 'number') {
@@ -468,7 +485,9 @@ export class Chart {
 
       ctx.fillStyle = '#a79bc2';
       let labelText;
-      if (isRangeBar || this.options.scales?.y?.integerTicks) {
+      if (this.options.scales?.y?.integerTicks) {
+        labelText = String(Math.round(yVal));
+      } else if (isRangeBar) {
         labelText = Math.abs(yVal - Math.round(yVal)) < 1e-6 ? String(Math.round(yVal)) : yVal.toFixed(1);
       } else {
         labelText = Math.abs(yVal) >= 100 ? Math.round(yVal) : yVal.toFixed(1);
@@ -681,15 +700,23 @@ export class Chart {
       for (const ds of datasets) {
         if (ds.hidden) continue;
         const color = ds.borderColor || ds.backgroundColor || '#38bdf8';
-        const pts = [];
+        const segments = [];
+        let currentSeg = [];
 
         for (let i = 0; i < labels.length; i++) {
-          const val = Number(ds.data?.[i]) ?? 0;
+          const val = toFiniteNumber(ds.data?.[i]);
+          if (val === null) {
+            if (currentSeg.length > 0) {
+              segments.push(currentSeg);
+              currentSeg = [];
+            }
+            continue;
+          }
           const x = getX(i);
           const normY = (maxY - val) / ySpanSafe;
           const y = padding.top + normY * chartH;
           const ptColor = Array.isArray(ds.pointColors) && ds.pointColors[i] ? ds.pointColors[i] : color;
-          pts.push({
+          currentSeg.push({
             x,
             y,
             val,
@@ -700,82 +727,89 @@ export class Chart {
             ...(Array.isArray(ds.tooltipLines) && Array.isArray(ds.tooltipLines[i]) ? { tooltipLines: ds.tooltipLines[i] } : {})
           });
         }
-
-        if (pts.length === 0) continue;
-
-        // Draw area gradient fill
-        if (ds.fill && pts.length > 0) {
-          ctx.beginPath();
-          if (typeof ctx.bezierCurveTo === 'function') {
-            ctx.moveTo(pts[0].x, pts[0].y);
-            for (let i = 0; i < pts.length - 1; i++) {
-              const p0 = pts[i === 0 ? 0 : i - 1];
-              const p1 = pts[i];
-              const p2 = pts[i + 1];
-              const p3 = pts[i + 2 < pts.length ? i + 2 : i + 1];
-              const tension = 0.18;
-              const cp1x = p1.x + (p2.x - p0.x) * tension;
-              const cp1y = p1.y + (p2.y - p0.y) * tension;
-              const cp2x = p2.x - (p3.x - p1.x) * tension;
-              const cp2y = p2.y - (p3.y - p1.y) * tension;
-              ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
-            }
-          } else {
-            pts.forEach((p, i) => {
-              if (i === 0) ctx.moveTo(p.x, p.y);
-              else ctx.lineTo(p.x, p.y);
-            });
-          }
-          ctx.lineTo(pts[pts.length - 1].x, padding.top + chartH);
-          ctx.lineTo(pts[0].x, padding.top + chartH);
-          if (typeof ctx.closePath === 'function') ctx.closePath();
-
-          if (typeof ctx.createLinearGradient === 'function') {
-            const grad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
-            grad.addColorStop(0, colorWithAlpha(color, 0.18));
-            grad.addColorStop(1, colorWithAlpha(color, 0.01));
-            ctx.fillStyle = grad;
-          } else {
-            ctx.fillStyle = colorWithAlpha(color, 0.12);
-          }
-          ctx.fill();
+        if (currentSeg.length > 0) {
+          segments.push(currentSeg);
         }
 
-        // Draw line with smooth cubic bezier curve
-        ctx.beginPath();
-        if (typeof ctx.bezierCurveTo === 'function') {
-          ctx.moveTo(pts[0].x, pts[0].y);
-          for (let i = 0; i < pts.length - 1; i++) {
-            const p0 = pts[i === 0 ? 0 : i - 1];
-            const p1 = pts[i];
-            const p2 = pts[i + 1];
-            const p3 = pts[i + 2 < pts.length ? i + 2 : i + 1];
-            const tension = 0.18;
-            const cp1x = p1.x + (p2.x - p0.x) * tension;
-            const cp1y = p1.y + (p2.y - p0.y) * tension;
-            const cp2x = p2.x - (p3.x - p1.x) * tension;
-            const cp2y = p2.y - (p3.y - p1.y) * tension;
-            ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+        if (segments.length === 0) continue;
+
+        for (const pts of segments) {
+          // Draw area gradient fill
+          if (ds.fill && pts.length > 1) {
+            ctx.beginPath();
+            if (typeof ctx.bezierCurveTo === 'function') {
+              ctx.moveTo(pts[0].x, pts[0].y);
+              for (let i = 0; i < pts.length - 1; i++) {
+                const p0 = pts[i === 0 ? 0 : i - 1];
+                const p1 = pts[i];
+                const p2 = pts[i + 1];
+                const p3 = pts[i + 2 < pts.length ? i + 2 : i + 1];
+                const tension = 0.18;
+                const cp1x = p1.x + (p2.x - p0.x) * tension;
+                const cp1y = p1.y + (p2.y - p0.y) * tension;
+                const cp2x = p2.x - (p3.x - p1.x) * tension;
+                const cp2y = p2.y - (p3.y - p1.y) * tension;
+                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+              }
+            } else {
+              pts.forEach((p, i) => {
+                if (i === 0) ctx.moveTo(p.x, p.y);
+                else ctx.lineTo(p.x, p.y);
+              });
+            }
+            ctx.lineTo(pts[pts.length - 1].x, padding.top + chartH);
+            ctx.lineTo(pts[0].x, padding.top + chartH);
+            if (typeof ctx.closePath === 'function') ctx.closePath();
+
+            if (typeof ctx.createLinearGradient === 'function') {
+              const grad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
+              grad.addColorStop(0, colorWithAlpha(color, 0.18));
+              grad.addColorStop(1, colorWithAlpha(color, 0.01));
+              ctx.fillStyle = grad;
+            } else {
+              ctx.fillStyle = colorWithAlpha(color, 0.12);
+            }
+            ctx.fill();
           }
-        } else {
-          pts.forEach((p, i) => {
-            if (i === 0) ctx.moveTo(p.x, p.y);
-            else ctx.lineTo(p.x, p.y);
+
+          // Draw line with smooth cubic bezier curve
+          if (pts.length > 1) {
+            ctx.beginPath();
+            if (typeof ctx.bezierCurveTo === 'function') {
+              ctx.moveTo(pts[0].x, pts[0].y);
+              for (let i = 0; i < pts.length - 1; i++) {
+                const p0 = pts[i === 0 ? 0 : i - 1];
+                const p1 = pts[i];
+                const p2 = pts[i + 1];
+                const p3 = pts[i + 2 < pts.length ? i + 2 : i + 1];
+                const tension = 0.18;
+                const cp1x = p1.x + (p2.x - p0.x) * tension;
+                const cp1y = p1.y + (p2.y - p0.y) * tension;
+                const cp2x = p2.x - (p3.x - p1.x) * tension;
+                const cp2y = p2.y - (p3.y - p1.y) * tension;
+                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+              }
+            } else {
+              pts.forEach((p, i) => {
+                if (i === 0) ctx.moveTo(p.x, p.y);
+                else ctx.lineTo(p.x, p.y);
+              });
+            }
+            ctx.strokeStyle = color;
+            ctx.lineWidth = ds.borderWidth || 2;
+            ctx.stroke();
+          }
+
+          // Draw point dots
+          const ptRadius = typeof ds.pointRadius === 'number' ? ds.pointRadius : 2.5;
+          pts.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, ptRadius, 0, Math.PI * 2);
+            ctx.fillStyle = p.color || color;
+            ctx.fill();
+            this.dataPoints.push({ ...p, radius: 8 });
           });
         }
-        ctx.strokeStyle = color;
-        ctx.lineWidth = ds.borderWidth || 2;
-        ctx.stroke();
-
-        // Draw point dots
-        const ptRadius = typeof ds.pointRadius === 'number' ? ds.pointRadius : 2.5;
-        pts.forEach(p => {
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, ptRadius, 0, Math.PI * 2);
-          ctx.fillStyle = p.color || color;
-          ctx.fill();
-          this.dataPoints.push({ ...p, radius: 8 });
-        });
       }
     } else if (isRangeBar) {
       for (const ds of datasets) {
@@ -783,10 +817,17 @@ export class Chart {
 
         const bg = ds.backgroundCurve;
         if (bg && bg.enabled !== false && Array.isArray(bg.daySamples)) {
-          const curvePoints = [];
+          const curveSegments = [];
+          let currentCurveSeg = [];
           for (let i = 0; i < labels.length; i++) {
             const samples = bg.daySamples[i];
-            if (!Array.isArray(samples)) continue;
+            if (!Array.isArray(samples) || samples.length === 0) {
+              if (currentCurveSeg.length > 0) {
+                curveSegments.push(currentCurveSeg);
+                currentCurveSeg = [];
+              }
+              continue;
+            }
             for (const s of samples) {
               const frac = toFiniteNumber(s?.frac ?? s?.t);
               const val = toFiniteNumber(s?.value ?? s?.v);
@@ -794,25 +835,14 @@ export class Chart {
               const x = getX(i) + (frac - 0.5) * xStep;
               const clampedVal = Math.max(minY, Math.min(maxY, val));
               const y = padding.top + ((maxY - clampedVal) / ySpanSafe) * chartH;
-              curvePoints.push({ x, y });
+              currentCurveSeg.push({ x, y });
             }
           }
+          if (currentCurveSeg.length > 0) {
+            curveSegments.push(currentCurveSeg);
+          }
 
-          if (curvePoints.length >= 2) {
-            const traceCurve = () => {
-              ctx.moveTo(curvePoints[0].x, curvePoints[0].y);
-              for (let k = 0; k < curvePoints.length - 1; k++) {
-                const p0 = curvePoints[k];
-                const p1 = curvePoints[k + 1];
-                if (typeof ctx.bezierCurveTo === 'function') {
-                  const cx = (p0.x + p1.x) / 2;
-                  ctx.bezierCurveTo(cx, p0.y, cx, p1.y, p1.x, p1.y);
-                } else {
-                  ctx.lineTo(p1.x, p1.y);
-                }
-              }
-            };
-
+          if (curveSegments.some(seg => seg.length >= 2)) {
             ctx.save();
             ctx.beginPath();
             ctx.rect(padding.left, padding.top, chartW, chartH);
@@ -820,37 +850,54 @@ export class Chart {
               ctx.clip();
             }
 
-            // 1. Background area fill
-            ctx.beginPath();
-            traceCurve();
-            ctx.lineTo(curvePoints[curvePoints.length - 1].x, padding.top + chartH);
-            ctx.lineTo(curvePoints[0].x, padding.top + chartH);
-            ctx.closePath();
-            if (typeof ctx.createLinearGradient === 'function') {
-              const fillGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
-              fillGrad.addColorStop(0, bg.fillTopColor || 'rgba(56, 189, 248, 0.16)');
-              fillGrad.addColorStop(1, bg.fillBottomColor || 'rgba(168, 85, 247, 0.02)');
-              ctx.fillStyle = fillGrad;
-            } else {
-              ctx.fillStyle = bg.fillTopColor || 'rgba(56, 189, 248, 0.12)';
-            }
-            ctx.fill();
+            for (const curvePoints of curveSegments) {
+              if (curvePoints.length < 2) continue;
+              const traceCurve = () => {
+                ctx.moveTo(curvePoints[0].x, curvePoints[0].y);
+                for (let k = 0; k < curvePoints.length - 1; k++) {
+                  const p0 = curvePoints[k];
+                  const p1 = curvePoints[k + 1];
+                  if (typeof ctx.bezierCurveTo === 'function') {
+                    const cx = (p0.x + p1.x) / 2;
+                    ctx.bezierCurveTo(cx, p0.y, cx, p1.y, p1.x, p1.y);
+                  } else {
+                    ctx.lineTo(p1.x, p1.y);
+                  }
+                }
+              };
 
-            // 2. Continuous Bezier wave stroke
-            ctx.beginPath();
-            traceCurve();
-            if (typeof ctx.createLinearGradient === 'function') {
-              const strokeGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
-              strokeGrad.addColorStop(0, bg.strokeTopColor || '#38bdf8');
-              strokeGrad.addColorStop(1, bg.strokeBottomColor || '#a855f7');
-              ctx.strokeStyle = strokeGrad;
-            } else {
-              ctx.strokeStyle = bg.fallbackColor || bg.strokeBottomColor || '#a855f7';
+              // 1. Background area fill
+              ctx.beginPath();
+              traceCurve();
+              ctx.lineTo(curvePoints[curvePoints.length - 1].x, padding.top + chartH);
+              ctx.lineTo(curvePoints[0].x, padding.top + chartH);
+              ctx.closePath();
+              if (typeof ctx.createLinearGradient === 'function') {
+                const fillGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
+                fillGrad.addColorStop(0, bg.fillTopColor || 'rgba(56, 189, 248, 0.16)');
+                fillGrad.addColorStop(1, bg.fillBottomColor || 'rgba(168, 85, 247, 0.02)');
+                ctx.fillStyle = fillGrad;
+              } else {
+                ctx.fillStyle = bg.fillTopColor || 'rgba(56, 189, 248, 0.12)';
+              }
+              ctx.fill();
+
+              // 2. Continuous Bezier wave stroke
+              ctx.beginPath();
+              traceCurve();
+              if (typeof ctx.createLinearGradient === 'function') {
+                const strokeGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
+                strokeGrad.addColorStop(0, bg.strokeTopColor || '#38bdf8');
+                strokeGrad.addColorStop(1, bg.strokeBottomColor || '#a855f7');
+                ctx.strokeStyle = strokeGrad;
+              } else {
+                ctx.strokeStyle = bg.fallbackColor || bg.strokeBottomColor || '#a855f7';
+              }
+              ctx.lineWidth = typeof bg.lineWidth === 'number' ? bg.lineWidth : 2.2;
+              ctx.lineJoin = 'round';
+              ctx.lineCap = 'round';
+              ctx.stroke();
             }
-            ctx.lineWidth = typeof bg.lineWidth === 'number' ? bg.lineWidth : 2.2;
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-            ctx.stroke();
 
             ctx.restore();
           }

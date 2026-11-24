@@ -647,9 +647,16 @@ function buildStressCard(c, daily, isHero) {
 }
 
 function buildBodyBatteryCard(c, daily, isHero) {
-  const current = c.body_battery || 82;
-  const charged = c.body_battery_charged || c.charged || 65;
-  const drained = c.body_battery_drained || c.drained || 43;
+  const rawCurrent = c.body_battery ?? c.body_battery_high ?? null;
+  const current = (typeof rawCurrent === 'number' && Number.isFinite(rawCurrent)) ? rawCurrent : null;
+  const rawCharged = c.body_battery_charged ?? c.charged ?? null;
+  const rawDrained = c.body_battery_drained ?? c.drained ?? null;
+  const charged = (typeof rawCharged === 'number' && Number.isFinite(rawCharged)) ? rawCharged : null;
+  const drained = (typeof rawDrained === 'number' && Number.isFinite(rawDrained)) ? rawDrained : null;
+  const currentDisplay = current !== null ? current : '—';
+  const chgStr = charged !== null ? `+${charged}` : '—';
+  const drnStr = drained !== null ? `-${drained}` : '—';
+  const barPct = current !== null ? Math.min(100, Math.max(0, current)) : 0;
 
   if (isHero) {
     return `
@@ -660,22 +667,22 @@ function buildBodyBatteryCard(c, daily, isHero) {
               <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
               <span>Body Battery</span>
             </div>
-            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${current} <span class="text-sm font-sans font-normal text-zinc-500">/ 100</span></div>
-            <div class="text-[11px] text-zinc-400 mt-1">Charged: +${charged} • Drained: -${drained}</div>
+            <div class="text-3xl font-bold font-mono text-white mt-1.5 tabular-nums">${currentDisplay} <span class="text-sm font-sans font-normal text-zinc-500">/ 100</span></div>
+            <div class="text-[11px] text-zinc-400 mt-1">Charged: ${chgStr} • Drained: ${drnStr}</div>
           </div>
           <div class="flex flex-col items-end space-y-2">
             ${renderCardControls('body_battery', true)}
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border border-cyan-500/30 text-cyan-400 bg-cyan-500/10">Active</span>
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border border-cyan-500/30 text-cyan-400 bg-cyan-500/10">${current !== null ? 'Active' : 'No Data'}</span>
           </div>
         </div>
 
         <div class="pt-4 mt-3 border-t border-[#2d2147] space-y-1.5">
           <div class="flex justify-between text-[11px] text-zinc-400">
             <span>Battery Level</span>
-            <span class="font-mono text-[10px] text-cyan-400">${current}%</span>
+            <span class="font-mono text-[10px] text-cyan-400">${current !== null ? `${current}%` : '—'}</span>
           </div>
           <div class="w-full bg-zinc-800 rounded-full h-2.5 overflow-hidden">
-            <div class="bg-gradient-to-r from-cyan-600 to-cyan-400 h-full rounded-full" style="width: ${Math.min(100, Math.max(0, current))}%"></div>
+            <div class="bg-gradient-to-r from-cyan-600 to-cyan-400 h-full rounded-full" style="width: ${barPct}%"></div>
           </div>
         </div>
       </div>
@@ -689,11 +696,11 @@ function buildBodyBatteryCard(c, daily, isHero) {
         ${renderCardControls('body_battery', false)}
       </div>
       <div class="my-2">
-        <div class="text-xl font-bold font-mono text-white tabular-nums">${current} <span class="text-xs font-normal text-zinc-500">/ 100</span></div>
-        <div class="text-[10px] text-zinc-400 mt-0.5">+${charged} / -${drained}</div>
+        <div class="text-xl font-bold font-mono text-white tabular-nums">${currentDisplay} <span class="text-xs font-normal text-zinc-500">/ 100</span></div>
+        <div class="text-[10px] text-zinc-400 mt-0.5">${chgStr} / ${drnStr}</div>
       </div>
       <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-        <div class="bg-cyan-400 h-full rounded-full" style="width: ${Math.min(100, Math.max(0, current))}%"></div>
+        <div class="bg-cyan-400 h-full rounded-full" style="width: ${barPct}%"></div>
       </div>
     </div>
   `;
@@ -701,8 +708,15 @@ function buildBodyBatteryCard(c, daily, isHero) {
 
 function buildHrvCard(c, daily, isHero) {
   const status = c.hrv_status ?? '—';
-  const weeklyAvg = c.hrv_weekly_avg ?? '—';
-  const lastNight = c.hrv_last_night_avg ?? '—';
+  const weeklyAvg = c.hrv_weekly_avg ?? c.hrv_7d_avg ?? '—';
+  const lastNight = c.hrv_last_night_avg ?? c.hrv_ms ?? '—';
+  let markerPct = 50;
+  const refVal = typeof weeklyAvg === 'number' ? weeklyAvg : (typeof lastNight === 'number' ? lastNight : null);
+  if (refVal !== null && c.hrv_baseline && typeof c.hrv_baseline.low === 'number' && typeof c.hrv_baseline.high === 'number' && c.hrv_baseline.high > c.hrv_baseline.low) {
+    const span = c.hrv_baseline.high - c.hrv_baseline.low;
+    const norm = (refVal - (c.hrv_baseline.low - span * 0.5)) / (span * 2);
+    markerPct = Math.round(Math.max(4, Math.min(96, norm * 100)));
+  }
 
   if (isHero) {
     return `
@@ -731,7 +745,7 @@ function buildHrvCard(c, daily, isHero) {
             <div class="w-1/3 bg-amber-500/20"></div>
             <div class="w-1/3 bg-emerald-500/40"></div>
             <div class="w-1/3 bg-amber-500/20"></div>
-            <div class="absolute top-0 bottom-0 w-2 bg-teal-300 rounded-full" style="left: calc(50% - 4px)"></div>
+            <div class="absolute top-0 bottom-0 w-2 bg-teal-300 rounded-full" style="left: calc(${markerPct}% - 4px)"></div>
           </div>
         </div>
       </div>

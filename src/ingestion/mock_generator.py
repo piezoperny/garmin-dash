@@ -1684,18 +1684,38 @@ def compile_rollup(
         {"zone": "Interval", "short_label": "Int", "min_sec_km": 280, "max_sec_km": 359, "seconds": pace_zone_seconds["Interval"]},
     ]
 
-    threshold_trends = [
-        {"date": "2025-11-01", "vo2max": 48, "cycling_ftp": 252, "ftp": 252, "lthr": 162},
-        {"date": "2025-12-15", "vo2max": 49, "cycling_ftp": 258, "ftp": 258, "lthr": 163},
-        {"date": "2026-02-01", "vo2max": 50, "cycling_ftp": 262, "ftp": 262, "lthr": 164},
-        {"date": "2026-04-15", "vo2max": 50, "cycling_ftp": 265, "ftp": 265, "lthr": 164},
-        {"date": "2026-06-01", "vo2max": 51, "cycling_ftp": 268, "ftp": 268, "lthr": 165},
-        {"date": "2026-07-15", "vo2max": 51, "cycling_ftp": 270, "ftp": 270, "lthr": 165},
-        {"date": "2026-09-01", "vo2max": 51, "cycling_ftp": 268, "ftp": 268, "lthr": 165},
-        {"date": "2026-09-15", "vo2max": 52, "cycling_ftp": 272, "ftp": 272, "lthr": 166},
-        {"date": "2026-10-01", "vo2max": 53, "cycling_ftp": 276, "ftp": 276, "lthr": 167},
-        {"date": "2026-10-15", "vo2max": 54, "cycling_ftp": 280, "ftp": 280, "lthr": 168},
-    ]
+    if wellness is not None and isinstance(wellness, dict):
+        threshold_trends = []
+        daily_wellness = wellness.get("daily") if isinstance(wellness.get("daily"), list) else []
+        explicit_lthr = athlete_profile.get("lthr")
+        real_lthr = int(explicit_lthr) if explicit_lthr is not None else (int(lthr) if any(int(a.get("avg_hr") or 0) > 0 for a in sorted_acts) else None)
+        real_ftp = int(ftp) if has_cycling_power else None
+        for w in daily_wellness:
+            if not isinstance(w, dict) or not w.get("date"):
+                continue
+            vo2_val = w.get("vo2max_running") if w.get("vo2max_running") is not None else w.get("vo2max_cycling")
+            if vo2_val is None:
+                continue
+            threshold_trends.append({
+                "date": str(w["date"])[:10],
+                "vo2max": round(float(vo2_val), 1),
+                "cycling_ftp": real_ftp,
+                "ftp": real_ftp,
+                "lthr": real_lthr,
+            })
+    else:
+        threshold_trends = [
+            {"date": "2025-11-01", "vo2max": 48, "cycling_ftp": 252, "ftp": 252, "lthr": 162},
+            {"date": "2025-12-15", "vo2max": 49, "cycling_ftp": 258, "ftp": 258, "lthr": 163},
+            {"date": "2026-02-01", "vo2max": 50, "cycling_ftp": 262, "ftp": 262, "lthr": 164},
+            {"date": "2026-04-15", "vo2max": 50, "cycling_ftp": 265, "ftp": 265, "lthr": 164},
+            {"date": "2026-06-01", "vo2max": 51, "cycling_ftp": 268, "ftp": 268, "lthr": 165},
+            {"date": "2026-07-15", "vo2max": 51, "cycling_ftp": 270, "ftp": 270, "lthr": 165},
+            {"date": "2026-09-01", "vo2max": 51, "cycling_ftp": 268, "ftp": 268, "lthr": 165},
+            {"date": "2026-09-15", "vo2max": 52, "cycling_ftp": 272, "ftp": 272, "lthr": 166},
+            {"date": "2026-10-01", "vo2max": 53, "cycling_ftp": 276, "ftp": 276, "lthr": 167},
+            {"date": "2026-10-15", "vo2max": 54, "cycling_ftp": 280, "ftp": 280, "lthr": 168},
+        ]
 
     # Clean activity representation conforming to PROJECT.md § Interface Contracts 1
     canonical_activities = []

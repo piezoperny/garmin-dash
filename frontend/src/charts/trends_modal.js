@@ -1485,13 +1485,29 @@ function renderMetricChart(metric, records, startDate, endDate) {
       ? `Garmin Baseline (${latestBl.hrv_baseline.low}–${latestBl.hrv_baseline.high} ms)`
       : `Baseline Zone (Avg ${Math.round(rollingBand.periodMean)} ± ${Math.round(rollingBand.periodSd)} ms)`;
 
+    const hrvDense = records.length > 90;
+    const hrvMed = records.length > 45;
     chartConfig = {
       type: 'line',
       data: {
         labels,
         datasets: [
-          { label: 'Nightly HRV (ms)', data: nightly, borderColor: '#10b981', borderWidth: 2, fill: false, pointColors, pointRadius: 3.5 },
-          { label: '7D Rolling Avg', data: weekly, borderColor: '#c084fc', borderWidth: 1.5, pointRadius: 1.5 }
+          {
+            label: 'Nightly HRV (ms)',
+            data: nightly,
+            borderColor: hrvDense ? 'rgba(16, 185, 129, 0.55)' : '#10b981',
+            borderWidth: hrvDense ? 1.2 : (hrvMed ? 1.5 : 2),
+            fill: false,
+            pointColors,
+            pointRadius: hrvDense ? 0 : (hrvMed ? 1.8 : 3.5)
+          },
+          {
+            label: '7D Rolling Avg',
+            data: weekly,
+            borderColor: '#c084fc',
+            borderWidth: hrvDense ? 2.4 : (hrvMed ? 2.0 : 1.75),
+            pointRadius: hrvDense || hrvMed ? 0 : 1.5
+          }
         ]
       },
       options: {
@@ -1534,14 +1550,30 @@ function renderMetricChart(metric, records, startDate, endDate) {
     const allRhrVals = [...rhr, ...rhrAvg, ...band.yMinSeries, ...band.yMaxSeries].filter(v => typeof v === 'number' && !isNaN(v));
     const yMinRhr = allRhrVals.length ? Math.max(25, Math.floor(Math.min(...allRhrVals) - 3)) : 35;
     const yMaxRhr = allRhrVals.length ? Math.ceil(Math.max(...allRhrVals) + 3) : 80;
+    const rhrDense = records.length > 90;
+    const rhrMed = records.length > 45;
 
     chartConfig = {
       type: 'line',
       data: {
         labels,
         datasets: [
-          { label: 'Daily RHR (bpm)', data: rhr, borderColor: '#f43f5e', borderWidth: 2, fill: false, pointColors, pointRadius: 3.5 },
-          { label: '7D Avg (bpm)', data: rhrAvg, borderColor: '#c084fc', borderWidth: 1.5, pointRadius: 1.5 }
+          {
+            label: 'Daily RHR (bpm)',
+            data: rhr,
+            borderColor: rhrDense ? 'rgba(244, 63, 94, 0.55)' : '#f43f5e',
+            borderWidth: rhrDense ? 1.2 : (rhrMed ? 1.5 : 2),
+            fill: false,
+            pointColors,
+            pointRadius: rhrDense ? 0 : (rhrMed ? 1.8 : 3.5)
+          },
+          {
+            label: '7D Avg (bpm)',
+            data: rhrAvg,
+            borderColor: '#c084fc',
+            borderWidth: rhrDense ? 2.4 : (rhrMed ? 2.0 : 1.75),
+            pointRadius: rhrDense || rhrMed ? 0 : 1.5
+          }
         ]
       },
       options: {

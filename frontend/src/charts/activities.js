@@ -214,12 +214,22 @@ export async function loadActivityStreamShard(actId, targetAct = null) {
       const packEntry = streamPackIndex && streamPackIndex[idStr];
       const dek = packEntry?.dek || packEntry?.key || (packEntry?.year && streamPackKeys[packEntry.year]) || null;
       const aadVersion = packEntry?.aad_version ?? streamAadVersion;
-      const shard = (dek || aadVersion != null)
-        ? await decryptWithRawKey(rawKey, encBytes, {
+      const aadString = (aadVersion != null && packEntry?.year != null)
+        ? `garmin-dash:v${aadVersion}:stream:${packEntry.year}:${idStr}`
+        : null;
+      let shard = null;
+      if (dek || aadString) {
+        try {
+          shard = await decryptWithRawKey(rawKey, encBytes, {
             ...(dek ? { dek } : {}),
-            ...(aadVersion != null ? { aad_version: aadVersion, aad: `stream:${idStr}:v${aadVersion}` } : {})
-          })
-        : await decryptWithRawKey(rawKey, encBytes);
+            ...(aadString ? { aad_version: aadVersion, aad: aadString } : {})
+          });
+        } catch (_aadErr) {
+          shard = await decryptWithRawKey(rawKey, encBytes);
+        }
+      } else {
+        shard = await decryptWithRawKey(rawKey, encBytes);
+      }
       if (!shard || typeof shard !== 'object') {
         syncActivityShardState(idStr, null, targetAct);
         return null;

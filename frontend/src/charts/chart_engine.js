@@ -843,13 +843,20 @@ export class Chart {
             ctx.stroke();
           }
 
-          // Draw point dots
-          const ptRadius = typeof ds.pointRadius === 'number' ? ds.pointRadius : 2.5;
+          // Draw point dots (auto-scale down on dense series like 1Y so trend lines stay legible)
+          const baseRadius = typeof ds.pointRadius === 'number' ? ds.pointRadius : 2.5;
+          let ptRadius = baseRadius;
+          if (!ds.preservePointRadius && baseRadius > 0) {
+            if (pts.length > 120) ptRadius = Math.min(baseRadius, 1.1);
+            else if (pts.length > 60) ptRadius = Math.min(baseRadius, 1.75);
+          }
           pts.forEach(p => {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, ptRadius, 0, Math.PI * 2);
-            ctx.fillStyle = p.color || color;
-            ctx.fill();
+            if (ptRadius > 0) {
+              ctx.beginPath();
+              ctx.arc(p.x, p.y, ptRadius, 0, Math.PI * 2);
+              ctx.fillStyle = p.color || color;
+              ctx.fill();
+            }
             this.dataPoints.push({ ...p, radius: 8 });
           });
         }
